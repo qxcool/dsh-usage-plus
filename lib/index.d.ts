@@ -13,6 +13,14 @@ interface UsageServiceOptions {
   volcanoEnabled: boolean;
   volcanoAccessKeyEnv: string;
   volcanoSecretKeyEnv: string;
+  customBalanceEnabled: boolean;
+  customBalanceLabel: string;
+  customBalanceCurrency: string;
+  customBalanceUrl: string;
+  customBalanceMethod: string;
+  customBalanceHeadersJson: string;
+  customBalanceExtractRemaining: string;
+  customBalanceAllowedHosts: string;
 }
 //#endregion
 //#region src/index.d.ts
@@ -33,6 +41,15 @@ interface Config {
   volcanoEnabled?: boolean;
   volcanoAccessKeyEnv?: string;
   volcanoSecretKeyEnv?: string;
+  /** Custom HTTPS balance probe (NewAPI / LiteLLM style). */
+  customBalanceEnabled?: boolean;
+  customBalanceLabel?: string;
+  customBalanceCurrency?: string;
+  customBalanceUrl?: string;
+  customBalanceMethod?: string;
+  customBalanceHeadersJson?: string;
+  customBalanceExtractRemaining?: string;
+  customBalanceAllowedHosts?: string;
 }
 declare const Config: z<Config>;
 interface ResolvedConfig extends UsageServiceOptions {

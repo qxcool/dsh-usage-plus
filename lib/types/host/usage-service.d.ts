@@ -7,7 +7,7 @@
  * @module @linxin666/dsh-usage/host/usage-service
  */
 import type { Context } from '@deepseek-ai/cordis';
-import type { ProviderSnapshotView, UsageOverviewView, UsageTokenTotals } from '../core/types.ts';
+import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotView, UsageOverviewView, UsageTokenTotals } from '../core/types.ts';
 /** Source tag the plugin stamps onto pet announcements. */
 export declare const USAGE_ANNOUNCE_SOURCE = "dsh-usage-plus";
 /**
@@ -36,6 +36,14 @@ export interface UsageServiceOptions {
     volcanoEnabled: boolean;
     volcanoAccessKeyEnv: string;
     volcanoSecretKeyEnv: string;
+    customBalanceEnabled: boolean;
+    customBalanceLabel: string;
+    customBalanceCurrency: string;
+    customBalanceUrl: string;
+    customBalanceMethod: string;
+    customBalanceHeadersJson: string;
+    customBalanceExtractRemaining: string;
+    customBalanceAllowedHosts: string;
 }
 /** Format a balance for display: symbol prefix when known, code suffix otherwise. */
 export declare function formatMoney(currency: string, totalBalance: string): string;
@@ -121,7 +129,28 @@ export declare class UsageService {
     /** Force one poll now (manual refresh route); joins an in-flight cycle. */
     refresh(): Promise<void>;
     /** Assemble the overview document the browser section renders. */
-    overview(): UsageOverviewView;
+    overview(): Promise<UsageOverviewView>;
+    /**
+     * Write-only: store one external secret in the DSH credential vault under
+     * the configured env-var name. Never returns the value.
+     */
+    setExternalCredential(target: ExternalCredentialTarget, value: string): Promise<{
+        ok: true;
+    } | {
+        ok: false;
+        error: string;
+    }>;
+    /** Remove one external secret from the DSH credential vault. */
+    clearExternalCredential(target: ExternalCredentialTarget): Promise<{
+        ok: true;
+    } | {
+        ok: false;
+        error: string;
+    }>;
+    /** Configured/missing flags only — never the secret values. */
+    externalCredentialStatus(): Promise<ExternalCredentialStatus>;
+    private externalCredentialEnv;
+    private isEnvConfigured;
     /** One local day aggregated per provider. */
     private daySummary;
     /** Today's ledger spend for one provider's adapter family (0 when unpriced). */
@@ -144,6 +173,12 @@ export declare class UsageService {
      */
     private routeDisplayName;
     private onSessionEvent;
+    /**
+     * Follow the composer model selector (`agent-default-model`). The strip
+     * must update as soon as the user picks another provider/model, not only
+     * when the next request/header event lands.
+     */
+    private syncCurrentFromComposer;
     /**
      * Normalize a provider TokenUsage into the ledger bucket (one call). The
      * DeepSeek official family is priced at the fold instant (its billing

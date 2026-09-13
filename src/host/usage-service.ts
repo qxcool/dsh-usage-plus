@@ -18,9 +18,11 @@ import { adapterFor, isDeepSeekProviderRoute, providerErrorMessage } from '../co
 import type { BalanceParse, PlanParse } from '../core/adapters.ts'
 import { deepseekModelSpend, deepseekPeriodAt } from '../core/pricing.ts'
 import { createLedgerDocument, deserializeLedger, foldUsage, ledgerDayKeys, localDateKey, pruneLedger, summarizeDays, totalTokens } from '../core/ledger.ts'
-import type { BalanceView, CredentialKind, ObservedSpendView, PlanView, ProviderSnapshotState, ProviderSnapshotView, UsageLedgerDocument, UsageOverviewView, UsageTokenTotals } from '../core/types.ts'
+import { currentPlanProvider } from '../core/plan-match.ts'
+import type { BalanceView, CredentialKind, ExternalCredentialStatus, ExternalCredentialTarget, ObservedSpendView, PlanView, ProviderSnapshotState, ProviderSnapshotView, UsageLedgerDocument, UsageOverviewView, UsageTokenTotals } from '../core/types.ts'
 import { emptyTotals } from '../core/types.ts'
 import { probeCpamc, probeVolcano } from './external-sources.ts'
+import { customBalanceCredentialVars, probeCustomBalance } from './custom-balance.ts'
 
 /** Source tag the plugin stamps onto pet announcements. */
 export const USAGE_ANNOUNCE_SOURCE = 'dsh-usage-plus'
@@ -67,6 +69,14 @@ export interface UsageServiceOptions {
   volcanoEnabled: boolean
   volcanoAccessKeyEnv: string
   volcanoSecretKeyEnv: string
+  customBalanceEnabled: boolean
+  customBalanceLabel: string
+  customBalanceCurrency: string
+  customBalanceUrl: string
+  customBalanceMethod: string
+  customBalanceHeadersJson: string
+  customBalanceExtractRemaining: string
+  customBalanceAllowedHosts: string
 }
 
 /** Probe timeout per HTTP call. */
@@ -75,8 +85,11 @@ const PROBE_TIMEOUT_MS = 10_000
 /** Ledger flush debounce. */
 const FLUSH_DEBOUNCE_MS = 3_000
 
-/** How many trend days the overview serves. */
+/** How many days the per-provider trend bars aggregate. */
 const TREND_DAYS = 30
+
+/** How many daily rows the Codex-style heatmap receives (26 weeks). */
+const HEATMAP_DAYS = 182
 
 /** Currency symbols the bubble and section render inline; other codes render as `12.00 EUR`. */
 const CURRENCY_SYMBOLS: Readonly<Record<string, string>> = { CNY: '¥', USD: '$', EUR: '€', GBP: '£' }
@@ -310,7 +323,10 @@ export class UsageService {
   }
 
   /** Assemble the overview document the browser section renders. */
-  overview(): UsageOverviewView {
+  async overview(): Promise<UsageOverviewView> {
+    // Always re-sync to the composer selection so switching the model
+    // selector updates the strip without waiting for the next request.
+    this.syncCurrentFromComposer()
     const todayKey = localDateKey(Date.now())
     const routes = this.listProviderRoutes()
     const providers: ProviderSnapshotView[] = []
@@ -333,28 +349,34 @@ export class UsageService {
       })
     }
     for (const snapshot of this.snapshots.values()) {
-      if (snapshot.source !== 'cpamc' && snapshot.source !== 'volcano') continue
+      if (snapshot.source !== 'cpamc' && snapshot.source !== 'volcano' && snapshot.source !== 'custom') continue
       const error = snapshot.balanceError ?? snapshot.planError
       providers.push({ ...snapshot, ...(error !== undefined ? { error } : {}) })
     }
     providers.sort((a, b) => Number(b.supported) - Number(a.supported) || a.displayName.localeCompare(b.displayName))
     const allKeys = ledgerDayKeys(this.ledger)
-    const days = allKeys.slice(-TREND_DAYS)
-    const range = summarizeDays(days.map((key) => this.ledger.days[key] ?? {}))
+    const heatmapKeys = allKeys.slice(-Math.min(HEATMAP_DAYS, this.options.retainDays))
+    const rangeKeys = allKeys.slice(-TREND_DAYS)
+    const range = summarizeDays(rangeKeys.map((key) => this.ledger.days[key] ?? {}))
     const all = summarizeDays(allKeys.map((key) => this.ledger.days[key] ?? {}))
+    const baseURL = this.current.provider !== undefined ? this.piAiProfile(this.current.provider)?.baseURL : undefined
     return {
       updatedAt: Date.now(),
       providers,
-      current: { ...this.current },
+      current: {
+        ...this.current,
+        ...(typeof baseURL === 'string' && baseURL.trim() !== '' ? { baseURL: baseURL.trim() } : {}),
+      },
+      externalCredentials: await this.externalCredentialStatus(),
       usage: {
         today: this.daySummary(todayKey),
-        days: days.map((date) => {
+        days: heatmapKeys.map((date) => {
           const summary = this.daySummary(date)
           return { date, totals: summary.totals }
         }),
         range: {
-          from: days[0] ?? todayKey,
-          to: days[days.length - 1] ?? todayKey,
+          from: rangeKeys[0] ?? todayKey,
+          to: rangeKeys[rangeKeys.length - 1] ?? todayKey,
           totals: range.totals,
           providers: range.providers,
         },
@@ -369,6 +391,85 @@ export class UsageService {
           : {}),
       },
     }
+  }
+
+  /**
+   * Write-only: store one external secret in the DSH credential vault under
+   * the configured env-var name. Never returns the value.
+   */
+  async setExternalCredential(target: ExternalCredentialTarget, value: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    const trimmed = value.trim()
+    if (trimmed === '') return { ok: false, error: 'empty credential' }
+    let name: string
+    try {
+      name = this.externalCredentialEnv(target)
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'invalid target' }
+    }
+    const credentials = service<{ set(ref: unknown, value: string): Promise<void> }>(this.ctx, 'credentials')
+    if (credentials === undefined) return { ok: false, error: 'credential store unavailable' }
+    try {
+      await credentials.set(credentialRef(name), trimmed)
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'credential write failed' }
+    }
+  }
+
+  /** Remove one external secret from the DSH credential vault. */
+  async clearExternalCredential(target: ExternalCredentialTarget): Promise<{ ok: true } | { ok: false; error: string }> {
+    let name: string
+    try {
+      name = this.externalCredentialEnv(target)
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'invalid target' }
+    }
+    const credentials = service<{ unset(ref: unknown): Promise<void> }>(this.ctx, 'credentials')
+    if (credentials === undefined) return { ok: false, error: 'credential store unavailable' }
+    try {
+      await credentials.unset(credentialRef(name))
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'credential clear failed' }
+    }
+  }
+
+  /** Configured/missing flags only — never the secret values. */
+  async externalCredentialStatus(): Promise<ExternalCredentialStatus> {
+    const customVars: Record<string, boolean> = {}
+    for (const name of customBalanceCredentialVars(this.options.customBalanceHeadersJson)) {
+      customVars[name] = await this.isEnvConfigured(name)
+    }
+    return {
+      cpamc: await this.isEnvConfigured(this.options.cpamcManagementKeyEnv),
+      volcanoAk: await this.isEnvConfigured(this.options.volcanoAccessKeyEnv),
+      volcanoSk: await this.isEnvConfigured(this.options.volcanoSecretKeyEnv),
+      ...(Object.keys(customVars).length > 0 ? { customVars } : {}),
+    }
+  }
+
+  private externalCredentialEnv(target: ExternalCredentialTarget): string {
+    if (target === 'cpamc') return this.options.cpamcManagementKeyEnv
+    if (target === 'volcano.ak') return this.options.volcanoAccessKeyEnv
+    if (target === 'volcano.sk') return this.options.volcanoSecretKeyEnv
+    if (target.startsWith('customVar:')) {
+      const name = target.slice('customVar:'.length)
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error('invalid custom var name')
+      return name
+    }
+    throw new Error('unknown credential target')
+  }
+
+  private async isEnvConfigured(name: string): Promise<boolean> {
+    const credentials = service<{ describe(ref: unknown): Promise<{ configured?: boolean } | undefined> }>(this.ctx, 'credentials')
+    try {
+      const info = await credentials?.describe(credentialRef(name))
+      if (info?.configured === true) return true
+    } catch {
+      // Malformed describe reads as absent; fall through to process.env.
+    }
+    const value = process.env[name]
+    return typeof value === 'string' && value.trim() !== ''
   }
 
   /** One local day aggregated per provider. */
@@ -461,6 +562,18 @@ export class UsageService {
     } catch {
       // A malformed event must never break the session loop.
     }
+  }
+
+  /**
+   * Follow the composer model selector (`agent-default-model`). The strip
+   * must update as soon as the user picks another provider/model, not only
+   * when the next request/header event lands.
+   */
+  private syncCurrentFromComposer(): void {
+    const selected = readNamespace(this.ctx, 'agent-default-model') as { provider?: string; model?: string } | undefined
+    if (selected?.provider === undefined || selected.provider === '') return
+    if (this.current.provider === selected.provider && this.current.model === selected.model) return
+    this.current = { provider: selected.provider, model: selected.model, source: 'default' }
   }
 
   /**
@@ -630,7 +743,7 @@ export class UsageService {
           await this.probeRoute(route, adapter)
         }
         for (const id of [...this.snapshots.keys()]) {
-          if (!seen.has(id) && !id.startsWith('cpamc:') && !id.startsWith('volcano:')) this.snapshots.delete(id)
+          if (!seen.has(id) && !id.startsWith('cpamc:') && !id.startsWith('volcano:') && !id.startsWith('custom:')) this.snapshots.delete(id)
         }
         await this.probeExternalSources()
         if (this.disposed) return
@@ -779,7 +892,7 @@ export class UsageService {
 
   private async probeExternalSources(): Promise<void> {
     for (const id of [...this.snapshots.keys()]) {
-      if (id.startsWith('cpamc:') || id.startsWith('volcano:')) this.snapshots.delete(id)
+      if (id.startsWith('cpamc:') || id.startsWith('volcano:') || id.startsWith('custom:')) this.snapshots.delete(id)
     }
     try {
       const rows = await probeCpamc({ enabled: this.options.cpamcEnabled, baseURL: this.options.cpamcBaseURL, managementKey: await this.resolveEnv(this.options.cpamcManagementKeyEnv) })
@@ -787,6 +900,19 @@ export class UsageService {
     } catch {}
     try {
       const rows = await probeVolcano({ enabled: this.options.volcanoEnabled, accessKeyId: await this.resolveEnv(this.options.volcanoAccessKeyEnv), secretAccessKey: await this.resolveEnv(this.options.volcanoSecretKeyEnv) })
+      for (const row of rows) this.snapshots.set(row.provider, row)
+    } catch {}
+    try {
+      const rows = await probeCustomBalance(this.ctx, {
+        enabled: this.options.customBalanceEnabled,
+        label: this.options.customBalanceLabel,
+        currency: this.options.customBalanceCurrency,
+        url: this.options.customBalanceUrl,
+        method: this.options.customBalanceMethod,
+        headersJson: this.options.customBalanceHeadersJson,
+        extractRemaining: this.options.customBalanceExtractRemaining,
+        allowedHosts: this.options.customBalanceAllowedHosts,
+      })
       for (const row of rows) this.snapshots.set(row.provider, row)
     } catch {}
   }
@@ -824,16 +950,9 @@ export class UsageService {
   private announceCurrent(): void {
     if (this.disposed || this.options.bubbleMode === 'off') return
     try {
-      let provider = this.current.provider
-      if (provider === undefined) {
-        const fallback = readNamespace(this.ctx, 'agent-default-model') as { provider?: string; model?: string } | undefined
-        if (fallback?.provider !== undefined) {
-          provider = fallback.provider
-          this.current = { provider: fallback.provider, model: fallback.model, source: 'default' }
-        } else {
-          return
-        }
-      }
+      this.syncCurrentFromComposer()
+      const provider = this.current.provider
+      if (provider === undefined) return
       let snapshot = this.snapshots.get(provider)
       if (snapshot === undefined) {
         const family = adapterFor(provider)
@@ -845,6 +964,17 @@ export class UsageService {
             }
           }
         }
+      }
+      if (snapshot?.plan === undefined) {
+        const baseURL = this.piAiProfile(provider)?.baseURL
+        const mapped = currentPlanProvider({
+          current: {
+            ...this.current,
+            ...(typeof baseURL === 'string' && baseURL.trim() !== '' ? { baseURL: baseURL.trim() } : {}),
+          },
+          providers: [...this.snapshots.values()],
+        })
+        if (mapped !== undefined) snapshot = mapped
       }
       const displayName = snapshot?.displayName ?? this.routeDisplayName(provider)
       let announcement = snapshot !== undefined

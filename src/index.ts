@@ -4,7 +4,7 @@ import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from 'schemastery'
 import { mountOnce } from './mount-once.ts'
 import { UsageService, type UsageServiceOptions } from './host/usage-service.ts'
-import { makeUsageOverviewRoute, makeUsageRefreshRoute } from './host/routes.ts'
+import { makeUsageCredentialsRoute, makeUsageOverviewRoute, makeUsageRefreshRoute } from './host/routes.ts'
 
 export const name = 'dsh-usage-plus'
 export const inject = ['webServer']
@@ -24,19 +24,36 @@ export interface Config {
   volcanoEnabled?: boolean
   volcanoAccessKeyEnv?: string
   volcanoSecretKeyEnv?: string
+  /** Custom HTTPS balance probe (NewAPI / LiteLLM style). */
+  customBalanceEnabled?: boolean
+  customBalanceLabel?: string
+  customBalanceCurrency?: string
+  customBalanceUrl?: string
+  customBalanceMethod?: string
+  customBalanceHeadersJson?: string
+  customBalanceExtractRemaining?: string
+  customBalanceAllowedHosts?: string
 }
 
 export const Config: z<Config> = z.object({
   enabled: z.boolean().default(true),
   pollIntervalSec: z.number().min(30).max(3600).default(60),
   bubbleMode: z.string().default('always'),
-  retainDays: z.number().min(7).max(730).default(180),
+  retainDays: z.number().min(7).max(730).default(182),
   cpamcEnabled: z.boolean().default(false),
   cpamcBaseURL: z.string().default('http://127.0.0.1:8317'),
   cpamcManagementKeyEnv: z.string().default('CPAMC_MANAGEMENT_KEY'),
   volcanoEnabled: z.boolean().default(false),
   volcanoAccessKeyEnv: z.string().default('VOLC_ACCESSKEY'),
   volcanoSecretKeyEnv: z.string().default('VOLC_SECRETKEY'),
+  customBalanceEnabled: z.boolean().default(false),
+  customBalanceLabel: z.string().default('Custom balance'),
+  customBalanceCurrency: z.string().default('USD'),
+  customBalanceUrl: z.string().default(''),
+  customBalanceMethod: z.string().default('GET'),
+  customBalanceHeadersJson: z.string().default('{"Authorization":"Bearer {{API_KEY}}"}'),
+  customBalanceExtractRemaining: z.string().default('data.total_available'),
+  customBalanceAllowedHosts: z.string().default(''),
 })
 
 export interface ResolvedConfig extends UsageServiceOptions {
@@ -49,13 +66,21 @@ export function resolveConfig(config?: Config): ResolvedConfig {
     enabled: config?.enabled ?? true,
     pollIntervalSec: typeof config?.pollIntervalSec === 'number' ? config.pollIntervalSec : 60,
     bubbleMode,
-    retainDays: typeof config?.retainDays === 'number' ? config.retainDays : 180,
+    retainDays: typeof config?.retainDays === 'number' ? config.retainDays : 182,
     cpamcEnabled: config?.cpamcEnabled ?? false,
     cpamcBaseURL: config?.cpamcBaseURL ?? 'http://127.0.0.1:8317',
     cpamcManagementKeyEnv: config?.cpamcManagementKeyEnv ?? 'CPAMC_MANAGEMENT_KEY',
     volcanoEnabled: config?.volcanoEnabled ?? false,
     volcanoAccessKeyEnv: config?.volcanoAccessKeyEnv ?? 'VOLC_ACCESSKEY',
     volcanoSecretKeyEnv: config?.volcanoSecretKeyEnv ?? 'VOLC_SECRETKEY',
+    customBalanceEnabled: config?.customBalanceEnabled ?? false,
+    customBalanceLabel: config?.customBalanceLabel ?? 'Custom balance',
+    customBalanceCurrency: config?.customBalanceCurrency ?? 'USD',
+    customBalanceUrl: config?.customBalanceUrl ?? '',
+    customBalanceMethod: config?.customBalanceMethod ?? 'GET',
+    customBalanceHeadersJson: config?.customBalanceHeadersJson ?? '{"Authorization":"Bearer {{API_KEY}}"}',
+    customBalanceExtractRemaining: config?.customBalanceExtractRemaining ?? 'data.total_available',
+    customBalanceAllowedHosts: config?.customBalanceAllowedHosts ?? '',
   }
 }
 
@@ -82,7 +107,7 @@ export const apply = mountOnce('dsh-usage-plus', (ctx: Context, config?: Config)
         // still pending; only start if this instance is still the live one.
         if (service !== next) return
         next.start()
-        const disposers = [makeUsageOverviewRoute(next), makeUsageRefreshRoute(next)]
+        const disposers = [makeUsageOverviewRoute(next), makeUsageRefreshRoute(next), makeUsageCredentialsRoute(next)]
           .map((route) => ctx.webServer.register(route))
         disposeRoutes = () => {
           for (const dispose of disposers) {

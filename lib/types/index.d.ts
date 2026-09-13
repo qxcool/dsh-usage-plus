@@ -19,6 +19,15 @@ export interface Config {
     volcanoEnabled?: boolean;
     volcanoAccessKeyEnv?: string;
     volcanoSecretKeyEnv?: string;
+    /** Custom HTTPS balance probe (NewAPI / LiteLLM style). */
+    customBalanceEnabled?: boolean;
+    customBalanceLabel?: string;
+    customBalanceCurrency?: string;
+    customBalanceUrl?: string;
+    customBalanceMethod?: string;
+    customBalanceHeadersJson?: string;
+    customBalanceExtractRemaining?: string;
+    customBalanceAllowedHosts?: string;
 }
 export declare const Config: z<Config>;
 export interface ResolvedConfig extends UsageServiceOptions {

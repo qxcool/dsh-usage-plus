@@ -14,9 +14,12 @@ import type { UsageStoreInstance } from './usage-store.ts'
 import { t } from './locales.ts'
 import styles from './usage.module.css'
 import { isDeepSeekProviderRoute } from '../core/adapters.ts'
+import { customBalanceCredentialVars } from '../core/custom-balance.ts'
+import { buildHeatmapGrid } from '../core/heatmap.ts'
+import { currentPlanProvider, orderedPlanWindows, planSourceLabelKey, planTabProviders } from '../core/plan-match.ts'
 import { deepseekPeriodAt } from '../core/pricing.ts'
 import { deepseekVoucherData, drawVoucher, faceValue, formatDay, formatDenomination, loadVoucherArt } from './voucher.ts'
-import type { ObservedSpendView, ProviderSnapshotView, UsageOverviewView, UsageProviderSummary, UsageTokenTotals, UsageWindowSummary } from '../core/types.ts'
+import type { ExternalCredentialStatus, ExternalCredentialTarget, ObservedSpendView, ProviderSnapshotView, UsageDaySummary, UsageOverviewView, UsageProviderSummary, UsageTokenTotals, UsageWindowSummary } from '../core/types.ts'
 
 /** The settings fields this section edits (immediate-apply semantics). */
 export interface UsageSettings {
@@ -29,6 +32,14 @@ export interface UsageSettings {
   volcanoEnabled?: boolean
   volcanoAccessKeyEnv?: string
   volcanoSecretKeyEnv?: string
+  customBalanceEnabled?: boolean
+  customBalanceLabel?: string
+  customBalanceCurrency?: string
+  customBalanceUrl?: string
+  customBalanceMethod?: string
+  customBalanceHeadersJson?: string
+  customBalanceExtractRemaining?: string
+  customBalanceAllowedHosts?: string
 }
 
 /** The registration-side face the section's slot entry injects. */
@@ -41,6 +52,10 @@ export interface UsageSectionFace {
   refresh: () => void
   /** Whether a forced refresh is in flight (component-local state mirrors it). */
   settings: SettingsScope<UsageSettings>
+  /** Write one external secret into the host credential store (write-only). */
+  setCredential: (target: ExternalCredentialTarget, value: string) => Promise<void>
+  /** Remove one external secret from the host credential store. */
+  clearCredential: (target: ExternalCredentialTarget) => Promise<void>
 }
 
 export interface UsageSectionProps extends UsageSectionFace {
@@ -97,68 +112,301 @@ function isConfigured(provider: ProviderSnapshotView): boolean {
   return provider.credential !== 'none'
 }
 
-function TotalsRow(props: { totals: UsageTokenTotals }): ReactNode {
-  const { totals } = props
+function totalOf(totals: UsageTokenTotals): number {
+  return totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens + totals.outputTokens
+}
+
+function cacheHitRate(totals: UsageTokenTotals): number | null {
+  const billed = totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens
+  if (billed <= 0) return null
+  return (totals.cacheReadTokens / billed) * 100
+}
+
+function TotalsRow(props: {
+  totals: UsageTokenTotals
+  rangeTotals?: UsageTokenTotals
+  allTotals?: UsageTokenTotals
+}): ReactNode {
+  const { totals, rangeTotals, allTotals } = props
+  const hit = cacheHitRate(totals)
+  const billed = totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens
+  const month = rangeTotals ?? emptyLike(totals)
+  const all = allTotals ?? month
+  const avgCost = totals.calls > 0 && totals.cost > 0 ? totals.cost / totals.calls : null
+
   return (
-    <div className={styles.statRow}>
-      <div className={styles.stat}>
-        <span className={styles.statValue}>{formatTokens(totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens + totals.outputTokens)}</span>
-        <span className={styles.statLabel}>{t('usage.tokens.total')}</span>
+    <>
+      <div className={styles.summaryGrid}>
+        <SummaryTile label={t('usage.summary.today')} totals={totals} />
+        <SummaryTile label={t('usage.summary.month')} totals={month} />
+        <SummaryTile label={t('usage.summary.all')} totals={all} />
       </div>
-      <div className={styles.stat}>
-        <span className={styles.statValue}>{formatTokens(totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens)}</span>
-        <span className={styles.statLabel}>{t('usage.tokens.input')}</span>
+      <div className={styles.kpiGrid}>
+        <div className={`${styles.kpiTile} ${styles.kpiAccent}`}>
+          <span className={`${styles.kpiValue} ${hit !== null && hit >= 90 ? styles.kpiGood : ''}`}>
+            {hit === null ? '—' : `${hit >= 10 ? Math.round(hit) : hit.toFixed(1)}%`}
+          </span>
+          <span className={styles.kpiLabel}>{t('usage.tokens.cacheHit')}</span>
+          <span className={styles.kpiHint}>
+            {t('usage.tokens.cacheRatio', {
+              read: formatTokens(totals.cacheReadTokens),
+              billed: formatTokens(billed),
+            })}
+          </span>
+        </div>
+        <div className={styles.kpiTile}>
+          <span className={styles.kpiValue}>{formatTokens(totalOf(totals))}</span>
+          <span className={styles.kpiLabel}>{t('usage.tokens.total')}</span>
+          <span className={styles.kpiHint}>
+            {t('usage.tokens.detail', {
+              input: formatTokens(totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens),
+              output: formatTokens(totals.outputTokens),
+            })}
+          </span>
+        </div>
+        <div className={styles.kpiTile}>
+          <span className={styles.kpiValue}>{avgCost === null ? '—' : formatCost(avgCost)}</span>
+          <span className={styles.kpiLabel}>{t('usage.metric.avgCost')}</span>
+          <span className={styles.kpiHint}>{t('usage.metric.avgCostHint', { n: totals.calls })}</span>
+        </div>
+        <div className={styles.kpiTile}>
+          <span className={styles.kpiValue}>{totals.calls}</span>
+          <span className={styles.kpiLabel}>{t('usage.tokens.calls')}</span>
+          <span className={styles.kpiHint}>{t('usage.calls', { n: totals.calls })}</span>
+        </div>
       </div>
-      <div className={styles.stat}>
-        <span className={styles.statValue}>{formatTokens(totals.outputTokens)}</span>
-        <span className={styles.statLabel}>{t('usage.tokens.output')}</span>
-      </div>
-      <div className={styles.stat}>
-        <span className={styles.statValue}>{formatTokens(totals.cacheReadTokens)}</span>
-        <span className={styles.statLabel}>{t('usage.tokens.cacheRead')}</span>
-      </div>
-      <div className={styles.stat}>
-        <span className={styles.statValue}>{formatTokens(totals.cacheWriteTokens)}</span>
-        <span className={styles.statLabel}>{t('usage.tokens.cacheWrite')}</span>
-      </div>
-      <div className={styles.stat}>
-        <span className={styles.statValue}>{formatTokens(totals.calls)}</span>
-        <span className={styles.statLabel}>{t('usage.calls', { n: totals.calls })}</span>
-      </div>
-    </div>
+      <TokenBuckets totals={totals} />
+    </>
   )
 }
 
-function balanceLine(provider: ProviderSnapshotView): ReactNode {
-  if (provider.balance !== undefined) {
-    return <span className={styles.providerBalance}>{provider.balance.currency.toUpperCase() === 'CNY' ? '¥' : provider.balance.currency.toUpperCase() === 'USD' ? '$' : ''}{provider.balance.totalBalance}{provider.balance.currency.toUpperCase() !== 'CNY' && provider.balance.currency.toUpperCase() !== 'USD' ? ' ' + provider.balance.currency.toUpperCase() : ''}</span>
-  }
-  if (provider.credential === 'oauth') return <span className={styles.muted}>{t('usage.oauth')}</span>
-  if (provider.credential === 'none') return <span className={styles.muted}>{t('usage.balance.noCredential')}</span>
-  if (!provider.supported) return <span className={styles.muted}>{t('usage.balance.unsupported')}</span>
-  return null
+function emptyLike(_totals: UsageTokenTotals): UsageTokenTotals {
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, calls: 0, cost: 0 }
 }
 
-function ProviderRow(props: { provider: ProviderSnapshotView; current?: string }): ReactNode {
-  const { provider, current } = props
+function SummaryTile(props: { label: string; totals: UsageTokenTotals }): ReactNode {
+  const { label, totals } = props
   return (
-    <div className={styles.providerRow} data-dsh-part="provider-row">
-      <span className={styles.providerName}>
-        {provider.displayName}
-        {current === provider.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
+    <div className={styles.summaryTile}>
+      <span className={styles.summaryLabel}>{label}</span>
+      <span className={styles.summaryValue}>{totals.cost > 0 ? formatCost(totals.cost) : formatTokens(totalOf(totals))}</span>
+      <span className={styles.summaryHint}>
+        {t('usage.summary.tokens')} {formatTokens(totalOf(totals))} · {t('usage.summary.calls')} {totals.calls}
+        {totals.cost > 0 ? ` · ${t('usage.summary.cost')} ${formatCost(totals.cost)}` : ''}
       </span>
-      <span className={styles.providerTokens}>{balanceLine(provider)}</span>
     </div>
   )
+}
+
+function TokenBuckets(props: { totals: UsageTokenTotals }): ReactNode {
+  const { totals } = props
+  const rows: Array<{ key: string; label: string; value: number }> = [
+    { key: 'input', label: t('usage.tokens.input'), value: totals.inputTokens },
+    { key: 'cacheRead', label: t('usage.tokens.cacheRead'), value: totals.cacheReadTokens },
+    { key: 'cacheWrite', label: t('usage.tokens.cacheWrite'), value: totals.cacheWriteTokens },
+    { key: 'output', label: t('usage.tokens.output'), value: totals.outputTokens },
+  ]
+  if (totals.reasoningTokens > 0) rows.push({ key: 'reasoning', label: t('usage.tokens.reasoning'), value: totals.reasoningTokens })
+  rows.push({ key: 'calls', label: t('usage.tokens.calls'), value: totals.calls })
+  return (
+    <div className={styles.bucketGrid} data-dsh-part="token-buckets">
+      <span className={styles.subTitle}>{t('usage.tokens.buckets')}</span>
+      <div className={styles.bucketRow}>
+        {rows.map((row) => (
+          <div key={row.key} className={styles.bucketCell}>
+            <span className={styles.bucketLabel}>{row.label}</span>
+            <span className={styles.bucketValue}>{row.key === 'calls' ? row.value : formatTokens(row.value)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ProviderBreakdown(props: {
+  rows: UsageProviderSummary[]
+  providers: ProviderSnapshotView[]
+  current?: string
+}): ReactNode {
+  const { rows, providers, current } = props
+  const [open, setOpen] = useState<Record<string, boolean>>({})
+  if (rows.length === 0) return null
+  return (
+    <div data-dsh-part="provider-list">
+      <span className={styles.subTitle}>{t('usage.today.breakdown')}</span>
+      {rows.map((row) => {
+        const provider = providers.find((item) => item.provider === row.provider)
+        const expanded = open[row.provider] === true
+        const hasModels = row.models.length > 0
+        return (
+          <div key={row.provider} className={styles.providerBlock}>
+            <button
+              type="button"
+              className={styles.providerRowBtn}
+              disabled={!hasModels}
+              aria-expanded={expanded}
+              onClick={() => {
+                if (!hasModels) return
+                setOpen((prev) => ({ ...prev, [row.provider]: !expanded }))
+              }}
+            >
+              <span className={styles.providerName}>
+                {provider?.displayName ?? row.provider}
+                {current === row.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
+              </span>
+              <span className={styles.providerMeta}>
+                <span className={styles.providerTokens}>
+                  {formatTokens(totalOf(row.totals))}
+                  {' · '}
+                  {t('usage.calls', { n: row.totals.calls })}
+                  {row.totals.cost > 0 ? ` · ${formatCost(row.totals.cost)}` : ''}
+                </span>
+                {hasModels && <span className={styles.expandHint}>{expanded ? t('usage.collapse') : t('usage.expand')}</span>}
+              </span>
+            </button>
+            {expanded && row.models.map((model) => (
+              <div key={model.model} className={styles.modelRow}>
+                <span className={styles.modelName}>{model.model}</span>
+                <span className={styles.providerTokens}>
+                  {formatTokens(totalOf(model.totals))}
+                  {' · '}
+                  {t('usage.calls', { n: model.totals.calls })}
+                  {model.totals.cost > 0 ? ` · ${formatCost(model.totals.cost)}` : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function balanceAmount(provider: ProviderSnapshotView): number | null {
+  if (provider.balance === undefined) return null
+  const raw = Number(provider.balance.totalBalance)
+  return Number.isFinite(raw) ? raw : null
+}
+
+function balanceStatus(provider: ProviderSnapshotView): string {
+  const amount = balanceAmount(provider)
+  if (amount === null) return t('usage.balance.empty')
+  if (amount <= 5) return t('usage.balance.low')
+  return t('usage.balance.ok')
+}
+
+/** Only providers with a real balance fact — skip unconfigured / unsupported noise. */
+function balanceCardRows(providers: ProviderSnapshotView[]): ProviderSnapshotView[] {
+  const seen = new Set<string>()
+  const rows: ProviderSnapshotView[] = []
+  for (const provider of providers) {
+    if (!isConfigured(provider) || balanceText(provider) === null) continue
+    const key = `${provider.displayName.trim().toLowerCase()}|${balanceText(provider)}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    rows.push(provider)
+  }
+  return rows
+}
+
+function BalanceCard(props: { providers: ProviderSnapshotView[]; current?: string }): ReactNode {
+  const rows = balanceCardRows(props.providers)
+  return (
+    <div className={styles.card} data-dsh-part="balance-card">
+      <div className={styles.cardHead}>
+        <span className={styles.cardTitle}>{t('usage.balance')}</span>
+      </div>
+      {rows.length === 0
+        ? <span className={styles.muted}>{t('usage.balance.empty')}</span>
+        : rows.map((provider) => {
+          const amount = balanceAmount(provider)
+          const low = amount !== null && amount <= 5
+          return (
+            <div key={provider.provider} className={styles.balanceRow}>
+              <span className={styles.balanceLead}>
+                <span className={`${styles.statusDot} ${low ? styles.statusWarn : styles.statusOk}`} aria-hidden="true" />
+                <span className={styles.providerName}>
+                  {provider.displayName}
+                  {props.current === provider.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
+                </span>
+              </span>
+              <span className={styles.balanceMeta}>
+                <span className={styles.providerBalance}>{balanceText(provider)}</span>
+                <span className={styles.balanceHint}>{balanceStatus(provider)}</span>
+              </span>
+            </div>
+          )
+        })}
+    </div>
+  )
+}
+
+function PlanPreview(props: {
+  providers: ProviderSnapshotView[]
+  currentId?: string
+  onSeeAll: () => void
+}): ReactNode {
+  const { providers, currentId, onSeeAll } = props
+  if (providers.length === 0) return null
+  const ranked = [...providers].sort((left, right) => {
+    if (left.provider === currentId) return -1
+    if (right.provider === currentId) return 1
+    return left.displayName.localeCompare(right.displayName)
+  }).slice(0, 3)
+  return (
+    <div className={styles.card} data-dsh-part="plan-preview">
+      <div className={styles.cardHead}>
+        <span className={styles.cardTitle}>{t('usage.plan.preview')}</span>
+        <button type="button" className={styles.linkBtn} onClick={onSeeAll}>{t('usage.plan.seeAll')}</button>
+      </div>
+      {ranked.map((provider) => (
+        <div key={provider.provider} className={styles.planPreviewBlock}>
+          <span className={styles.providerName}>
+            {provider.displayName}
+            {currentId === provider.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
+            <span className={styles.sourceChip}>{t(planSourceLabelKey(provider))}</span>
+            {provider.plan?.planName !== undefined ? <span className={styles.mutedInline}> · {provider.plan.planName}</span> : null}
+          </span>
+          <div className={styles.planMiniGrid}>
+            {orderedPlanWindows(provider.plan).slice(0, 3).map((window) => {
+              const percent = window.percent as number
+              const label = window.key === '5h' || window.key === 'week' || window.key === 'month'
+                ? t(`usage.plan.windows.${window.key}.short`)
+                : (window.name ?? window.key)
+              return (
+                <div key={window.key} className={styles.planMini}>
+                  <span className={styles.planMiniLabel}>
+                    <span>{label}</span>
+                    <span>{percent >= 10 ? Math.round(percent) : percent.toFixed(1)}%</span>
+                  </span>
+                  <span className={styles.bar}>
+                    <span className={toneClass(percent)} style={{ width: `${Math.min(100, Math.max(0, percent))}%`, display: 'block' }} />
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function balanceText(provider: ProviderSnapshotView): string | null {
+  if (provider.balance === undefined) return null
+  const currency = provider.balance.currency.toUpperCase()
+  const prefix = currency === 'CNY' ? '¥' : currency === 'USD' ? '$' : ''
+  const suffix = currency !== 'CNY' && currency !== 'USD' ? ` ${currency}` : ''
+  return `${prefix}${provider.balance.totalBalance}${suffix}`
 }
 
 /** The section component; the slot merges the face into these props. */
 export function UsageSectionCard(props: UsageSectionProps): ReactNode {
-  const { store, poll, refresh, settings } = props
+  const { store, poll, refresh, settings, setCredential, clearCredential } = props
   const ui = useSyncExternalStore(store.subscribe, store.getSnapshot)
   const settingsSnapshot = settings.getSnapshot()
   const settingsValue = settingsSnapshot.value ?? {}
-  const [tab, setTab] = useState<'usage' | 'plans' | 'bank'>('usage')
+  const [tab, setTab] = useState<'usage' | 'plans' | 'bank' | 'settings'>('usage')
   const [refreshing, setRefreshing] = useState(false)
   // The enable checkbox writes through the settings scope, so subscribing here
   // keeps the flag below live: the poll starts and stops with it instead of
@@ -221,36 +469,53 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
               ? t('usage.error', { error: ui.error ?? '' })
               : t('usage.loading')}
         </span>
-        <SettingsRow settings={settings} snapshot={settingsSnapshot.status === 'ready' ? settingsSnapshot : undefined} value={settingsValue} />
+        <div className={styles.tabs} role="tablist">
+          <button type="button" role="tab" aria-selected className={`${styles.tab} ${styles.tabActive}`}>
+            {t('usage.tab.settings')}
+          </button>
+        </div>
+        <SettingsRow
+          settings={settings}
+          snapshot={settingsSnapshot.status === 'ready' ? settingsSnapshot : undefined}
+          value={settingsValue}
+          setCredential={setCredential}
+          clearCredential={clearCredential}
+        />
       </div>
     )
   }
 
   const current = snapshot.current
   const currentProvider = snapshot.providers.find((provider) => provider.provider === current.provider)
+  const matchedPlan = currentPlanProvider(snapshot)
   // Peak-period line: only when the official DeepSeek family is in play this
   // session (the current route, or spend recorded under one today).
   const deepseekPeriod = deepseekPeriodAt(Date.now())
   const deepseekVisible = (current.provider !== undefined && isDeepSeekProviderRoute(current.provider))
     || snapshot.usage.today.providers.some((row) => isDeepSeekProviderRoute(row.provider))
-  // Plans tab: only configured routes with a real coding-plan/subscription
-  // adapter (planSupported; an older host without the flag falls back to "has
-  // a plan fact"). Balance-only providers (DeepSeek, ZenMux, ...) and
-  // unconfigured routes (credential 'none') never appear here.
-  const planProviders = snapshot.providers.filter((provider) => isConfigured(provider) && provider.plan !== undefined && provider.plan.windows.length > 0)
+  const planProviders = planTabProviders(snapshot.providers)
   const modelPlans = planProviders.filter((provider) => provider.source === undefined || provider.source === 'model')
   const cpamcPlans = planProviders.filter((provider) => provider.source === 'cpamc')
   const volcanoPlans = planProviders.filter((provider) => provider.source === 'volcano')
+  const previewPlans = planProviders.filter((provider) => provider.plan !== undefined && orderedPlanWindows(provider.plan).length > 0)
 
   return (
     <div className={styles.section} data-dsh-plugin="usage">
       <div className={styles.header} data-dsh-part="header">
         <span className={styles.currentProvider}>
           {currentProvider !== undefined
-            ? `${currentProvider.displayName}${current.model !== undefined && current.model !== '' ? ' · ' + current.model : ''}`
+            ? <>
+                <span className={styles.identityName}>
+                  {currentProvider.displayName}
+                  {current.model !== undefined && current.model !== '' ? ` · ${current.model}` : ''}
+                </span>
+                {balanceText(currentProvider) !== null && (
+                  <span className={styles.identityBalance}>{balanceText(currentProvider)}</span>
+                )}
+              </>
             : t('usage.noData')}
         </span>
-        <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <span className={styles.headerActions}>
           <span className={styles.muted}>{t('usage.updated', { time: formatTime(snapshot.updatedAt) })}</span>
           <button type="button" className={styles.refreshBtn} onClick={onRefresh} disabled={refreshing}>
             {refreshing ? t('usage.refreshing') : t('usage.refresh')}
@@ -268,53 +533,34 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
         <button type="button" role="tab" aria-selected={tab === 'bank'} className={tab === 'bank' ? `${styles.tab} ${styles.tabActive}` : styles.tab} onClick={() => setTab('bank')}>
           {t('usage.tab.bank')}
         </button>
+        <button type="button" role="tab" aria-selected={tab === 'settings'} className={tab === 'settings' ? `${styles.tab} ${styles.tabActive}` : styles.tab} onClick={() => setTab('settings')}>
+          {t('usage.tab.settings')}
+        </button>
       </div>
 
       {tab === 'usage' && (
         <>
           <div className={styles.card} data-dsh-part="today-card">
-            <span className={styles.cardTitle}>{t('usage.today')}</span>
-            {deepseekVisible && (
-              <span className={styles.muted} data-dsh-part="peak-status">
-                {t(deepseekPeriod.peak ? 'usage.peak.on' : 'usage.peak.off', { time: formatClock(deepseekPeriod.boundaryMs) })}
-              </span>
-            )}
-            {snapshot.usage.today.totals.calls === 0
+            <div className={styles.cardHead}>
+              <span className={styles.cardTitle}>{t('usage.today')}</span>
+              {deepseekVisible && (
+                <span className={styles.peakPill} data-dsh-part="peak-status">
+                  {t(deepseekPeriod.peak ? 'usage.peak.on' : 'usage.peak.off', { time: formatClock(deepseekPeriod.boundaryMs) })}
+                </span>
+              )}
+            </div>
+            {snapshot.usage.today.totals.calls === 0 && (snapshot.usage.range?.totals.calls ?? 0) === 0
               ? <span className={styles.muted}>{t('usage.noData')}</span>
-              : <TotalsRow totals={snapshot.usage.today.totals} />}
-            {snapshot.usage.today.totals.cost > 0 && (
-              <div className={styles.providerRow} data-dsh-part="today-cost">
-                <span className={styles.providerName}>{t('usage.today.cost')}</span>
-                <span className={styles.providerTokens}>{formatCost(snapshot.usage.today.totals.cost)}</span>
-              </div>
-            )}
-            {snapshot.usage.today.providers.length > 0 && (
-              <div data-dsh-part="provider-list">
-                {snapshot.usage.today.providers.map((row) => (
-                  <div key={row.provider} className={styles.providerRow}>
-                    <span className={styles.providerName}>
-                      {snapshot.providers.find((provider) => provider.provider === row.provider)?.displayName ?? row.provider}
-                      {current.provider === row.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
-                    </span>
-                    <span className={styles.providerTokens}>{formatTokens(row.totals.inputTokens + row.totals.cacheReadTokens + row.totals.cacheWriteTokens + row.totals.outputTokens)} · {t('usage.calls', { n: row.totals.calls })}{row.totals.cost > 0 ? ` · ${formatCost(row.totals.cost)}` : ''}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className={styles.card} data-dsh-part="balance-card">
-            <span className={styles.cardTitle}>{t('usage.balance')}</span>
-            {(() => {
-              const configured = snapshot.providers.filter(isConfigured)
-              const rows = configured.filter((provider) => provider.balanceSupported === true || (provider.balanceSupported === undefined && provider.supported))
-              if (rows.length === 0) {
-                return <span className={styles.muted}>{configured.length === 0 ? t('usage.balance.noneConfigured') : t('usage.balance.unsupported')}</span>
-              }
-              return rows.map((provider) => (
-                <ProviderRow key={provider.provider} provider={provider} current={current.provider} />
-              ))
-            })()}
+              : <TotalsRow
+                  totals={snapshot.usage.today.totals}
+                  rangeTotals={snapshot.usage.range?.totals}
+                  allTotals={snapshot.usage.all?.totals}
+                />}
+            <ProviderBreakdown
+              rows={snapshot.usage.today.providers}
+              providers={snapshot.providers}
+              current={current.provider}
+            />
             {snapshot.providers.some((provider) => isConfigured(provider) && provider.error !== undefined) && (
               <span className={styles.errorLine}>
                 {snapshot.providers.filter((provider) => isConfigured(provider) && provider.error !== undefined).map((provider) => `${provider.displayName}: ${t('usage.provider.error', { error: provider.error ?? '' })}`).join(t('usage.errorListSeparator'))}
@@ -322,9 +568,17 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
             )}
           </div>
 
-          <RangeCard range={snapshot.usage.range} providers={snapshot.providers} currentProvider={current.provider} />
+          <BalanceCard providers={snapshot.providers} current={current.provider} />
 
-          <SettingsRow settings={settings} snapshot={settingsSnapshot.status === 'ready' ? settingsSnapshot : undefined} value={settingsValue} />
+          <PlanPreview
+            providers={previewPlans}
+            currentId={matchedPlan?.provider}
+            onSeeAll={() => setTab('plans')}
+          />
+
+          <HeatmapCard days={snapshot.usage.days} />
+          <RangeCard range={snapshot.usage.range} providers={snapshot.providers} currentProvider={current.provider} />
+          <HistoryCard days={snapshot.usage.days} />
         </>
       )}
 
@@ -332,20 +586,130 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
         planProviders.length === 0
           ? <div className={styles.card}><span className={styles.muted}>{t('usage.plan.noneConfigured')}</span></div>
           : <>
-              <PlanGroup title={t('usage.plan.group.models')} providers={modelPlans} current={current.provider} />
-              <PlanGroup title={t('usage.plan.group.cpamc')} providers={cpamcPlans} current={current.provider} />
-              <PlanGroup title={t('usage.plan.group.volcano')} providers={volcanoPlans} current={current.provider} />
+              <PlanGroup title={t('usage.plan.group.models')} providers={modelPlans} currentId={matchedPlan?.provider} showEmpty />
+              <PlanGroup title={t('usage.plan.group.cpamc')} providers={cpamcPlans} currentId={matchedPlan?.provider} showEmpty />
+              <PlanGroup title={t('usage.plan.group.volcano')} providers={volcanoPlans} currentId={matchedPlan?.provider} showEmpty />
             </>
       )}
 
       {tab === 'bank' && <VoucherCard window={snapshot.usage.all ?? snapshot.usage.range} observedSpend={snapshot.usage.observedSpend} />}
+
+      {tab === 'settings' && (
+        <SettingsRow
+          settings={settings}
+          snapshot={settingsSnapshot.status === 'ready' ? settingsSnapshot : undefined}
+          value={settingsValue}
+          providers={snapshot.providers}
+          credentials={snapshot.externalCredentials}
+          setCredential={setCredential}
+          clearCredential={clearCredential}
+        />
+      )}
     </div>
   )
 }
 
-function PlanGroup(props: { title: string; providers: ProviderSnapshotView[]; current?: string }): ReactNode {
-  if (props.providers.length === 0) return null
-  return <div className={styles.planGroup}><span className={styles.cardTitle}>{props.title}</span>{props.providers.map((provider) => <PlanCard key={provider.provider} provider={provider} current={props.current} />)}</div>
+function PlanGroup(props: {
+  title: string
+  providers: ProviderSnapshotView[]
+  currentId?: string
+  showEmpty?: boolean
+}): ReactNode {
+  const { title, providers, currentId, showEmpty } = props
+  if (providers.length === 0 && !showEmpty) return null
+  return (
+    <div className={styles.planGroup}>
+      <span className={styles.cardTitle}>{t('usage.plan.groupCount', { title, n: providers.length })}</span>
+      {providers.length === 0
+        ? <div className={styles.card}><span className={styles.muted}>{t('usage.plan.groupEmpty')}</span></div>
+        : providers.map((provider) => <PlanCard key={provider.provider} provider={provider} currentId={currentId} />)}
+    </div>
+  )
+}
+
+function HeatmapCard(props: { days: UsageDaySummary[] }): ReactNode {
+  const grid = buildHeatmapGrid(props.days)
+  const hasData = grid.cells.some((cell) => cell.tokens > 0)
+  return (
+    <div className={styles.card} data-dsh-part="heatmap-card">
+      <div className={styles.cardHead}>
+        <span className={styles.cardTitle}>{t('usage.heatmap')}</span>
+        <span className={styles.muted}>{t('usage.heatmap.weeks')}</span>
+      </div>
+      {!hasData
+        ? <span className={styles.muted}>{t('usage.heatmap.empty')}</span>
+        : <>
+            <div className={styles.heatmapWrap}>
+              <div className={styles.heatmapDow}>
+                <span>{t('usage.heatmap.dow.mon')}</span>
+                <span />
+                <span>{t('usage.heatmap.dow.wed')}</span>
+                <span />
+                <span>{t('usage.heatmap.dow.fri')}</span>
+                <span />
+                <span />
+              </div>
+              <div className={styles.heatmapMain}>
+                <div className={styles.heatmapMonths}>
+                  {grid.monthLabels.map((label, index) => (
+                    <span key={`m${index}`}>{label}</span>
+                  ))}
+                </div>
+                <div className={styles.heatmapGrid26}>
+                  {grid.cells.map((cell) => {
+                    const cost = cell.totals.cost > 0 ? ` · ${formatCost(cell.totals.cost)}` : ''
+                    return (
+                      <span
+                        key={cell.date}
+                        className={`${styles.heatmapCell26} ${styles[`heatmapL${cell.level}`]} ${cell.isToday ? styles.heatmapToday : ''}`}
+                        title={t('usage.heatmap.day', {
+                          date: cell.date,
+                          tokens: formatTokens(cell.tokens),
+                          calls: t('usage.calls', { n: cell.totals.calls }),
+                          cost,
+                        })}
+                      />
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+            <div className={styles.heatmapLegend}>
+              <span>{t('usage.heatmap.less')}</span>
+              <span className={`${styles.heatmapCell26} ${styles.heatmapL0}`} />
+              <span className={`${styles.heatmapCell26} ${styles.heatmapL1}`} />
+              <span className={`${styles.heatmapCell26} ${styles.heatmapL2}`} />
+              <span className={`${styles.heatmapCell26} ${styles.heatmapL3}`} />
+              <span className={`${styles.heatmapCell26} ${styles.heatmapL4}`} />
+              <span>{t('usage.heatmap.more')}</span>
+            </div>
+          </>}
+    </div>
+  )
+}
+
+function HistoryCard(props: { days: UsageDaySummary[] }): ReactNode {
+  const days = [...props.days].slice(-14).reverse()
+  return (
+    <div className={styles.card} data-dsh-part="history-card">
+      <div className={styles.cardHead}>
+        <span className={styles.cardTitle}>{t('usage.history')}</span>
+      </div>
+      {days.length === 0
+        ? <span className={styles.muted}>{t('usage.history.empty')}</span>
+        : days.map((day) => (
+          <div key={day.date} className={styles.historyRow}>
+            <span className={styles.historyDate}>{day.date}</span>
+            <span className={styles.providerTokens}>
+              {formatTokens(totalOf(day.totals))}
+              {' · '}
+              {t('usage.calls', { n: day.totals.calls })}
+              {day.totals.cost > 0 ? ` · ${formatCost(day.totals.cost)}` : ''}
+            </span>
+          </div>
+        ))}
+    </div>
+  )
 }
 
 /** How many model sub-bars render under one provider bar. */
@@ -365,7 +729,17 @@ function RangeCard(props: { range?: UsageOverviewView['usage']['range']; provide
   const nameOf = (id: string): string => providers.find((provider) => provider.provider === id)?.displayName ?? id
   return (
     <div className={styles.card} data-dsh-part="trend-card">
-      <span className={styles.cardTitle}>{t('usage.trend')}</span>
+      <div className={styles.cardHead}>
+        <span className={styles.cardTitle}>{t('usage.trend')}</span>
+        {grandTotal > 0 && (
+          <span className={styles.cardSummary}>
+            {t('usage.trend.summary', {
+              tokens: formatTokens(grandTotal),
+              calls: t('usage.calls', { n: range.totals.calls }),
+            })}
+          </span>
+        )}
+      </div>
       {range.providers.length === 0 || grandTotal === 0
         ? <span className={styles.muted}>{t('usage.noData')}</span>
         : <div className={styles.chart} data-dsh-part="usage-chart">
@@ -411,10 +785,6 @@ function ChartProviderRow(props: { row: UsageProviderSummary; name: string; max:
       })}
     </div>
   )
-}
-
-function totalOf(totals: UsageTokenTotals): number {
-  return totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens + totals.outputTokens
 }
 
 /**
@@ -516,38 +886,43 @@ function VoucherCard(props: { window?: UsageWindowSummary; observedSpend?: Obser
   )
 }
 
-function PlanCard(props: { provider: ProviderSnapshotView; current?: string }): ReactNode {
-  const { provider, current } = props
+function PlanCard(props: { provider: ProviderSnapshotView; currentId?: string }): ReactNode {
+  const { provider, currentId } = props
+  const windows = orderedPlanWindows(provider.plan)
   return (
     <div className={`${styles.card} ${styles.planCard}`} data-dsh-part="plan-card">
       <div className={styles.planHead}>
         <span className={styles.planName}>
           {provider.displayName}
-          {current === provider.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
+          {currentId === provider.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
+          <span className={styles.sourceChip}>{t(planSourceLabelKey(provider))}</span>
           {provider.plan?.planName !== undefined ? ` · ${provider.plan.planName}` : ''}
         </span>
       </div>
       {provider.error !== undefined && <span className={styles.errorLine}>{t('usage.provider.error', { error: provider.error })}</span>}
       {provider.credential === 'none' && provider.plan === undefined
         ? <span className={styles.muted}>{t('usage.balance.noCredential')}</span>
-        : provider.plan === undefined || provider.plan.windows.length === 0
-          ? <span className={styles.muted}>{t('usage.plan.noPlan')}</span>
-          : provider.plan.windows.map((window) => (
-            <div key={window.key} className={styles.windowRow} data-dsh-part="plan-window">
-              <span className={styles.windowLabel}>
-                <span>{window.name ?? t(`usage.plan.windows.${window.key}`)}</span>
-                <span>{window.percent !== undefined ? `${window.percent >= 10 ? Math.round(window.percent) : window.percent.toFixed(1)}%` : ''}</span>
-              </span>
-              {window.percent !== undefined && (
-                <span className={styles.bar}>
-                  <span className={toneClass(window.percent)} style={{ width: `${Math.min(100, Math.max(0, window.percent))}%`, display: 'block' }} />
+        : windows.length === 0
+          ? (provider.error === undefined ? <span className={styles.muted}>{t('usage.plan.noPlan')}</span> : null)
+          : windows.map((window) => {
+            const percent = window.percent as number
+            return (
+              <div key={window.key} className={styles.windowRow} data-dsh-part="plan-window">
+                <span className={styles.windowLabel}>
+                  <span>{window.name ?? t(`usage.plan.windows.${window.key}`)}</span>
+                  <span>{`${percent >= 10 ? Math.round(percent) : percent.toFixed(1)}%`}</span>
                 </span>
-              )}
-              {window.resetsAt !== undefined && (
-                <span className={styles.resetLine}>{t('usage.plan.reset', { date: new Date(window.resetsAt).toLocaleString() })}</span>
-              )}
-            </div>
-          ))}
+                <span className={styles.bar}>
+                  <span className={toneClass(percent)} style={{ width: `${Math.min(100, Math.max(0, percent))}%`, display: 'block' }} />
+                </span>
+                <span className={styles.resetLine}>
+                  {window.resetsAt !== undefined
+                    ? t('usage.plan.reset', { date: new Date(window.resetsAt).toLocaleString() })
+                    : '—'}
+                </span>
+              </div>
+            )
+          })}
     </div>
   )
 }
@@ -556,25 +931,39 @@ function SettingsRow(props: {
   settings: UsageSectionProps['settings']
   snapshot?: { writable: boolean }
   value: UsageSettings
+  providers?: ProviderSnapshotView[]
+  credentials?: ExternalCredentialStatus
+  setCredential: UsageSectionProps['setCredential']
+  clearCredential: UsageSectionProps['clearCredential']
 }): ReactNode {
-  const { settings, snapshot, value } = props
-  const disabled = snapshot === undefined || !snapshot.writable
+  const { settings, snapshot, value, providers = [], credentials, setCredential, clearCredential } = props
+  const disabled = snapshot !== undefined && !snapshot.writable
   const bubbleMode = typeof value.bubbleMode === 'string' && ['always', 'change', 'off'].includes(value.bubbleMode) ? value.bubbleMode : 'always'
+  const cpamc = providers.find((provider) => provider.source === 'cpamc')
+  const volcano = providers.find((provider) => provider.source === 'volcano')
+  const cpamcOn = value.cpamcEnabled ?? false
+  const volcanoOn = value.volcanoEnabled ?? false
+  const customOn = value.customBalanceEnabled ?? false
+  const custom = providers.find((provider) => provider.source === 'custom')
+  const headerVars = customBalanceCredentialVars(value.customBalanceHeadersJson ?? '')
   return (
     <div className={styles.card} data-dsh-part="settings-row">
       <span className={styles.cardTitle}>{t('usage.config.title')}</span>
-      <div className={styles.settingsGrid}>
-        <label className={styles.settingItem}>
+      {disabled && <span className={styles.muted}>{t('usage.config.readonly')}</span>}
+
+      <div className={styles.settingsSection}>
+        <span className={styles.subTitle}>{t('usage.config.basic')}</span>
+        <label className={styles.settingRow}>
+          <span>{t('usage.config.enabled')}</span>
           <input
             type="checkbox"
             checked={value.enabled ?? true}
             disabled={disabled}
             onChange={(event) => { void settings.set('enabled', event.target.checked) }}
           />
-          {t('usage.config.enabled')}
         </label>
-        <label className={styles.settingItem}>
-          {t('usage.config.pollIntervalSec')}
+        <label className={styles.settingRow}>
+          <span>{t('usage.config.pollIntervalSec')}</span>
           <input
             type="number"
             min={30}
@@ -587,8 +976,12 @@ function SettingsRow(props: {
             }}
           />
         </label>
-        <label className={styles.settingItem}>
-          {t('usage.config.bubbleMode')}
+      </div>
+
+      <div className={styles.settingsSection}>
+        <span className={styles.subTitle}>{t('usage.config.display')}</span>
+        <label className={styles.settingRow}>
+          <span>{t('usage.config.bubbleMode')}</span>
           <select
             value={bubbleMode}
             disabled={disabled}
@@ -599,20 +992,200 @@ function SettingsRow(props: {
             <option value="off">{t('usage.config.bubbleMode.off')}</option>
           </select>
         </label>
-        <label className={styles.settingItem}>
-          <input type="checkbox" checked={value.cpamcEnabled ?? false} disabled={disabled} onChange={(event) => { void settings.set('cpamcEnabled', event.target.checked) }} />
-          {t('usage.config.cpamc')}
-        </label>
-        <label className={styles.settingItem}>
-          CPAMC URL
-          <input type="text" value={value.cpamcBaseURL ?? 'http://127.0.0.1:8317'} disabled={disabled} onChange={(event) => { void settings.set('cpamcBaseURL', event.target.value) }} />
-        </label>
-        <label className={styles.settingItem}>
-          <input type="checkbox" checked={value.volcanoEnabled ?? false} disabled={disabled} onChange={(event) => { void settings.set('volcanoEnabled', event.target.checked) }} />
-          {t('usage.config.volcano')}
-        </label>
       </div>
-      <span className={styles.muted}>{t('usage.config.externalHint')}</span>
+
+      <div className={styles.settingsSection}>
+        <span className={styles.subTitle}>{t('usage.config.external')}</span>
+        <label className={styles.settingRow}>
+          <span>{t('usage.config.cpamc')}</span>
+          <input type="checkbox" checked={cpamcOn} disabled={disabled} onChange={(event) => { void settings.set('cpamcEnabled', event.target.checked) }} />
+        </label>
+        <label className={styles.settingRow}>
+          <span>{t('usage.config.cpamcUrl')}</span>
+          <input type="text" value={value.cpamcBaseURL ?? 'http://127.0.0.1:8317'} disabled={disabled || !cpamcOn} onChange={(event) => { void settings.set('cpamcBaseURL', event.target.value) }} />
+        </label>
+        <SecretField
+          label={t('usage.config.cpamcToken')}
+          configured={credentials?.cpamc === true}
+          disabled={disabled || !cpamcOn}
+          onSave={(secret) => setCredential('cpamc', secret)}
+          onClear={() => clearCredential('cpamc')}
+        />
+        {cpamc !== undefined && (
+          <span className={styles.settingHint}>
+            {cpamc.displayName}
+            {cpamc.error !== undefined
+              ? ` · ${cpamc.error}`
+              : `${balanceText(cpamc) !== null ? ` · ${balanceText(cpamc)}` : ''}${
+                cpamc.plan?.windows?.[0]?.percent !== undefined
+                  ? ` · ${t('usage.plan.windows.5h.short')} ${Math.round(cpamc.plan.windows[0].percent as number)}%`
+                  : ''
+              }`}
+          </span>
+        )}
+        <label className={styles.settingRow}>
+          <span>{t('usage.config.volcano')}</span>
+          <input type="checkbox" checked={volcanoOn} disabled={disabled} onChange={(event) => { void settings.set('volcanoEnabled', event.target.checked) }} />
+        </label>
+        <SecretField
+          label={t('usage.config.volcanoAk')}
+          configured={credentials?.volcanoAk === true}
+          disabled={disabled || !volcanoOn}
+          onSave={(secret) => setCredential('volcano.ak', secret)}
+          onClear={() => clearCredential('volcano.ak')}
+        />
+        <SecretField
+          label={t('usage.config.volcanoSk')}
+          configured={credentials?.volcanoSk === true}
+          disabled={disabled || !volcanoOn}
+          onSave={(secret) => setCredential('volcano.sk', secret)}
+          onClear={() => clearCredential('volcano.sk')}
+        />
+        {volcano !== undefined && (
+          <span className={styles.settingHint}>
+            {volcano.displayName}
+            {volcano.error !== undefined
+              ? ` · ${volcano.error}`
+              : `${balanceText(volcano) !== null ? ` · ${balanceText(volcano)}` : ''}${
+                volcano.plan?.windows?.[0]?.percent !== undefined
+                  ? ` · ${t('usage.plan.windows.5h.short')} ${Math.round(volcano.plan.windows[0].percent as number)}%`
+                  : ''
+              }`}
+          </span>
+        )}
+        <span className={styles.muted}>{t('usage.config.externalHint')}</span>
+      </div>
+
+      <div className={styles.settingsSection}>
+        <span className={styles.subTitle}>{t('usage.config.customBalance')}</span>
+        <label className={styles.settingRow}>
+          <span>{t('usage.config.customBalance.enabled')}</span>
+          <input type="checkbox" checked={customOn} disabled={disabled} onChange={(event) => { void settings.set('customBalanceEnabled', event.target.checked) }} />
+        </label>
+        <label className={styles.settingRow}>
+          <span>{t('usage.config.customBalance.label')}</span>
+          <input type="text" value={value.customBalanceLabel ?? 'Custom balance'} disabled={disabled || !customOn} onChange={(event) => { void settings.set('customBalanceLabel', event.target.value) }} />
+        </label>
+        <label className={styles.settingRow}>
+          <span>{t('usage.config.customBalance.currency')}</span>
+          <input type="text" value={value.customBalanceCurrency ?? 'USD'} disabled={disabled || !customOn} onChange={(event) => { void settings.set('customBalanceCurrency', event.target.value) }} />
+        </label>
+        <label className={styles.settingRow}>
+          <span>{t('usage.config.customBalance.url')}</span>
+          <input type="text" value={value.customBalanceUrl ?? ''} disabled={disabled || !customOn} placeholder="https://…" onChange={(event) => { void settings.set('customBalanceUrl', event.target.value) }} />
+        </label>
+        <label className={styles.settingRow}>
+          <span>{t('usage.config.customBalance.method')}</span>
+          <select value={(value.customBalanceMethod ?? 'GET').toUpperCase()} disabled={disabled || !customOn} onChange={(event) => { void settings.set('customBalanceMethod', event.target.value) }}>
+            <option value="GET">GET</option>
+            <option value="POST">POST</option>
+          </select>
+        </label>
+        <label className={styles.settingRow}>
+          <span>{t('usage.config.customBalance.headers')}</span>
+          <textarea
+            rows={3}
+            value={value.customBalanceHeadersJson ?? '{"Authorization":"Bearer {{API_KEY}}"}'}
+            disabled={disabled || !customOn}
+            onChange={(event) => { void settings.set('customBalanceHeadersJson', event.target.value) }}
+          />
+        </label>
+        <label className={styles.settingRow}>
+          <span>{t('usage.config.customBalance.extract')}</span>
+          <input type="text" value={value.customBalanceExtractRemaining ?? 'data.total_available'} disabled={disabled || !customOn} onChange={(event) => { void settings.set('customBalanceExtractRemaining', event.target.value) }} />
+        </label>
+        <label className={styles.settingRow}>
+          <span>{t('usage.config.customBalance.allowedHosts')}</span>
+          <input type="text" value={value.customBalanceAllowedHosts ?? ''} disabled={disabled || !customOn} placeholder="api.example.com" onChange={(event) => { void settings.set('customBalanceAllowedHosts', event.target.value) }} />
+        </label>
+        {headerVars.map((name) => (
+          <SecretField
+            key={name}
+            label={t('usage.config.customBalance.var', { name })}
+            configured={credentials?.customVars?.[name] === true}
+            disabled={disabled || !customOn}
+            onSave={(secret) => setCredential(`customVar:${name}`, secret)}
+            onClear={() => clearCredential(`customVar:${name}`)}
+          />
+        ))}
+        {custom !== undefined && (
+          <span className={styles.settingHint}>
+            {custom.displayName}
+            {custom.error !== undefined
+              ? ` · ${custom.error}`
+              : balanceText(custom) !== null ? ` · ${balanceText(custom)}` : ''}
+          </span>
+        )}
+        <span className={styles.muted}>{t('usage.config.customBalance.hint')}</span>
+      </div>
+    </div>
+  )
+}
+
+function SecretField(props: {
+  label: string
+  configured: boolean
+  disabled: boolean
+  onSave: (value: string) => Promise<void>
+  onClear: () => Promise<void>
+}): ReactNode {
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | undefined>()
+  const save = (): void => {
+    const value = draft.trim()
+    if (value === '' || busy || props.disabled) return
+    setBusy(true)
+    setError(undefined)
+    void props.onSave(value).then(() => {
+      setDraft('')
+      setBusy(false)
+    }, (err: unknown) => {
+      setBusy(false)
+      setError(err instanceof Error ? err.message : String(err))
+    })
+  }
+  const clear = (): void => {
+    if (busy || props.disabled || !props.configured) return
+    setBusy(true)
+    setError(undefined)
+    void props.onClear().then(() => {
+      setDraft('')
+      setBusy(false)
+    }, (err: unknown) => {
+      setBusy(false)
+      setError(err instanceof Error ? err.message : String(err))
+    })
+  }
+  return (
+    <div className={styles.secretField}>
+      <div className={styles.settingRow}>
+        <span>
+          {props.label}
+          <span className={styles.secretStatus} data-configured={props.configured ? 'yes' : 'no'}>
+            {props.configured ? t('usage.config.secret.configured') : t('usage.config.secret.missing')}
+          </span>
+        </span>
+      </div>
+      <div className={styles.secretControls}>
+        <input
+          type="password"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder={props.configured ? t('usage.config.secret.replace') : t('usage.config.secret.placeholder')}
+          value={draft}
+          disabled={props.disabled || busy}
+          onChange={(event) => { setDraft(event.target.value) }}
+          onKeyDown={(event) => { if (event.key === 'Enter') save() }}
+        />
+        <button type="button" className={styles.refreshBtn} disabled={props.disabled || busy || draft.trim() === ''} onClick={save}>
+          {t('usage.config.secret.save')}
+        </button>
+        <button type="button" className={styles.refreshBtn} disabled={props.disabled || busy || !props.configured} onClick={clear}>
+          {t('usage.config.secret.clear')}
+        </button>
+      </div>
+      {error !== undefined && <span className={styles.muted}>{error}</span>}
     </div>
   )
 }

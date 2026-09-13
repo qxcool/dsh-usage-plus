@@ -27,7 +27,8 @@ declare module '@deepseek-ai/cordis' {
 }
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface SlotMap {
-        'conversation.input.dock': {
+        /** Trailing composer controls — beside model / official ContextMeter. */
+        'conversation.input.right': {
             kind: 'list';
             scope: 'session-maybe';
         };

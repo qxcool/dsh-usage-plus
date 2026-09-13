@@ -101,40 +101,59 @@ function cpamcWindows(provider: 'codex' | 'kimi' | 'claude', body: unknown): Pla
 
 /** Query supported accounts through CPAMC's fixed, read-only management routes. */
 export async function probeCpamc(options: CpamcOptions): Promise<ProviderSnapshotState[]> {
+  if (!options.enabled) return []
+  const statusRow = (error: string): ProviderSnapshotState[] => [{
+    provider: 'cpamc:status',
+    displayName: 'CPAMC · CLI Proxy API',
+    credential: options.managementKey ? 'env' : 'none',
+    supported: true,
+    planSupported: true,
+    source: 'cpamc',
+    planError: error,
+    updatedAt: Date.now(),
+  }]
+  if (!options.managementKey) return statusRow('missing management token')
   const origin = cpamcOrigin(options.baseURL)
-  if (!options.enabled || origin === undefined || !options.managementKey) return []
-  const auth = await cpamcFetch(origin, '/v0/management/auth-files', options.managementKey)
-  const output: ProviderSnapshotState[] = []
-  let index = 0
-  for (const raw of listOf(auth).slice(0, 16)) {
-    if (typeof raw !== 'object' || raw === null) continue
-    const account = raw as Record<string, unknown>
-    const authIndex = String(account.auth_index ?? account.authIndex ?? '')
-    const provider = cpamcProvider(account)
-    if (!authIndex || provider === undefined) continue
-    const request = cpamcRequest(provider, account)
-    const envelope = await cpamcFetch(origin, '/v0/management/api-call', options.managementKey, {
-      method: 'POST',
-      body: JSON.stringify({ auth_index: authIndex, method: 'GET', url: request.url, header: request.headers }),
-    })
-    if (typeof envelope !== 'object' || envelope === null) continue
-    const wrapped = envelope as Record<string, unknown>
-    const status = Number(wrapped.status_code)
-    if (status < 200 || status >= 300 || typeof wrapped.body !== 'string') continue
-    let body: unknown
-    try { body = JSON.parse(wrapped.body) } catch { continue }
-    const windows = cpamcWindows(provider, body).filter((window) => window.percent !== undefined)
-    if (windows.length === 0) continue
-    const label = String(account.email ?? account.label ?? `账号 ${index + 1}`)
-    output.push({
-      provider: `cpamc:${provider}:${index}`,
-      displayName: `CPAMC · ${provider} · ${label.replace(/^(.).*(@.*)$/, '$1***$2')}`,
-      credential: 'env', supported: true, planSupported: true, source: 'cpamc',
-      plan: { windows, updatedAt: Date.now() }, updatedAt: Date.now(),
-    })
-    index += 1
+  if (origin === undefined) {
+    return statusRow('CPAMC URL must be a loopback origin such as http://127.0.0.1:8317')
   }
-  return output
+  try {
+    const auth = await cpamcFetch(origin, '/v0/management/auth-files', options.managementKey)
+    const output: ProviderSnapshotState[] = []
+    let index = 0
+    for (const raw of listOf(auth).slice(0, 16)) {
+      if (typeof raw !== 'object' || raw === null) continue
+      const account = raw as Record<string, unknown>
+      const authIndex = String(account.auth_index ?? account.authIndex ?? '')
+      const provider = cpamcProvider(account)
+      if (!authIndex || provider === undefined) continue
+      const request = cpamcRequest(provider, account)
+      const envelope = await cpamcFetch(origin, '/v0/management/api-call', options.managementKey, {
+        method: 'POST',
+        body: JSON.stringify({ auth_index: authIndex, method: 'GET', url: request.url, header: request.headers }),
+      })
+      if (typeof envelope !== 'object' || envelope === null) continue
+      const wrapped = envelope as Record<string, unknown>
+      const status = Number(wrapped.status_code)
+      if (status < 200 || status >= 300 || typeof wrapped.body !== 'string') continue
+      let body: unknown
+      try { body = JSON.parse(wrapped.body) } catch { continue }
+      const windows = cpamcWindows(provider, body).filter((window) => window.percent !== undefined)
+      if (windows.length === 0) continue
+      const label = String(account.email ?? account.label ?? `账号 ${index + 1}`)
+      output.push({
+        provider: `cpamc:${provider}:${index}`,
+        displayName: `CPAMC · ${provider} · ${label.replace(/^(.).*(@.*)$/, '$1***$2')}`,
+        credential: 'env', supported: true, planSupported: true, source: 'cpamc',
+        plan: { windows, updatedAt: Date.now() }, updatedAt: Date.now(),
+      })
+      index += 1
+    }
+    if (output.length === 0) return statusRow('no quota accounts returned by CPAMC')
+    return output
+  } catch (error) {
+    return statusRow(error instanceof Error ? error.message : String(error))
+  }
 }
 
 const VOLC_HOST = 'open.volcengineapi.com'
@@ -159,31 +178,80 @@ function volcHeaders(ak: string, sk: string, query: Record<string, string>): Rec
   return { 'x-date': xDate, 'x-content-sha256': bodySha, host: VOLC_HOST, authorization: `HMAC-SHA256 Credential=${ak}/${scope}, SignedHeaders=${signedHeaders}, Signature=${hex}` }
 }
 
-function volcKey(raw: unknown): string | undefined {
-  const value = String(raw ?? '').toLowerCase()
-  if (value.includes('session') || value.includes('5h') || value.includes('five')) return '5h'
-  if (value.includes('week')) return 'week'
-  if (value.includes('month')) return 'month'
+function volcKey(raw: unknown): '5h' | 'week' | 'month' | undefined {
+  const original = String(raw ?? '')
+  const value = original.toLowerCase().replace(/[^a-z0-9]/g, '')
+  if (
+    value === '5h' || value === 'fivehour' || value === 'fiveh' || value === 'session'
+    || value === 'rolling' || value === 'hour5' || value.includes('5h') || value.includes('fivehour')
+    || value.includes('session') || original.includes('小时')
+  ) return '5h'
+  if (value.includes('week') || value === '7d' || value === 'seven' || original.includes('周')) return 'week'
+  if (value.includes('month') || value === '30d' || original.includes('月')) return 'month'
   return undefined
 }
 
 function volcWindows(body: unknown): PlanWindowView[] {
   if (typeof body !== 'object' || body === null) return []
   const root = body as Record<string, any>
-  const result = root.Result ?? root.result ?? root.data?.Result ?? root.data ?? root
-  const rows = result?.QuotaUsage ?? result?.quotaUsage ?? result?.UsageDetails ?? result?.usageDetails ?? result?.periods ?? result?.items
-  if (!Array.isArray(rows)) return []
+  const candidates: unknown[] = [
+    root.Result, root.result, root.data?.Result, root.data?.result, root.data, root,
+  ]
   const windows: PlanWindowView[] = []
-  for (const row of rows) {
-    if (typeof row !== 'object' || row === null) continue
-    const key = volcKey(row.Level ?? row.level ?? row.QuotaType ?? row.quotaType ?? row.Label ?? row.label ?? row.Period ?? row.period)
-    if (key === undefined) continue
-    let percent = clamp(row.Percent ?? row.percent ?? row.percentage ?? row.UsedPercent ?? row.usedPercent)
-    const total = Number(row.Total ?? row.total ?? row.Limit ?? row.limit ?? row.Cap ?? row.cap)
-    const used = Number(row.Used ?? row.used ?? row.Usage ?? row.usage)
-    if (percent === undefined && Number.isFinite(total) && total > 0 && Number.isFinite(used)) percent = clamp(used / total * 100)
-    if (percent !== undefined) windows.push({ key, percent, resetsAt: iso(row.ResetTimestamp ?? row.resetTimestamp ?? row.ResetTime ?? row.resetTime ?? row.resetAt) })
+  const seen = new Set<string>()
+
+  const push = (key: '5h' | 'week' | 'month', percent: number | undefined, resetsAt?: string): void => {
+    if (percent === undefined || seen.has(key)) return
+    seen.add(key)
+    windows.push({ key, percent, ...(resetsAt !== undefined ? { resetsAt } : {}) })
   }
+
+  for (const candidate of candidates) {
+    if (candidate === null || typeof candidate !== 'object') continue
+    const node = candidate as Record<string, any>
+    const rows = node.QuotaUsage ?? node.quotaUsage ?? node.UsageDetails ?? node.usageDetails
+      ?? node.periods ?? node.items ?? node.limits ?? node.quotas ?? node.windows
+    if (Array.isArray(rows)) {
+      for (const row of rows) {
+        if (typeof row !== 'object' || row === null) continue
+        const key = volcKey(row.Level ?? row.level ?? row.QuotaType ?? row.quotaType ?? row.Label ?? row.label ?? row.Period ?? row.period ?? row.Type ?? row.type ?? row.Name ?? row.name)
+        if (key === undefined) continue
+        let percent = clamp(row.Percent ?? row.percent ?? row.percentage ?? row.UsedPercent ?? row.usedPercent)
+        const total = Number(row.Total ?? row.total ?? row.Limit ?? row.limit ?? row.Cap ?? row.cap ?? row.Quota ?? row.quota)
+        const used = Number(row.Used ?? row.used ?? row.Usage ?? row.usage ?? row.Consumed ?? row.consumed)
+        const remain = Number(row.Remaining ?? row.remaining ?? row.Remain ?? row.remain)
+        if (percent === undefined && Number.isFinite(total) && total > 0 && Number.isFinite(used)) percent = clamp(used / total * 100)
+        if (percent === undefined && Number.isFinite(total) && total > 0 && Number.isFinite(remain)) percent = clamp((total - remain) / total * 100)
+        push(key, percent, iso(row.ResetTimestamp ?? row.resetTimestamp ?? row.ResetTime ?? row.resetTime ?? row.resetAt ?? row.resets_at ?? row.NextResetTime ?? row.nextResetTime))
+      }
+    }
+    for (const [field, key] of [['fiveHour', '5h'], ['session', '5h'], ['weekly', 'week'], ['monthly', 'month']] as const) {
+      const row = node[field]
+      if (typeof row !== 'object' || row === null) continue
+      const item = row as Record<string, unknown>
+      let percent = clamp(item.Percent ?? item.percent ?? item.percentage ?? item.utilization)
+      const total = Number(item.Total ?? item.total ?? item.Limit ?? item.limit)
+      const used = Number(item.Used ?? item.used ?? item.Usage ?? item.usage)
+      if (percent === undefined && Number.isFinite(total) && total > 0 && Number.isFinite(used)) percent = clamp(used / total * 100)
+      push(key, percent, iso(item.ResetTimestamp ?? item.resetTimestamp ?? item.ResetTime ?? item.resetTime ?? item.resetAt ?? item.resets_at))
+    }
+    if (windows.length > 0) break
+  }
+
+  if (Array.isArray(root.items)) {
+    for (const item of root.items) {
+      if (typeof item !== 'object' || item === null) continue
+      const row = item as Record<string, any>
+      if (!Array.isArray(row.periods)) continue
+      for (const period of row.periods) {
+        if (typeof period !== 'object' || period === null) continue
+        const key = volcKey(period.label ?? period.name ?? period.type)
+        if (key === undefined) continue
+        push(key, clamp(period.percent), iso(period.reset_at ?? period.resetAt ?? period.resetTime))
+      }
+    }
+  }
+
   return windows
 }
 

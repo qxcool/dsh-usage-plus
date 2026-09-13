@@ -100,7 +100,7 @@ export interface ProviderSnapshotView {
     /** Provider route key (`deepseek`, `kimi-coding`, custom routes, ...). */
     provider: string;
     /** Where quota data came from; model routes remain the default. */
-    source?: 'model' | 'cpamc' | 'volcano';
+    source?: 'model' | 'cpamc' | 'volcano' | 'custom';
     /** Display name from the LLM runtime, else the adapter's, else the route key. */
     displayName: string;
     credential: CredentialKind;
@@ -116,6 +116,19 @@ export interface ProviderSnapshotView {
     error?: string;
     updatedAt?: number;
 }
+/** Write-only external secret slots (CPAMC management token, Volcano AK/SK, custom {{VAR}}). */
+export type ExternalCredentialTarget = 'cpamc' | 'volcano.ak' | 'volcano.sk' | `customVar:${string}`;
+/**
+ * Whether each external secret is present in the credential store or process
+ * env. Values themselves never cross the wire — only these booleans do.
+ */
+export interface ExternalCredentialStatus {
+    cpamc: boolean;
+    volcanoAk: boolean;
+    volcanoSk: boolean;
+    /** Configured flags for {{VAR}} names discovered in custom balance headers. */
+    customVars?: Record<string, boolean>;
+}
 /** The overview the browser section renders. */
 export interface UsageOverviewView {
     updatedAt: number;
@@ -126,7 +139,18 @@ export interface UsageOverviewView {
         model?: string;
         /** `live` — last request seen this boot; `default` — the agent default model. */
         source: 'live' | 'default';
+        /**
+         * Optional pi-ai / provider baseURL for the current route. The strip uses
+         * this to bind Volcano / CPAMC external plans when the provider id itself
+         * is a custom route name.
+         */
+        baseURL?: string;
     };
+    /**
+     * Configured/missing flags for CPAMC + Volcano secrets. Optional so an
+     * older host document still renders the settings form without status chips.
+     */
+    externalCredentials?: ExternalCredentialStatus;
     usage: {
         today: {
             date: string;

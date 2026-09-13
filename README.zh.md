@@ -13,18 +13,20 @@
 - 火山方舟使用 `VOLC_ACCESSKEY` / `VOLC_SECRETKEY` 对官方 OpenAPI 做 HMAC-SHA256 签名。
 - 密钥始终留在 DSH 宿主进程，不发送到浏览器。
 - 保留原 dsh-usage 的实时 Token 台账、余额、趋势和宠物气泡能力。
+- 概览页提供完整 26 周（周一至周日）活动热图；台账默认保留 182 天。
+- 可选「自定义 HTTP 余额」：HTTPS 查询 + 声明式提取规则，密钥通过 `{{VAR}}` 写入凭据库。
 
 ## 安装
 
+按官方方式把本包加入 profile 的 bundle 层（会写入依赖并追加到 `dsh.profile.bundles`，从而应用包内 `cordis.patch.yml`）：
+
 ```bash
-pnpm add dsh-usage-plus
+dsh plugin --profile desktop add ./
+# 或从 npm / Git：
+# dsh plugin --profile desktop add dsh-usage-plus
 ```
 
-```yaml
-- insert:
-    - id: usage-plus
-      name: dsh-usage-plus
-```
+包内已自带 patch（`id: usage-plus`，`name: dsh-usage-plus`）。若 profile 里仍有旧的 `@linxin666/dsh-usage` / `web-ui-usage`，请在 profile 的 `cordis.patch.yml` 中将其 `disabled: true`，避免 UI 重复。
 
 ## 外部数据源
 
@@ -35,6 +37,8 @@ pnpm add dsh-usage-plus
 - `VOLC_SECRETKEY`
 
 然后在“设置 → 使用统计 → 设置”中启用相应独立数据源。CPAMC 默认地址为 `http://127.0.0.1:8317`。
+
+自定义 HTTP 余额同样在设置页配置（URL / 请求头 / 提取规则 / allowedHosts）。请求头里的 `{{API_KEY}}` 等变量会自动出现对应密钥输入框。目标域名还需加入本包 `package.json` → `dshhub.permissions.network`。
 
 ## 准确性原则
 

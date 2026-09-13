@@ -10,6 +10,7 @@
 import { type ReactNode } from 'react';
 import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client';
 import type { UsageStoreInstance } from './usage-store.ts';
+import type { ExternalCredentialTarget } from '../core/types.ts';
 /** The settings fields this section edits (immediate-apply semantics). */
 export interface UsageSettings {
     enabled?: boolean;
@@ -21,6 +22,14 @@ export interface UsageSettings {
     volcanoEnabled?: boolean;
     volcanoAccessKeyEnv?: string;
     volcanoSecretKeyEnv?: string;
+    customBalanceEnabled?: boolean;
+    customBalanceLabel?: string;
+    customBalanceCurrency?: string;
+    customBalanceUrl?: string;
+    customBalanceMethod?: string;
+    customBalanceHeadersJson?: string;
+    customBalanceExtractRemaining?: string;
+    customBalanceAllowedHosts?: string;
 }
 /** The registration-side face the section's slot entry injects. */
 export interface UsageSectionFace {
@@ -32,6 +41,10 @@ export interface UsageSectionFace {
     refresh: () => void;
     /** Whether a forced refresh is in flight (component-local state mirrors it). */
     settings: SettingsScope<UsageSettings>;
+    /** Write one external secret into the host credential store (write-only). */
+    setCredential: (target: ExternalCredentialTarget, value: string) => Promise<void>;
+    /** Remove one external secret from the host credential store. */
+    clearCredential: (target: ExternalCredentialTarget) => Promise<void>;
 }
 export interface UsageSectionProps extends UsageSectionFace {
     /** Close the settings panel (the shell owns the open state). */

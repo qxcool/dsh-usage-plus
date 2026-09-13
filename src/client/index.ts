@@ -20,29 +20,46 @@ import { createUsageStore, type UsageStoreInstance } from './usage-store.ts'
 import { UsageSectionCard, type UsageSectionFace, type UsageSettings } from './UsageSectionCard.tsx'
 import { PlanUsageStrip, type PlanUsageStripProps } from './PlanUsageStrip.tsx'
 import { NS, en, zh } from './locales.ts'
-import type { UsageOverviewView } from '../core/types.ts'
+import type { ExternalCredentialTarget, UsageOverviewView } from '../core/types.ts'
 
 /** The host usage API as the browser sees it (same-origin JSON endpoints). */
 interface UsageHttpApi {
   overview(): Promise<UsageOverviewView>
   refresh(): Promise<UsageOverviewView>
+  setCredential(target: ExternalCredentialTarget, value: string): Promise<UsageOverviewView>
+  clearCredential(target: ExternalCredentialTarget): Promise<UsageOverviewView>
 }
 
 /** Hard ceiling for one usage API call; a stalled host must not pile up requests. */
 const USAGE_FETCH_TIMEOUT_MS = 20_000
 
-async function usageFetch<T>(path: string, method: 'GET' | 'POST'): Promise<T> {
+async function usageFetch<T>(path: string, method: 'GET' | 'POST', body?: unknown): Promise<T> {
   const response = await fetch(path, {
-    ...(method === 'POST' ? { method: 'POST' } : {}),
+    method,
+    ...(body !== undefined
+      ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }
+      : {}),
     signal: AbortSignal.timeout(USAGE_FETCH_TIMEOUT_MS),
   })
   if (!response.ok) throw new Error('usage ' + path + ' failed: ' + response.status)
   return (await response.json()) as T
 }
 
+async function credentialMutation(action: 'set' | 'clear', target: ExternalCredentialTarget, value?: string): Promise<UsageOverviewView> {
+  const payload = await usageFetch<{ ok: boolean; overview?: UsageOverviewView }>(
+    '/api/dsh-usage-plus/credentials',
+    'POST',
+    action === 'set' ? { action, target, value } : { action, target },
+  )
+  if (!payload.ok || payload.overview === undefined) throw new Error('usage credential mutation failed')
+  return payload.overview
+}
+
 const usageApi: UsageHttpApi = {
   overview: () => usageFetch('/api/dsh-usage-plus/overview', 'GET'),
   refresh: () => usageFetch('/api/dsh-usage-plus/refresh', 'POST'),
+  setCredential: (target, value) => credentialMutation('set', target, value),
+  clearCredential: (target) => credentialMutation('clear', target),
 }
 
 /** Settings namespace the section edits (the host plugin registers it). */
@@ -69,11 +86,12 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-// The conversation owner package is runtime-provided by DSH Desktop but does
-// not publish its SlotMap augmentation in the standalone SDK dependency set.
+// Fallback SlotMap rows when conversation package types are unavailable
+// in the standalone SDK dependency set.
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
-    'conversation.input.dock': {
+    /** Trailing composer controls — beside model / official ContextMeter. */
+    'conversation.input.right': {
       kind: 'list'
       scope: 'session-maybe'
     }
@@ -133,7 +151,29 @@ export function apply(ctx: ClientContext): void {
     })
   }
 
-  const face = (): UsageSectionFace => ({ store, poll, refresh, settings: settingsScope })
+  const applyOverview = (snapshot: UsageOverviewView): void => {
+    pollSeq += 1
+    store.actions.setSnapshot(snapshot)
+  }
+
+  const setCredential = async (target: Parameters<UsageHttpApi['setCredential']>[0], value: string): Promise<void> => {
+    applyOverview(await usageApi.setCredential(target, value))
+  }
+
+  const clearCredential = async (target: Parameters<UsageHttpApi['clearCredential']>[0]): Promise<void> => {
+    applyOverview(await usageApi.clearCredential(target))
+  }
+
+  const face = (): UsageSectionFace => ({ store, poll, refresh, settings: settingsScope, setCredential, clearCredential })
+
+  // Composer model selector writes `agent-default-model`; refresh the strip
+  // as soon as that namespace changes so quota follows the picked provider.
+  try {
+    const modelScope = binder.bind<{ provider?: string; model?: string }>({ namespace: 'agent-default-model' })
+    ctx.effect(() => modelScope.subscribe(() => { poll() }), 'dsh-usage-plus: model watch')
+  } catch {
+    // Settings binder may refuse foreign namespaces on older hosts.
+  }
 
   ctx.slots.inject('settings.section', () => {
     try {
@@ -153,12 +193,13 @@ export function apply(ctx: ClientContext): void {
     }
   })
 
-  ctx.slots.inject('conversation.input.dock', () => {
+  // Compact ring + % beside model / official ContextMeter.
+  ctx.slots.inject('conversation.input.right', () => {
     try {
       return ctx.slots.register({
-        name: 'conversation.input.dock',
+        name: 'conversation.input.right',
         id: 'dsh-usage-plus-plan-strip',
-        order: 6,
+        order: 20,
         inject: (): PlanUsageStripProps => ({ store, poll }),
       }, PlanUsageStrip)
     } catch {
