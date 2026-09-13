@@ -126,7 +126,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/qxcoo/dsh-usage-plus.git"
+    "url": "git+https://github.com/qxcool/dsh-usage-plus.git"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && tsdown",
