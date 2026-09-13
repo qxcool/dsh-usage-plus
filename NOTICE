@@ -1,0 +1,9 @@
+dsh-usage-plus
+
+This product contains work derived from @linxin666/dsh-usage,
+licensed under the Apache License 2.0.
+
+The CPAMC transport safeguards and Volcano Ark request-signing approach were
+adapted from dsh-cost-meter by Han-1413141, licensed under the MIT License.
+Copyright notices and license texts remain available in the respective
+upstream repositories.

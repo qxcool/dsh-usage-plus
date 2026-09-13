@@ -1,0 +1,29 @@
+import type { Context } from '@deepseek-ai/cordis';
+import type { SettingsNamespace } from '@deepseek-ai/dsh-settings';
+import z from 'schemastery';
+import { type UsageServiceOptions } from './host/usage-service.ts';
+export declare const name = "dsh-usage-plus";
+export declare const inject: string[];
+export declare const USAGE_SETTINGS_NAMESPACE: SettingsNamespace;
+export interface Config {
+    enabled?: boolean;
+    /** Provider probe cycle in seconds; 30-3600. */
+    pollIntervalSec?: number;
+    /** Pet bubble mode: always (refreshes each poll), change (only on value change), off. */
+    bubbleMode?: string;
+    /** Ledger retention in local days. */
+    retainDays?: number;
+    cpamcEnabled?: boolean;
+    cpamcBaseURL?: string;
+    cpamcManagementKeyEnv?: string;
+    volcanoEnabled?: boolean;
+    volcanoAccessKeyEnv?: string;
+    volcanoSecretKeyEnv?: string;
+}
+export declare const Config: z<Config>;
+export interface ResolvedConfig extends UsageServiceOptions {
+    enabled: boolean;
+}
+export declare function resolveConfig(config?: Config): ResolvedConfig;
+export declare const apply: (ctx: Context, config?: Config) => void;
+//# sourceMappingURL=index.d.ts.map

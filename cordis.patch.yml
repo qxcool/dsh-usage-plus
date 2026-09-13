@@ -1,0 +1,4 @@
+# Independent dsh-usage-plus host and web client row.
+- insert:
+    - id: usage-plus
+      name: dsh-usage-plus
