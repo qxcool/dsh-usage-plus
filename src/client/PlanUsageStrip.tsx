@@ -1,18 +1,30 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { UsageStoreInstance } from './usage-store.ts'
 import type { PlanWindowView } from '../core/types.ts'
-import { currentPlanProvider, orderedPlanWindows, planSourceLabelKey } from '../core/plan-match.ts'
+import { currentPlanProvider, orderedPlanWindows, planSourceLabelKey, type PlanRouteOverride } from '../core/plan-match.ts'
+import { sessionRouteFrom, sessionSelectionFace, type SessionFaceLike } from './session-route.ts'
 import { t } from './locales.ts'
 import styles from './usage.module.css'
 
 export interface PlanUsageStripProps {
   store: UsageStoreInstance
   poll: () => void
+  /**
+   * Standard session-scope props. The renderer's `session-maybe` source
+   * suite injects them automatically: the active conversation's session
+   * object (via a uSES hook, `undefined` when no session is mounted) and
+   * that session's id.
+   */
+  useSession?: () => SessionFaceLike | undefined
+  sessionId?: string
 }
 
 export { currentPlanProvider }
 
 const STRIP_POLL_MS = 5_000
+/** Stable absent-source substitutes for `useSyncExternalStore` hooks. */
+const ABSENT_SNAPSHOT = (): undefined => undefined
+const ABSENT_SUBSCRIBE = (): (() => void) => () => {}
 /** Match official ContextMeter ring geometry (14px viewBox, r=5.5). */
 const RADIUS = 5.5
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS
@@ -100,7 +112,14 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
   }, [open])
 
   const snapshot = ui.snapshot
-  const provider = currentPlanProvider(snapshot)
+  const session = props.useSession?.()
+  const sessionFace = session === undefined ? undefined : sessionSelectionFace(session)
+  const sessionProjection = useSyncExternalStore(
+    sessionFace?.subscribe ?? ABSENT_SUBSCRIBE,
+    sessionFace?.getSnapshot ?? ABSENT_SNAPSHOT,
+  )
+  const override: PlanRouteOverride | undefined = sessionRouteFrom(sessionProjection)
+  const provider = currentPlanProvider(snapshot, override)
   if (provider?.plan === undefined || snapshot === null) return null
 
   const windows = orderedPlanWindows(provider.plan)
@@ -109,7 +128,11 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
   const percent = primary.percent as number
   const reading = percentText(percent)
   const level = toneClass(percent)
-  const model = snapshot.current.model
+  // With an explicit per-session route the model label follows it; when the
+  // session has no projection yet the host's current model is the fallback.
+  const model = override !== undefined
+    ? (override.model !== undefined ? override.model : snapshot.current.model)
+    : snapshot.current.model
   const source = t(planSourceLabelKey(provider))
   const identity = model === undefined || model === ''
     ? provider.displayName

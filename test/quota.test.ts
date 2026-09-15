@@ -80,6 +80,40 @@ describe('official quota rendering', () => {
     expect(currentPlanProvider(value)?.plan?.windows).toEqual([{ key: '5h', percent: 11 }])
   })
 
+  it('prefers the per-session route override over the host global current', () => {
+    const value = overview({
+      current: { provider: 'openai-codex', model: 'gpt-5', source: 'live' },
+      providers: [
+        {
+          provider: 'openai-codex', displayName: 'Codex', credential: 'oauth', supported: true,
+          planSupported: true, plan: { updatedAt: 1, windows: [{ key: '5h', percent: 25 }] },
+        },
+        {
+          provider: 'kimi-coding', displayName: 'Kimi', credential: 'oauth', supported: true,
+          planSupported: true, plan: { updatedAt: 1, windows: [{ key: '5h', percent: 77 }] },
+        },
+      ],
+    })
+    expect(currentPlanProvider(value, { provider: 'kimi-coding', model: 'kimi-k2' })?.provider).toBe('kimi-coding')
+    expect(currentPlanProvider(value)?.provider).toBe('openai-codex')
+  })
+
+  it('maps a per-session CPAMC route via provider id heuristics', () => {
+    const value = overview({
+      current: { provider: 'openai-codex', model: 'gpt-5', source: 'default' },
+      providers: [{
+        provider: 'cpamc:kimi:0',
+        displayName: 'CPAMC · kimi · a***@x.com',
+        credential: 'env',
+        supported: true,
+        planSupported: true,
+        source: 'cpamc',
+        plan: { updatedAt: 1, windows: [{ key: '5h', percent: 3 }] },
+      }],
+    })
+    expect(currentPlanProvider(value, { provider: 'kimi-coding', model: 'kimi-k2' })?.provider).toBe('cpamc:kimi:0')
+  })
+
   it('orders plan windows as 5h → week → month', () => {
     expect(orderedPlanWindows({
       updatedAt: 1,

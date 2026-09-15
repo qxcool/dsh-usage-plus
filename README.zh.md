@@ -8,6 +8,7 @@
 
 - 自动复用 DSH 已配置模型的凭据，查询 Kimi Coding、GLM Coding Plan、OpenCode Go、MiniMax Coding Plan 与 Codex/ChatGPT 订阅额度。
 - 在会话输入框下显示当前模型的真实 5 小时、每周、每月额度；服务端没有返回官方额度窗口时完全不显示。
+- 额度条按「每个会话选择的模型」解析：优先读取该会话自身的 `modelSelection` 选择（composer 模型位 / `/model` 切换立即生效），再回退到全局默认模型；宿主全局「最近请求路由」只作为最终兜底。
 - 设置页按“模型配置自动查询 / CPAMC / 火山方舟”分组展示。
 - CPAMC 只允许回环地址，固定调用只读管理路由并拒绝重定向。
 - 火山方舟使用 `VOLC_ACCESSKEY` / `VOLC_SECRETKEY` 对官方 OpenAPI 做 HMAC-SHA256 签名。

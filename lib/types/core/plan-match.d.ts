@@ -6,6 +6,17 @@
  * @module dsh-usage-plus/core/plan-match
  */
 import type { PlanView, PlanWindowView, ProviderSnapshotView, UsageOverviewView } from './types.ts';
+/**
+ * A route resolved outside the host's global `current` — typically the model
+ * selected *in one conversation* (its durable `modelSelection` projection).
+ * When present it takes precedence over `snapshot.current`.
+ */
+export interface PlanRouteOverride {
+    provider: string;
+    model?: string;
+    /** pi-ai / provider baseURL for the override route, when the client knows one. */
+    baseURL?: string;
+}
 /** Keep only percentage windows the UI knows how to render. */
 export declare function planWindowsForDisplay(plan: PlanView | undefined): PlanWindowView[];
 /** Stable 5h → week → month order for plan cards and the strip panel. */
@@ -29,7 +40,10 @@ export declare function planTabProviders(providers: ProviderSnapshotView[]): Pro
 export declare function planSourceLabelKey(provider: ProviderSnapshotView): 'usage.plan.source.model' | 'usage.plan.source.cpamc' | 'usage.plan.source.volcano';
 /**
  * Pick the plan snapshot for the current composer model.
- * Order: exact provider id → Volcano external source → CPAMC external source.
+ * Order: explicit route override (per-session selection) → exact provider id
+ * → Volcano external source → CPAMC external source. The override lets the
+ * strip follow the model selected in each conversation instead of the host's
+ * global "last request seen" route.
  */
-export declare function currentPlanProvider(snapshot: Pick<UsageOverviewView, 'current' | 'providers'> | null): ProviderSnapshotView | undefined;
+export declare function currentPlanProvider(snapshot: Pick<UsageOverviewView, 'current' | 'providers'> | null, override?: PlanRouteOverride): ProviderSnapshotView | undefined;
 //# sourceMappingURL=plan-match.d.ts.map

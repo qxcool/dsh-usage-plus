@@ -8,6 +8,18 @@
 
 import type { PlanView, PlanWindowView, ProviderSnapshotView, UsageOverviewView } from './types.ts'
 
+/**
+ * A route resolved outside the host's global `current` — typically the model
+ * selected *in one conversation* (its durable `modelSelection` projection).
+ * When present it takes precedence over `snapshot.current`.
+ */
+export interface PlanRouteOverride {
+  provider: string
+  model?: string
+  /** pi-ai / provider baseURL for the override route, when the client knows one. */
+  baseURL?: string
+}
+
 /** Windows the strip and ContextMeter-style meter expose. */
 const DISPLAY_KEYS = new Set(['5h', 'week', 'month'])
 const WINDOW_ORDER = ['5h', 'week', 'month'] as const
@@ -86,17 +98,26 @@ export function planSourceLabelKey(provider: ProviderSnapshotView): 'usage.plan.
 
 /**
  * Pick the plan snapshot for the current composer model.
- * Order: exact provider id → Volcano external source → CPAMC external source.
+ * Order: explicit route override (per-session selection) → exact provider id
+ * → Volcano external source → CPAMC external source. The override lets the
+ * strip follow the model selected in each conversation instead of the host's
+ * global "last request seen" route.
  */
 export function currentPlanProvider(
   snapshot: Pick<UsageOverviewView, 'current' | 'providers'> | null,
+  override?: PlanRouteOverride,
 ): ProviderSnapshotView | undefined {
-  if (snapshot === null || snapshot.current.provider === undefined) return undefined
+  if (snapshot === null) return undefined
+  const current = override !== undefined
+    ? { provider: override.provider, ...(override.model !== undefined && override.model !== '' ? { model: override.model } : {}), ...(override.baseURL !== undefined ? { baseURL: override.baseURL } : {}) }
+    : snapshot.current
+  if (current.provider === undefined) return undefined
   const providers = snapshot.providers
-  const exact = withDisplayPlan(providers.find((row) => row.provider === snapshot.current.provider))
+  const exact = withDisplayPlan(providers.find((row) => row.provider === current.provider))
   if (exact !== undefined) return exact
 
-  const text = haystack(snapshot.current.provider, snapshot.current.model, snapshot.current.baseURL)
+  const text = haystack(current.provider, current.model, current.baseURL
+    ?? (current.provider === snapshot.current.provider ? snapshot.current.baseURL : undefined))
 
   if (looksLikeVolcano(text)) {
     const volcano = withDisplayPlan(providers.find((row) => row.source === 'volcano'))
@@ -107,7 +128,7 @@ export function currentPlanProvider(
   if (cpamcRows.length === 0) return undefined
 
   const viaGateway = looksLikeCpamcGateway(text)
-  const viaProviderId = looksLikeCpamcProviderId(snapshot.current.provider)
+  const viaProviderId = looksLikeCpamcProviderId(current.provider)
   if (!viaGateway && !viaProviderId) return undefined
 
   const family = cpamcFamily(text)
