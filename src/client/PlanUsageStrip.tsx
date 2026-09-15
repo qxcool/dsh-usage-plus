@@ -22,9 +22,6 @@ export interface PlanUsageStripProps {
 export { currentPlanProvider }
 
 const STRIP_POLL_MS = 5_000
-/** Stable absent-source substitutes for `useSyncExternalStore` hooks. */
-const ABSENT_SNAPSHOT = (): undefined => undefined
-const ABSENT_SUBSCRIBE = (): (() => void) => () => {}
 /** Match official ContextMeter ring geometry (14px viewBox, r=5.5). */
 const RADIUS = 5.5
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS
@@ -114,12 +111,39 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
   const snapshot = ui.snapshot
   const session = props.useSession?.()
   const sessionFace = session === undefined ? undefined : sessionSelectionFace(session)
-  const sessionProjection = useSyncExternalStore(
-    sessionFace?.subscribe ?? ABSENT_SUBSCRIBE,
-    sessionFace?.getSnapshot ?? ABSENT_SNAPSHOT,
-  )
-  const override: PlanRouteOverride | undefined = sessionRouteFrom(sessionProjection)
-  const provider = currentPlanProvider(snapshot, override)
+  // Subscribe manually instead of feeding the projection face straight into
+  // useSyncExternalStore: the face's getSnapshot may hand back a fresh object
+  // per call, and React requires a cached snapshot. Normalize to a primitive
+  // key and only propagate visible changes.
+  const [sessionRouteKey, setSessionRouteKey] = useState<string | null>(null)
+  useEffect(() => {
+    let active = true
+    const read = (): void => {
+      if (!active) return
+      const route = sessionRouteFrom(sessionFace === undefined ? undefined : sessionFace.getSnapshot())
+      const key = route === undefined ? null : `${route.provider}\u241F${route.model ?? ''}`
+      setSessionRouteKey((previous) => (previous === key ? previous : key))
+    }
+    read()
+    const stop = sessionFace?.subscribe(read)
+    return () => {
+      active = false
+      stop?.()
+    }
+  }, [sessionFace])
+  const override: PlanRouteOverride | undefined = sessionRouteKey === null
+    ? undefined
+    : (():
+      | PlanRouteOverride
+      | undefined => {
+        const [provider, model = ''] = sessionRouteKey.split('\u241F')
+        if (provider === '') return undefined
+        return { provider, ...(model !== '' ? { model } : {}) }
+      })()
+  // The conversation's own selection wins; if that route has no plan window
+  // (yet), fall back to the host's global current so an existing global
+  // reading is not lost while switching.
+  const provider = currentPlanProvider(snapshot, override) ?? (override !== undefined ? currentPlanProvider(snapshot) : undefined)
   if (provider?.plan === undefined || snapshot === null) return null
 
   const windows = orderedPlanWindows(provider.plan)
@@ -139,7 +163,7 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
     : `${provider.displayName} · ${model}`
 
   return (
-    <span ref={rootRef} className={`${styles.quotaMeter} ${level}`} data-dsh-plugin="usage-plus" data-dsh-part="quota-meter">
+    <span ref={rootRef} className={`${styles.quotaMeter} ${level}`} data-dsh-plugin="usage-plus" data-dsh-part="quota-meter" data-usage-plus-rev="2">
       <button
         type="button"
         className={styles.quotaMeterTrigger}
