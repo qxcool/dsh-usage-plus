@@ -1087,6 +1087,20 @@
   background: var(--dsw-alias-interactive-bg-hover, color-mix(in srgb, currentColor 10%, transparent));
 }
 
+/* Diagnostic shell: the strip mounted but no official plan window matches. */
+.quotaMeterMissing {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 4px 0 0;
+}
+
+.quotaMeterDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--dsw-alias-border-l3, color-mix(in srgb, currentColor 30%, transparent));
+}
+
 .quotaMeterTrack {
   fill: none;
   stroke: var(--dsw-alias-border-l3, color-mix(in srgb, currentColor 22%, transparent));

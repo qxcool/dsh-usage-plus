@@ -6,7 +6,7 @@
  * to the host global current, and full hiding when no plan matches either.
  * @module test/strip.test.tsx
  */
-import { cleanup } from '@testing-library/react'
+import { act, cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createElement, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -71,15 +71,17 @@ function mount(element: ReactNode): { root: Root; host: HTMLElement } {
   const host = document.createElement('div')
   document.body.append(host)
   const root = createRoot(host)
-  root.render(element)
+  act(() => {
+    root.render(element)
+  })
   return { root, host }
 }
 
-function flushSyncRender(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 20))
+async function flush(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 30))
+  })
 }
-
-const flush = flushSyncRender
 
 describe('PlanUsageStrip per-session route', () => {
   afterEach(() => {
@@ -98,6 +100,9 @@ describe('PlanUsageStrip per-session route', () => {
     const span = host.querySelector('span[data-dsh-plugin="usage-plus"]')
     expect(span).not.toBeNull()
     expect(span?.getAttribute('data-usage-plus-rev')).toBe('2')
+    if (span === null || span.querySelector('circle') === null) {
+      throw new Error(`DEBUG html: ${host.innerHTML}`)
+    }
     expect(span?.querySelector('circle')).not.toBeNull()
     root.unmount()
   })
@@ -116,17 +121,20 @@ describe('PlanUsageStrip per-session route', () => {
     root.unmount()
   })
 
-  it('stays hidden when neither session nor global route has a plan window', async () => {
+  it('renders the diagnostic shell when neither session nor global route has a plan window', async () => {
     const snapshot = overview()
     const store = fakeStore(snapshot)
     const { root, host } = mount(createElement(PlanUsageStrip, { store: store as never, poll: () => {} }))
     await flush()
-    // Global default deepseek-official has no plan; no session route → hidden.
-    expect(host.querySelector('span[data-dsh-plugin="usage-plus"]')).toBeNull()
+    // Global default deepseek-official has no plan; no session route → the
+    // visible diagnostic placeholder replaces the ring (never a fake quota).
+    expect(host.querySelector('span[data-dsh-plugin="usage-plus"]')).not.toBeNull()
+    expect(host.querySelector('[data-dsh-part="quota-meter-missing"]')).not.toBeNull()
+    expect(host.querySelector('span[data-dsh-plugin="usage-plus"] circle')).toBeNull()
     root.unmount()
   })
 
-  it('hides when a session-selected unknown route replaces a planed global current', async () => {
+  it('renders the diagnostic shell when a session-selected unknown route has no plan', async () => {
     const snapshot = overview()
     const store = fakeStore(snapshot)
     const { root, host } = mount(createElement(PlanUsageStrip, {
@@ -136,8 +144,10 @@ describe('PlanUsageStrip per-session route', () => {
       // next missing on purpose → falls through to lastUsed → unknown provider
     }))
     await flush()
-    // universe has no plan → hidden (accuracy: never borrow another provider's window)
-    expect(host.querySelector('span[data-dsh-plugin="usage-plus"]')).toBeNull()
+    const shell = host.querySelector('[data-dsh-part="quota-meter-missing"]')
+    expect(shell).not.toBeNull()
+    expect(shell?.getAttribute('title')).toContain('session=universe / x')
+    expect(shell?.getAttribute('title')).toContain('matched=∅')
     root.unmount()
   })
 

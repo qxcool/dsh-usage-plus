@@ -144,10 +144,40 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
   // (yet), fall back to the host's global current so an existing global
   // reading is not lost while switching.
   const provider = currentPlanProvider(snapshot, override) ?? (override !== undefined ? currentPlanProvider(snapshot) : undefined)
-  if (provider?.plan === undefined || snapshot === null) return null
+  const windows = provider === undefined || provider.plan === undefined ? [] : orderedPlanWindows(provider.plan)
+  if (snapshot === null) return null
 
-  const windows = orderedPlanWindows(provider.plan)
-  if (windows.length === 0) return null
+  // Diagnostic placeholder: when the strip mounts but no official plan
+  // window matches the effective route, render a muted dot with the whole
+  // resolution chain in its tooltip — never a fabricated quota. This keeps
+  // the slot's presence observable without risking a wrong percentage.
+  if (provider === undefined || windows.length === 0) {
+    const planIds = snapshot.providers
+      .filter((row) => row.plan !== undefined && row.plan.windows.some((window) => window.percent !== undefined))
+      .map((row) => row.provider)
+      .slice(0, 6)
+    const chain = override === undefined ? 'none' : `${override.provider}${override.model !== undefined ? ` / ${override.model}` : ''}`
+    const sessionSide = sessionRouteKey === null ? `session=none(global=${snapshot.current.provider ?? '∅'})` : `session=${sessionRouteKey.replace('\u241F', ' / ')}`
+    const hover = [
+      `usage-plus diagnostic`,
+      sessionSide,
+      `matched=${provider?.displayName ?? '∅'}`,
+      `plans=${planIds.join(', ') || '∅'}`,
+      `rev=2`,
+    ].join('\n')
+    return (
+      <span
+        ref={rootRef}
+        className={styles.quotaMeterMissing}
+        data-dsh-plugin="usage-plus"
+        data-dsh-part="quota-meter-missing"
+        data-usage-plus-rev="2"
+        title={hover}
+      >
+        <span className={styles.quotaMeterDot} aria-label={hover} />
+      </span>
+    )
+  }
   const primary = primaryWindow(windows)
   const percent = primary.percent as number
   const reading = percentText(percent)
