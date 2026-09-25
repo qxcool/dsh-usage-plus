@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Usage Statistics",
-    "description": "Plan quotas, token ledger, and external coding-plan sources for the current conversation model."
+    "description": "5-hour / weekly / monthly plan-quota strip for the conversation model, token ledger and balances, and external quota sources (CPAMC, Volcano Ark) configured on the Plugins page."
   }
 }

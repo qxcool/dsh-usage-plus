@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "使用统计",
-    "description": "当前会话模型的套餐额度、Token 台账，以及 CPAMC / 火山方舟等外部额度源。"
+    "description": "当前会话模型的 5 小时/周/月套餐额度条、Token 台账与余额，CPAMC / 火山方舟等外部额度源（Plugins 页配置）。"
   }
 }
