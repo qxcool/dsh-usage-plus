@@ -18,4 +18,11 @@ export declare function makeUsageRefreshRoute(service: UsageService): WebRoute;
  * on the wire — only ok/error plus a refreshed overview.
  */
 export declare function makeUsageCredentialsRoute(service: UsageService): WebRoute;
+/**
+ * Loopback-fenced client-side diagnostics: the browser half appends one
+ * NDJSON line per strip mount/state change so the failure point of the
+ * quota meter is observable from the host filesystem (desktop shells may
+ * have no devtools). Bounded to keep the file meaningful.
+ */
+export declare function makeUsageClientDiagRoute(): WebRoute;
 //# sourceMappingURL=routes.d.ts.map

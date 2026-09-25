@@ -2,20 +2,44 @@ import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } fro
 import type { UsageStoreInstance } from './usage-store.ts'
 import type { PlanWindowView } from '../core/types.ts'
 import { currentPlanProvider, orderedPlanWindows, planSourceLabelKey, type PlanRouteOverride } from '../core/plan-match.ts'
-import { sessionRouteFrom, sessionSelectionFace, type SessionFaceLike } from './session-route.ts'
-import { t } from './locales.ts'
+import { sessionRouteFrom, type SessionSelectionView } from './session-route.ts'
+import { formatPlanReset, t } from './locales.ts'
 import styles from './usage.module.css'
+
+/** Ship one diagnostic line to the host when the state key changes. */
+let lastDiagKey = ''
+let lastDiagAt = 0
+export function reportDiag(kind: string, key: string): void {
+  const now = Date.now()
+  const full = `${kind}:${key}`
+  if (kind === 'strip-state' && full === lastDiagKey && now - lastDiagAt < 30_000) return
+  if (kind === 'strip-state') {
+    lastDiagKey = full
+    lastDiagAt = now
+  }
+  try {
+    void fetch('/api/dsh-usage-plus/client-diag', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind, key }),
+    }).catch(() => {})
+  } catch {
+    // Host diag is best-effort.
+  }
+}
+
+/** Keyed projection hook from session-scope standard kit (`ui-session`). */
+export type UseProjection = (key: string) => unknown
 
 export interface PlanUsageStripProps {
   store: UsageStoreInstance
   poll: () => void
   /**
-   * Standard session-scope props. The renderer's `session-maybe` source
-   * suite injects them automatically: the active conversation's session
-   * object (via a uSES hook, `undefined` when no session is mounted) and
-   * that session's id.
+   * Session-scope keyed projection hook. Returns the live projection value
+   * (already subscribed). Official path for per-conversation modelSelection —
+   * `useSession()` only yields the SessionSnapshot, which has no projections.
    */
-  useSession?: () => SessionFaceLike | undefined
+  useProjection?: UseProjection
   sessionId?: string
 }
 
@@ -47,6 +71,12 @@ function toneClass(percent: number): string {
   return ''
 }
 
+function barTone(percent: number): string {
+  if (percent >= 90) return styles.barLow
+  if (percent >= 70) return styles.barWarn
+  return styles.barFill
+}
+
 function primaryWindow(windows: PlanWindowView[]): PlanWindowView {
   const fiveHour = windows.find((window) => window.key === '5h')
   if (fiveHour !== undefined) return fiveHour
@@ -54,15 +84,30 @@ function primaryWindow(windows: PlanWindowView[]): PlanWindowView {
     (window.percent as number) > (worst.percent as number) ? window : worst)
 }
 
+function routeOverride(selection: unknown): PlanRouteOverride | undefined {
+  const route = sessionRouteFrom(selection)
+  if (route === undefined) return undefined
+  return { provider: route.provider, ...(route.model !== undefined ? { model: route.model } : {}) }
+}
+
 /**
- * Compact plan-quota meter for `conversation.input.right`, styled like the
- * official ContextMeter (ring + %) beside the model / send controls.
+ * Compact plan-quota meter for `conversation.composer.dock`, seated on the
+ * bottom strip beside official StatsPills and ContextMeter.
  */
 export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
   const { store, poll } = props
   const ui = useSyncExternalStore(store.subscribe, store.getSnapshot)
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLSpanElement | null>(null)
+
+  // Session-scope standard kit always injects useProjection; tests pass a stub.
+  // Calling through a stable local keeps the hook name recognizable to the
+  // renderer and avoids reading SessionSnapshot (which has no projections).
+  const useProjection = props.useProjection
+  const selection = (useProjection !== undefined
+    ? useProjection('modelSelection')
+    : undefined) as SessionSelectionView | undefined
+  const override = routeOverride(selection)
 
   useEffect(() => {
     poll()
@@ -109,98 +154,51 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
   }, [open])
 
   const snapshot = ui.snapshot
-  const session = props.useSession?.()
-  const sessionFace = session === undefined ? undefined : sessionSelectionFace(session)
-  // Subscribe manually instead of feeding the projection face straight into
-  // useSyncExternalStore: the face's getSnapshot may hand back a fresh object
-  // per call, and React requires a cached snapshot. Normalize to a primitive
-  // key and only propagate visible changes.
-  const [sessionRouteKey, setSessionRouteKey] = useState<string | null>(null)
-  useEffect(() => {
-    let active = true
-    const read = (): void => {
-      if (!active) return
-      const route = sessionRouteFrom(sessionFace === undefined ? undefined : sessionFace.getSnapshot())
-      const key = route === undefined ? null : `${route.provider}\u241F${route.model ?? ''}`
-      setSessionRouteKey((previous) => (previous === key ? previous : key))
-    }
-    read()
-    const stop = sessionFace?.subscribe(read)
-    return () => {
-      active = false
-      stop?.()
-    }
-  }, [sessionFace])
-  const override: PlanRouteOverride | undefined = sessionRouteKey === null
-    ? undefined
-    : (():
-      | PlanRouteOverride
-      | undefined => {
-        const [provider, model = ''] = sessionRouteKey.split('\u241F')
-        if (provider === '') return undefined
-        return { provider, ...(model !== '' ? { model } : {}) }
-      })()
-  // The conversation's own selection wins; if that route has no plan window
-  // (yet), fall back to the host's global current so an existing global
-  // reading is not lost while switching.
-  const provider = currentPlanProvider(snapshot, override) ?? (override !== undefined ? currentPlanProvider(snapshot) : undefined)
+  // Per-session selection wins. No silent fall-through to a different
+  // conversation's / global plan when this session already has a route.
+  // Virgin sessions (empty projection) still follow snapshot.current so the
+  // strip matches the model selector's catalog default until the first pick.
+  const provider = override !== undefined
+    ? currentPlanProvider(snapshot, override)
+    : currentPlanProvider(snapshot)
   const windows = provider === undefined || provider.plan === undefined ? [] : orderedPlanWindows(provider.plan)
-  if (snapshot === null) return null
+    .filter((window) => typeof window.percent === 'number')
 
-  // Diagnostic placeholder: when the strip mounts but no official plan
-  // window matches the effective route, render a muted dot with the whole
-  // resolution chain in its tooltip — never a fabricated quota. This keeps
-  // the slot's presence observable without risking a wrong percentage.
-  if (provider === undefined || windows.length === 0) {
-    const planIds = snapshot.providers
-      .filter((row) => row.plan !== undefined && row.plan.windows.some((window) => window.percent !== undefined))
-      .map((row) => row.provider)
-      .slice(0, 6)
-    const chain = override === undefined ? 'none' : `${override.provider}${override.model !== undefined ? ` / ${override.model}` : ''}`
-    const sessionSide = sessionRouteKey === null ? `session=none(global=${snapshot.current.provider ?? '∅'})` : `session=${sessionRouteKey.replace('\u241F', ' / ')}`
-    const hover = [
-      `usage-plus diagnostic`,
-      sessionSide,
-      `matched=${provider?.displayName ?? '∅'}`,
-      `plans=${planIds.join(', ') || '∅'}`,
-      `rev=2`,
-    ].join('\n')
-    return (
-      <span
-        ref={rootRef}
-        className={styles.quotaMeterMissing}
-        data-dsh-plugin="usage-plus"
-        data-dsh-part="quota-meter-missing"
-        data-usage-plus-rev="2"
-        title={hover}
-      >
-        <span className={styles.quotaMeterDot} aria-label={hover} />
-      </span>
-    )
+  const overrideLabel = override === undefined ? 'none' : `${override.provider}:${override.model ?? ''}`
+  reportDiag(
+    'strip-state',
+    `snapshot=${snapshot === null ? 'null' : 'ok'} provider=${provider === undefined ? 'none' : provider.provider} windows=${windows.length} override=${overrideLabel} sessionId=${props.sessionId ?? '∅'}`,
+  )
+
+  if (snapshot === null) {
+    return <span data-usage-strip-state="snapshot-null" style={{ display: 'none' }} />
   }
+  if (provider === undefined || windows.length === 0) {
+    const emptyReason = provider === undefined
+      ? `no-provider-match:${overrideLabel}`
+      : `provider=${provider.provider}`
+    return <span data-usage-strip-state={`empty:${emptyReason}`} style={{ display: 'none' }} />
+  }
+
   const primary = primaryWindow(windows)
   const percent = primary.percent as number
   const reading = percentText(percent)
   const level = toneClass(percent)
-  // With an explicit per-session route the model label follows it; when the
-  // session has no projection yet the host's current model is the fallback.
-  const model = override !== undefined
-    ? (override.model !== undefined ? override.model : snapshot.current.model)
-    : snapshot.current.model
+  const model = override?.model ?? snapshot.current.model
   const source = t(planSourceLabelKey(provider))
   const identity = model === undefined || model === ''
     ? provider.displayName
     : `${provider.displayName} · ${model}`
 
   return (
-    <span ref={rootRef} className={`${styles.quotaMeter} ${level}`} data-dsh-plugin="usage-plus" data-dsh-part="quota-meter" data-usage-plus-rev="2">
+    <span ref={rootRef} className={`${styles.quotaMeter} ${level}`} data-dsh-plugin="usage-plus" data-dsh-part="quota-meter" data-usage-plus-rev="4">
       <button
         type="button"
         className={styles.quotaMeterTrigger}
         aria-label={`${identity} · ${source} · ${windowLabel(primary)} ${reading}`}
         aria-haspopup="dialog"
         aria-expanded={open}
-        title={`${identity}\n${source}\n${windows.map((window) => `${windowLabel(window)} ${percentText(window.percent as number)}`).join(' · ')}`}
+        title={`${identity}\n${source} · ${windowShort(primary)} ${reading}\n${windows.map((window) => `${windowLabel(window)} ${percentText(window.percent as number)}`).join(' · ')}`}
         onClick={() => {
           setOpen((value) => !value)
         }}
@@ -224,27 +222,26 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
             <span className={styles.quotaMeterIdentity}>{identity}</span>
             <span className={styles.sourceChip}>{source}</span>
           </div>
-          <dl className={styles.quotaMeterRows}>
+          <div className={styles.quotaMeterBars}>
             {windows.map((window) => {
               const value = window.percent as number
-              const reset = window.resetsAt === undefined
-                ? null
-                : new Date(window.resetsAt).toLocaleString()
               return (
-                <div key={window.key} className={`${styles.quotaMeterRow} ${toneClass(value)}`}>
-                  <dt>
-                    <span className={styles.quotaMeterSwatch} aria-hidden="true" />
-                    {windowLabel(window)}
-                    <span className={styles.quotaMeterKey}>{windowShort(window)}</span>
-                  </dt>
-                  <dd>
-                    <span>{percentText(value)}</span>
-                    <span className={styles.quotaMeterReset}>{reset ?? '—'}</span>
-                  </dd>
+                <div key={window.key} className={`${styles.quotaMeterBarRow} ${toneClass(value)}`}>
+                  <div className={styles.quotaMeterBarHead}>
+                    <span>
+                      {windowLabel(window)}
+                      <span className={styles.quotaMeterKey}>{windowShort(window)}</span>
+                    </span>
+                    <span className={styles.quotaMeterBarPct}>{percentText(value)}</span>
+                  </div>
+                  <span className={styles.bar}>
+                    <span className={barTone(value)} style={{ width: `${Math.min(100, Math.max(0, value))}%`, display: 'block' }} />
+                  </span>
+                  <span className={styles.quotaMeterReset}>{formatPlanReset(window.resetsAt)}</span>
                 </div>
               )
             })}
-          </dl>
+          </div>
         </div>
       )}
     </span>

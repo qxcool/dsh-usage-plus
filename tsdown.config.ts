@@ -91,7 +91,7 @@ export default defineConfig([
     sourcemap: true,
     clean: false,
     fixedExtension: false,
-    external: [/^@deepseek-ai\//, /^react(?:\/.*)?$/, 'schemastery'],
+    external: [/^@deepseek-ai\//, /^react(?:\/.*)?$/],
   },
   {
     entry: { client: 'src/client/index.ts' },

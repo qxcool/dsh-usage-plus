@@ -10,21 +10,6 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotView, UsageOverviewView, UsageTokenTotals } from '../core/types.ts';
 /** Source tag the plugin stamps onto pet announcements. */
 export declare const USAGE_ANNOUNCE_SOURCE = "dsh-usage-plus";
-/**
- * Persisted accrual state for the official DeepSeek family's real spend:
- * consecutive observations of the official CNY balance, decreases counted
- * as spent (a rise is a top-up and never accrues). `since` is the first
- * observation; the ledger keeps no such fact, so this watch is the only
- * source of the voucher's observed-spend figure.
- */
-export interface SpendWatch {
-    /** Total observed decrease since `since`, in CNY. */
-    accruedCny: number;
-    /** Epoch ms of the first balance observation. */
-    since: number;
-    /** The balance the previous observation ended on, when one exists. */
-    lastBalanceCny?: number;
-}
 /** Poll-loop and announce options; re-applied live on settings change. */
 export interface UsageServiceOptions {
     pollIntervalSec: number;
@@ -33,17 +18,10 @@ export interface UsageServiceOptions {
     cpamcEnabled: boolean;
     cpamcBaseURL: string;
     cpamcManagementKeyEnv: string;
+    cpamcAllowedHosts: string;
     volcanoEnabled: boolean;
     volcanoAccessKeyEnv: string;
     volcanoSecretKeyEnv: string;
-    customBalanceEnabled: boolean;
-    customBalanceLabel: string;
-    customBalanceCurrency: string;
-    customBalanceUrl: string;
-    customBalanceMethod: string;
-    customBalanceHeadersJson: string;
-    customBalanceExtractRemaining: string;
-    customBalanceAllowedHosts: string;
 }
 /** Format a balance for display: symbol prefix when known, code suffix otherwise. */
 export declare function formatMoney(currency: string, totalBalance: string): string;
@@ -95,8 +73,6 @@ export declare class UsageService {
     private readonly snapshotsPath;
     private ledger;
     private readonly snapshots;
-    /** The official DeepSeek family's real-spend watch (see SpendWatch). */
-    private spendWatch;
     /** Per-live-session route attribution (WeakMap: disposed sessions age out). */
     private readonly sessionRoutes;
     /** The most recent route seen this boot; the pet bubble follows it. */
@@ -157,15 +133,6 @@ export declare class UsageService {
     private familyCostToday;
     /** Today's ledger totals for one provider route (the exact id, not the family). */
     private providerUsageToday;
-    /**
-     * Accrue the official DeepSeek family's real spend from observed CNY
-     * balance decreases; a balance rise is a top-up and never counts. The
-     * family's route ids can alias one account, so the watch follows the
-     * largest balance seen this cycle and accrues only decreases of that
-     * series — a failed probe keeps the stale balance and accrues nothing
-     * until the next success reports the whole drop at once.
-     */
-    private accrueDeepSeekSpend;
     /**
      * The display name for a route key: the LLM runtime's first, then the
      * adapter's, then the id itself — the snapshot may not exist for

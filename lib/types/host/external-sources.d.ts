@@ -3,6 +3,8 @@ export interface CpamcOptions {
     enabled: boolean;
     baseURL: string;
     managementKey?: string;
+    /** Comma-separated extra hosts (e.g. `api.example.com,cli.example.org`) allowed as management origins in addition to loopback. */
+    allowedHosts?: string;
 }
 export interface VolcanoOptions {
     enabled: boolean;

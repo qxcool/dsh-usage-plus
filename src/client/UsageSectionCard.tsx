@@ -1,27 +1,23 @@
 /**
- * The usage statistics settings section: three tabs (用量: today's usage,
- * balances, trend; 个人套餐: per-provider plan quota windows; Token 银行:
- * the whale-yuan voucher minted from the DeepSeek official family's usage)
- * plus a compact settings row. Data comes from the host's loopback-fenced
- * /api/dsh-usage/overview document; polling runs only while the section is
- * mounted and the tab is visible.
- * @module @linxin666/dsh-usage/client/UsageSectionCard
+ * The usage statistics settings section: overview (today's usage, balances,
+ * trend), plan quotas, and settings. Data comes from the host's
+ * loopback-fenced /api/dsh-usage-plus/overview document; polling runs only
+ * while the section is mounted and the tab is visible.
+ * @module dsh-usage-plus/client/UsageSectionCard
  */
 
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { UsageStoreInstance } from './usage-store.ts'
-import { t } from './locales.ts'
+import { formatPlanReset, friendlyProbeError, isCpamcLoopbackUrl, t } from './locales.ts'
+import { PlanUsageStrip } from './PlanUsageStrip.tsx'
 import styles from './usage.module.css'
 import { isDeepSeekProviderRoute } from '../core/adapters.ts'
-import { customBalanceCredentialVars } from '../core/custom-balance.ts'
 import { buildHeatmapGrid } from '../core/heatmap.ts'
 import { currentPlanProvider, orderedPlanWindows, planSourceLabelKey, planTabProviders } from '../core/plan-match.ts'
 import { deepseekPeriodAt } from '../core/pricing.ts'
-import { deepseekVoucherData, drawVoucher, faceValue, formatDay, formatDenomination, loadVoucherArt } from './voucher.ts'
-import type { ExternalCredentialStatus, ExternalCredentialTarget, ObservedSpendView, ProviderSnapshotView, UsageDaySummary, UsageOverviewView, UsageProviderSummary, UsageTokenTotals, UsageWindowSummary } from '../core/types.ts'
+import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotView, UsageDaySummary, UsageOverviewView, UsageProviderSummary, UsageTokenTotals } from '../core/types.ts'
 
-/** The settings fields this section edits (immediate-apply semantics). */
+/** The settings fields this section edits (staged Save via configForms.mutate). */
 export interface UsageSettings {
   enabled?: boolean
   pollIntervalSec?: number
@@ -29,20 +25,31 @@ export interface UsageSettings {
   cpamcEnabled?: boolean
   cpamcBaseURL?: string
   cpamcManagementKeyEnv?: string
+  cpamcAllowedHosts?: string
   volcanoEnabled?: boolean
-  volcanoAccessKeyEnv?: string
-  volcanoSecretKeyEnv?: string
-  customBalanceEnabled?: boolean
-  customBalanceLabel?: string
-  customBalanceCurrency?: string
-  customBalanceUrl?: string
-  customBalanceMethod?: string
-  customBalanceHeadersJson?: string
-  customBalanceExtractRemaining?: string
-  customBalanceAllowedHosts?: string
 }
 
-/** The registration-side face the section's slot entry injects. */
+/**
+ * Subset of `ctx.configForms.get(entryId)` used by this page.
+ * @see @deepseek-ai/dsh-client-ui-settings — Configuration forms
+ */
+export interface UsageConfigForm {
+  getSnapshot(): {
+    status: string
+    value?: UsageSettings
+    writable: boolean
+    revision?: number
+  }
+  subscribe(listener: () => void): () => void
+  set(field: keyof UsageSettings, value: unknown): Promise<boolean>
+  /** Atomic multi-field write (preferred for Save on plugins.item pages). */
+  mutate(
+    ops: ReadonlyArray<{ op: 'set'; path: readonly string[]; value: unknown } | { op: 'unset'; path: readonly string[] }>,
+    expectedRevision?: number,
+  ): Promise<boolean>
+}
+
+/** The registration-side face the plugins.item slot injects. */
 export interface UsageSectionFace {
   /** The section-local store (overview snapshot + lifecycle). */
   store: UsageStoreInstance
@@ -50,8 +57,8 @@ export interface UsageSectionFace {
   poll: () => void
   /** Force a host probe cycle now (resolves with the fresh overview). */
   refresh: () => void
-  /** Whether a forced refresh is in flight (component-local state mirrors it). */
-  settings: SettingsScope<UsageSettings>
+  /** Shared configuration form for the `usage-plus` profile entry. */
+  settings: UsageConfigForm
   /** Write one external secret into the host credential store (write-only). */
   setCredential: (target: ExternalCredentialTarget, value: string) => Promise<void>
   /** Remove one external secret from the host credential store. */
@@ -59,8 +66,11 @@ export interface UsageSectionFace {
 }
 
 export interface UsageSectionProps extends UsageSectionFace {
-  /** Close the settings panel (the shell owns the open state). */
-  close: () => void
+  /**
+   * Plugins page view discriminator (`PluginConfigViewProps.view`).
+   * `summary` — one-liner under the card title; `page` — full form.
+   */
+  view?: 'summary' | 'page'
 }
 
 /** Poll cadence while the section is open. */
@@ -126,8 +136,10 @@ function TotalsRow(props: {
   totals: UsageTokenTotals
   rangeTotals?: UsageTokenTotals
   allTotals?: UsageTokenTotals
+  store: UsageStoreInstance
+  poll: () => void
 }): ReactNode {
-  const { totals, rangeTotals, allTotals } = props
+  const { totals, rangeTotals, allTotals, store, poll } = props
   const hit = cacheHitRate(totals)
   const billed = totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens
   const month = rangeTotals ?? emptyLike(totals)
@@ -174,6 +186,11 @@ function TotalsRow(props: {
           <span className={styles.kpiLabel}>{t('usage.tokens.calls')}</span>
           <span className={styles.kpiHint}>{t('usage.calls', { n: totals.calls })}</span>
         </div>
+      </div>
+      {/* Quota ring right after the cache-hit KPI row — the card owns this
+          React tree, so it renders regardless of shell slot wiring. */}
+      <div className={styles.quotaStripRow}>
+        <PlanUsageStrip store={store} poll={poll} />
       </div>
       <TokenBuckets totals={totals} />
     </>
@@ -238,6 +255,7 @@ function ProviderBreakdown(props: {
         const provider = providers.find((item) => item.provider === row.provider)
         const expanded = open[row.provider] === true
         const hasModels = row.models.length > 0
+        const balance = provider === undefined ? null : balanceText(provider)
         return (
           <div key={row.provider} className={styles.providerBlock}>
             <button
@@ -255,6 +273,9 @@ function ProviderBreakdown(props: {
                 {current === row.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
               </span>
               <span className={styles.providerMeta}>
+                {balance !== null && (
+                  <span className={styles.providerBalanceInline}>{balance}</span>
+                )}
                 <span className={styles.providerTokens}>
                   {formatTokens(totalOf(row.totals))}
                   {' · '}
@@ -309,85 +330,86 @@ function balanceCardRows(providers: ProviderSnapshotView[]): ProviderSnapshotVie
   return rows
 }
 
-function BalanceCard(props: { providers: ProviderSnapshotView[]; current?: string }): ReactNode {
-  const rows = balanceCardRows(props.providers)
+/** Balance rows not already shown beside today's provider breakdown. */
+function BalanceInline(props: {
+  providers: ProviderSnapshotView[]
+  current?: string
+  excludeIds: Set<string>
+}): ReactNode {
+  const rows = balanceCardRows(props.providers).filter((provider) => !props.excludeIds.has(provider.provider))
+  if (rows.length === 0) return null
   return (
-    <div className={styles.card} data-dsh-part="balance-card">
-      <div className={styles.cardHead}>
-        <span className={styles.cardTitle}>{t('usage.balance')}</span>
-      </div>
-      {rows.length === 0
-        ? <span className={styles.muted}>{t('usage.balance.empty')}</span>
-        : rows.map((provider) => {
-          const amount = balanceAmount(provider)
-          const low = amount !== null && amount <= 5
-          return (
-            <div key={provider.provider} className={styles.balanceRow}>
-              <span className={styles.balanceLead}>
-                <span className={`${styles.statusDot} ${low ? styles.statusWarn : styles.statusOk}`} aria-hidden="true" />
-                <span className={styles.providerName}>
-                  {provider.displayName}
-                  {props.current === provider.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
-                </span>
-              </span>
-              <span className={styles.balanceMeta}>
-                <span className={styles.providerBalance}>{balanceText(provider)}</span>
-                <span className={styles.balanceHint}>{balanceStatus(provider)}</span>
-              </span>
-            </div>
-          )
-        })}
+    <div className={styles.balanceInline} data-dsh-part="balance-inline">
+      <span className={styles.subTitle}>{t('usage.balance')}</span>
+      {rows.map((provider) => {
+        const amount = balanceAmount(provider)
+        const low = amount !== null && amount <= 5
+        return (
+        <div key={provider.provider} className={styles.balanceRow}>
+          <span className={styles.balanceLead}>
+            <span className={`${styles.statusDot} ${low ? styles.statusWarn : styles.statusOk}`} aria-hidden="true" />
+            <span className={styles.providerName}>
+              {provider.displayName}
+              {props.current === provider.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
+            </span>
+          </span>
+          <span className={styles.balanceMeta}>
+            <span className={styles.providerBalance}>{balanceText(provider)}</span>
+            <span className={styles.balanceHint}>{balanceStatus(provider)}</span>
+          </span>
+        </div>
+        )
+      })}
     </div>
   )
 }
 
-function PlanPreview(props: {
-  providers: ProviderSnapshotView[]
-  currentId?: string
+/** Overview hero: only the plan matched to the current model route. */
+function PlanHero(props: {
+  provider: ProviderSnapshotView
+  model?: string
   onSeeAll: () => void
 }): ReactNode {
-  const { providers, currentId, onSeeAll } = props
-  if (providers.length === 0) return null
-  const ranked = [...providers].sort((left, right) => {
-    if (left.provider === currentId) return -1
-    if (right.provider === currentId) return 1
-    return left.displayName.localeCompare(right.displayName)
-  }).slice(0, 3)
+  const { provider, model, onSeeAll } = props
+  const windows = orderedPlanWindows(provider.plan)
+  if (windows.length === 0) return null
+  const title = model === undefined || model === ''
+    ? provider.displayName
+    : `${provider.displayName} · ${model}`
   return (
-    <div className={styles.card} data-dsh-part="plan-preview">
+    <div className={styles.card} data-dsh-part="plan-hero">
       <div className={styles.cardHead}>
         <span className={styles.cardTitle}>{t('usage.plan.preview')}</span>
         <button type="button" className={styles.linkBtn} onClick={onSeeAll}>{t('usage.plan.seeAll')}</button>
       </div>
-      {ranked.map((provider) => (
-        <div key={provider.provider} className={styles.planPreviewBlock}>
-          <span className={styles.providerName}>
-            {provider.displayName}
-            {currentId === provider.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
-            <span className={styles.sourceChip}>{t(planSourceLabelKey(provider))}</span>
-            {provider.plan?.planName !== undefined ? <span className={styles.mutedInline}> · {provider.plan.planName}</span> : null}
-          </span>
-          <div className={styles.planMiniGrid}>
-            {orderedPlanWindows(provider.plan).slice(0, 3).map((window) => {
-              const percent = window.percent as number
-              const label = window.key === '5h' || window.key === 'week' || window.key === 'month'
-                ? t(`usage.plan.windows.${window.key}.short`)
-                : (window.name ?? window.key)
-              return (
-                <div key={window.key} className={styles.planMini}>
-                  <span className={styles.planMiniLabel}>
-                    <span>{label}</span>
-                    <span>{percent >= 10 ? Math.round(percent) : percent.toFixed(1)}%</span>
-                  </span>
-                  <span className={styles.bar}>
-                    <span className={toneClass(percent)} style={{ width: `${Math.min(100, Math.max(0, percent))}%`, display: 'block' }} />
-                  </span>
-                </div>
-              )
-            })}
-          </div>
+      <div className={styles.planPreviewBlock}>
+        <span className={styles.providerName}>
+          {title}
+          <span className={styles.currentBadge}>{t('usage.current')}</span>
+          <span className={styles.sourceChip}>{t(planSourceLabelKey(provider))}</span>
+          {provider.plan?.planName !== undefined ? <span className={styles.mutedInline}> · {provider.plan.planName}</span> : null}
+        </span>
+        <div className={styles.planMiniGrid}>
+          {windows.slice(0, 3).map((window) => {
+            const percent = window.percent as number
+            const label = window.key === '5h' || window.key === 'week' || window.key === 'month'
+              ? t(`usage.plan.windows.${window.key}`)
+              : (window.name ?? window.key)
+            return (
+              <div key={window.key} className={styles.planMini}>
+                <span className={styles.planMiniLabel}>
+                  <span>{label}</span>
+                  <span>{percent >= 10 ? Math.round(percent) : percent.toFixed(1)}%</span>
+                </span>
+                <span className={styles.bar}>
+                  <span className={toneClass(percent)} style={{ width: `${Math.min(100, Math.max(0, percent))}%`, display: 'block' }} />
+                </span>
+                <span className={styles.resetLine}>{formatPlanReset(window.resetsAt)}</span>
+              </div>
+            )
+          })}
         </div>
-      ))}
+      </div>
     </div>
   )
 }
@@ -402,11 +424,14 @@ function balanceText(provider: ProviderSnapshotView): string | null {
 
 /** The section component; the slot merges the face into these props. */
 export function UsageSectionCard(props: UsageSectionProps): ReactNode {
-  const { store, poll, refresh, settings, setCredential, clearCredential } = props
+  const { store, poll, refresh, settings, setCredential, clearCredential, view } = props
+  // Plugins page asks for a one-liner under the card title, or the full page.
+  if (view === 'summary') return t('usage.intro')
+
   const ui = useSyncExternalStore(store.subscribe, store.getSnapshot)
   const settingsSnapshot = settings.getSnapshot()
   const settingsValue = settingsSnapshot.value ?? {}
-  const [tab, setTab] = useState<'usage' | 'plans' | 'bank' | 'settings'>('usage')
+  const [tab, setTab] = useState<'usage' | 'plans' | 'settings'>('usage')
   const [refreshing, setRefreshing] = useState(false)
   // The enable checkbox writes through the settings scope, so subscribing here
   // keeps the flag below live: the poll starts and stops with it instead of
@@ -497,7 +522,6 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
   const modelPlans = planProviders.filter((provider) => provider.source === undefined || provider.source === 'model')
   const cpamcPlans = planProviders.filter((provider) => provider.source === 'cpamc')
   const volcanoPlans = planProviders.filter((provider) => provider.source === 'volcano')
-  const previewPlans = planProviders.filter((provider) => provider.plan !== undefined && orderedPlanWindows(provider.plan).length > 0)
 
   return (
     <div className={styles.section} data-dsh-plugin="usage">
@@ -530,9 +554,6 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
         <button type="button" role="tab" aria-selected={tab === 'plans'} className={tab === 'plans' ? `${styles.tab} ${styles.tabActive}` : styles.tab} onClick={() => setTab('plans')}>
           {t('usage.tab.plans')}
         </button>
-        <button type="button" role="tab" aria-selected={tab === 'bank'} className={tab === 'bank' ? `${styles.tab} ${styles.tabActive}` : styles.tab} onClick={() => setTab('bank')}>
-          {t('usage.tab.bank')}
-        </button>
         <button type="button" role="tab" aria-selected={tab === 'settings'} className={tab === 'settings' ? `${styles.tab} ${styles.tabActive}` : styles.tab} onClick={() => setTab('settings')}>
           {t('usage.tab.settings')}
         </button>
@@ -540,6 +561,14 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
 
       {tab === 'usage' && (
         <>
+          {matchedPlan !== undefined && orderedPlanWindows(matchedPlan.plan).length > 0 && (
+            <PlanHero
+              provider={matchedPlan}
+              model={current.model}
+              onSeeAll={() => setTab('plans')}
+            />
+          )}
+
           <div className={styles.card} data-dsh-part="today-card">
             <div className={styles.cardHead}>
               <span className={styles.cardTitle}>{t('usage.today')}</span>
@@ -555,26 +584,20 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
                   totals={snapshot.usage.today.totals}
                   rangeTotals={snapshot.usage.range?.totals}
                   allTotals={snapshot.usage.all?.totals}
+                  store={store}
+                  poll={poll}
                 />}
             <ProviderBreakdown
               rows={snapshot.usage.today.providers}
               providers={snapshot.providers}
               current={current.provider}
             />
-            {snapshot.providers.some((provider) => isConfigured(provider) && provider.error !== undefined) && (
-              <span className={styles.errorLine}>
-                {snapshot.providers.filter((provider) => isConfigured(provider) && provider.error !== undefined).map((provider) => `${provider.displayName}: ${t('usage.provider.error', { error: provider.error ?? '' })}`).join(t('usage.errorListSeparator'))}
-              </span>
-            )}
+            <BalanceInline
+              providers={snapshot.providers}
+              current={current.provider}
+              excludeIds={new Set(snapshot.usage.today.providers.map((row) => row.provider))}
+            />
           </div>
-
-          <BalanceCard providers={snapshot.providers} current={current.provider} />
-
-          <PlanPreview
-            providers={previewPlans}
-            currentId={matchedPlan?.provider}
-            onSeeAll={() => setTab('plans')}
-          />
 
           <HeatmapCard days={snapshot.usage.days} />
           <RangeCard range={snapshot.usage.range} providers={snapshot.providers} currentProvider={current.provider} />
@@ -591,8 +614,6 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
               <PlanGroup title={t('usage.plan.group.volcano')} providers={volcanoPlans} currentId={matchedPlan?.provider} showEmpty />
             </>
       )}
-
-      {tab === 'bank' && <VoucherCard window={snapshot.usage.all ?? snapshot.usage.range} observedSpend={snapshot.usage.observedSpend} />}
 
       {tab === 'settings' && (
         <SettingsRow
@@ -689,13 +710,17 @@ function HeatmapCard(props: { days: UsageDaySummary[] }): ReactNode {
 }
 
 function HistoryCard(props: { days: UsageDaySummary[] }): ReactNode {
+  const [open, setOpen] = useState(false)
   const days = [...props.days].slice(-14).reverse()
   return (
     <div className={styles.card} data-dsh-part="history-card">
       <div className={styles.cardHead}>
         <span className={styles.cardTitle}>{t('usage.history')}</span>
+        <button type="button" className={styles.linkBtn} onClick={() => setOpen((value) => !value)}>
+          {open ? t('usage.history.hide') : t('usage.history.show')}
+        </button>
       </div>
-      {days.length === 0
+      {open && (days.length === 0
         ? <span className={styles.muted}>{t('usage.history.empty')}</span>
         : days.map((day) => (
           <div key={day.date} className={styles.historyRow}>
@@ -707,7 +732,7 @@ function HistoryCard(props: { days: UsageDaySummary[] }): ReactNode {
               {day.totals.cost > 0 ? ` · ${formatCost(day.totals.cost)}` : ''}
             </span>
           </div>
-        ))}
+        )))}
     </div>
   )
 }
@@ -787,105 +812,6 @@ function ChartProviderRow(props: { row: UsageProviderSummary; name: string; max:
   )
 }
 
-/**
- * The Token 银行 card: the DeepSeek official family's retained-ledger usage
- * minted onto the whale-yuan note at 1000 tokens per whale yuan. The window
- * prefers the host's whole-ledger aggregate and falls back to the 30-day
- * trend when an older host serves no `all`; the spend line prefers the
- * official balance watch and falls back to the fold-time estimate; the
- * artwork draw failure degrades to an error line and never takes the
- * section down.
- */
-function VoucherCard(props: { window?: UsageWindowSummary; observedSpend?: ObservedSpendView }): ReactNode {
-  const { window: ledger, observedSpend } = props
-  const data = deepseekVoucherData(ledger)
-  const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const [drawError, setDrawError] = useState<string | undefined>(undefined)
-  const dataKey = data === undefined ? '' : `${data.from}|${data.to}|${data.tokens}|${data.calls}|${data.cost}`
-
-  useEffect(() => {
-    if (data === undefined) return
-    const voucher = data
-    let cancelled = false
-    loadVoucherArt().then((art) => {
-      if (cancelled) return
-      const canvas = canvasRef.current
-      if (canvas !== null) {
-        try {
-          drawVoucher(canvas, art, voucher)
-        } catch (error) {
-          if (!cancelled) setDrawError(error instanceof Error ? error.message : String(error))
-        }
-      }
-    }, (error) => {
-      if (!cancelled) setDrawError(error instanceof Error ? error.message : String(error))
-    })
-    return () => {
-      cancelled = true
-    }
-  // dataKey covers every field the draw and the buttons read.
-  }, [dataKey])
-
-  const onSave = (): void => {
-    const canvas = canvasRef.current
-    if (canvas === null || data === undefined) return
-    canvas.toBlob((blob) => {
-      if (blob === null) return
-      const url = URL.createObjectURL(blob)
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = `dsh-whale-voucher-${data.to}.png`
-      anchor.click()
-      window.setTimeout(() => URL.revokeObjectURL(url), 10_000)
-    }, 'image/png')
-  }
-
-  const shareSupported = typeof navigator !== 'undefined' && typeof navigator.canShare === 'function'
-  const onShare = (): void => {
-    const canvas = canvasRef.current
-    if (canvas === null || data === undefined || !shareSupported) return
-    canvas.toBlob(async (blob) => {
-      if (blob === null) return
-      const file = new File([blob], `dsh-whale-voucher-${data.to}.png`, { type: 'image/png' })
-      if (!navigator.canShare({ files: [file] })) return
-      try {
-        await navigator.share({ files: [file], title: t('usage.bank.title') })
-      } catch {
-        // A user-cancelled share sheet rejects; nothing to report.
-      }
-    }, 'image/png')
-  }
-
-  return (
-    <div className={styles.card} data-dsh-part="bank-card">
-      <span className={styles.cardTitle}>{t('usage.bank.title')}</span>
-      {data === undefined
-        ? <span className={styles.muted}>{t('usage.bank.noUsage')}</span>
-        : <>
-            <span className={styles.muted}>{t('usage.bank.hint')}</span>
-            <div className={styles.voucherPreview} data-dsh-part="voucher-preview">
-              <canvas ref={canvasRef} aria-label={t('usage.bank.title')} />
-            </div>
-            {drawError !== undefined && <span className={styles.errorLine}>{t('usage.bank.drawError', { error: drawError })}</span>}
-            <div className={styles.providerRow}>
-              <span className={styles.providerName}>{t('usage.bank.minted', { minted: formatDenomination(faceValue(data.tokens)), tokens: formatTokens(data.tokens) })}</span>
-              <span className={styles.providerTokens}>{t('usage.calls', { n: data.calls })}</span>
-            </div>
-            <span className={styles.muted}>
-              {observedSpend !== undefined
-                ? t('usage.bank.spend.observed', { cost: observedSpend.cny.toFixed(2), since: formatDay(observedSpend.since) })
-                : t('usage.bank.spend.estimated', { cost: data.cost.toFixed(2) })}
-            </span>
-            <span className={styles.muted}>{t('usage.bank.window', { from: data.from, to: data.to })}</span>
-            <div className={styles.buttonRow}>
-              <button type="button" className={styles.refreshBtn} onClick={onSave}>{t('usage.bank.save')}</button>
-              {shareSupported && <button type="button" className={styles.refreshBtn} onClick={onShare}>{t('usage.bank.share')}</button>}
-            </div>
-          </>}
-    </div>
-  )
-}
-
 function PlanCard(props: { provider: ProviderSnapshotView; currentId?: string }): ReactNode {
   const { provider, currentId } = props
   const windows = orderedPlanWindows(provider.plan)
@@ -899,7 +825,7 @@ function PlanCard(props: { provider: ProviderSnapshotView; currentId?: string })
           {provider.plan?.planName !== undefined ? ` · ${provider.plan.planName}` : ''}
         </span>
       </div>
-      {provider.error !== undefined && <span className={styles.errorLine}>{t('usage.provider.error', { error: provider.error })}</span>}
+      {provider.error !== undefined && <span className={styles.errorLine}>{t('usage.provider.error', { error: friendlyProbeError(provider.error) ?? provider.error })}</span>}
       {provider.credential === 'none' && provider.plan === undefined
         ? <span className={styles.muted}>{t('usage.balance.noCredential')}</span>
         : windows.length === 0
@@ -915,11 +841,7 @@ function PlanCard(props: { provider: ProviderSnapshotView; currentId?: string })
                 <span className={styles.bar}>
                   <span className={toneClass(percent)} style={{ width: `${Math.min(100, Math.max(0, percent))}%`, display: 'block' }} />
                 </span>
-                <span className={styles.resetLine}>
-                  {window.resetsAt !== undefined
-                    ? t('usage.plan.reset', { date: new Date(window.resetsAt).toLocaleString() })
-                    : '—'}
-                </span>
+                <span className={styles.resetLine}>{formatPlanReset(window.resetsAt)}</span>
               </div>
             )
           })}
@@ -927,9 +849,36 @@ function PlanCard(props: { provider: ProviderSnapshotView; currentId?: string })
   )
 }
 
+const CONFIG_DEFAULTS: Required<Pick<UsageSettings, 'enabled' | 'pollIntervalSec' | 'bubbleMode' | 'cpamcEnabled' | 'cpamcBaseURL' | 'cpamcAllowedHosts' | 'volcanoEnabled'>> = {
+  enabled: true,
+  pollIntervalSec: 60,
+  bubbleMode: 'always',
+  cpamcEnabled: false,
+  cpamcBaseURL: 'http://127.0.0.1:8317',
+  cpamcAllowedHosts: '',
+  volcanoEnabled: false,
+}
+
+function normalizeSettings(value: UsageSettings | undefined): typeof CONFIG_DEFAULTS {
+  const bubble = value?.bubbleMode
+  return {
+    enabled: value?.enabled ?? CONFIG_DEFAULTS.enabled,
+    pollIntervalSec: typeof value?.pollIntervalSec === 'number' ? value.pollIntervalSec : CONFIG_DEFAULTS.pollIntervalSec,
+    bubbleMode: bubble === 'change' || bubble === 'off' || bubble === 'always' ? bubble : CONFIG_DEFAULTS.bubbleMode,
+    cpamcEnabled: value?.cpamcEnabled ?? CONFIG_DEFAULTS.cpamcEnabled,
+    cpamcBaseURL: value?.cpamcBaseURL ?? CONFIG_DEFAULTS.cpamcBaseURL,
+    cpamcAllowedHosts: value?.cpamcAllowedHosts ?? CONFIG_DEFAULTS.cpamcAllowedHosts,
+    volcanoEnabled: value?.volcanoEnabled ?? CONFIG_DEFAULTS.volcanoEnabled,
+  }
+}
+
+/**
+ * Config tab for plugins.item: edits stay staged until Save.
+ * Matches the official Plugins page contract (leave page → discard draft).
+ */
 function SettingsRow(props: {
   settings: UsageSectionProps['settings']
-  snapshot?: { writable: boolean }
+  snapshot?: { writable: boolean; revision?: number }
   value: UsageSettings
   providers?: ProviderSnapshotView[]
   credentials?: ExternalCredentialStatus
@@ -938,14 +887,58 @@ function SettingsRow(props: {
 }): ReactNode {
   const { settings, snapshot, value, providers = [], credentials, setCredential, clearCredential } = props
   const disabled = snapshot !== undefined && !snapshot.writable
-  const bubbleMode = typeof value.bubbleMode === 'string' && ['always', 'change', 'off'].includes(value.bubbleMode) ? value.bubbleMode : 'always'
+  const [draft, setDraft] = useState(() => normalizeSettings(value))
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | undefined>()
+
+  useEffect(() => {
+    if (dirty) return
+    setDraft(normalizeSettings(value))
+  }, [value, dirty])
+
+  const edit = <K extends keyof typeof CONFIG_DEFAULTS>(field: K, next: (typeof CONFIG_DEFAULTS)[K]): void => {
+    setDraft((prev) => ({ ...prev, [field]: next }))
+    setDirty(true)
+    setSaveError(undefined)
+  }
+
+  const discard = (): void => {
+    setDraft(normalizeSettings(value))
+    setDirty(false)
+    setSaveError(undefined)
+  }
+
+  const save = (): void => {
+    if (disabled || saving || !dirty) return
+    setSaving(true)
+    setSaveError(undefined)
+    const ops: Array<{ op: 'set'; path: readonly string[]; value: unknown }> = [
+      { op: 'set', path: ['enabled'], value: draft.enabled },
+      { op: 'set', path: ['pollIntervalSec'], value: draft.pollIntervalSec },
+      { op: 'set', path: ['bubbleMode'], value: draft.bubbleMode },
+      { op: 'set', path: ['cpamcEnabled'], value: draft.cpamcEnabled },
+      { op: 'set', path: ['cpamcBaseURL'], value: draft.cpamcBaseURL },
+      { op: 'set', path: ['cpamcAllowedHosts'], value: draft.cpamcAllowedHosts },
+      { op: 'set', path: ['volcanoEnabled'], value: draft.volcanoEnabled },
+    ]
+    void settings.mutate(ops, snapshot?.revision).then((ok) => {
+      setSaving(false)
+      if (!ok) {
+        setSaveError(t('usage.config.saveFailed'))
+        return
+      }
+      setDirty(false)
+    }, (err: unknown) => {
+      setSaving(false)
+      setSaveError(err instanceof Error ? err.message : String(err))
+    })
+  }
+
   const cpamc = providers.find((provider) => provider.source === 'cpamc')
   const volcano = providers.find((provider) => provider.source === 'volcano')
-  const cpamcOn = value.cpamcEnabled ?? false
-  const volcanoOn = value.volcanoEnabled ?? false
-  const customOn = value.customBalanceEnabled ?? false
-  const custom = providers.find((provider) => provider.source === 'custom')
-  const headerVars = customBalanceCredentialVars(value.customBalanceHeadersJson ?? '')
+  const cpamcOn = draft.cpamcEnabled
+  const volcanoOn = draft.volcanoEnabled
   return (
     <div className={styles.card} data-dsh-part="settings-row">
       <span className={styles.cardTitle}>{t('usage.config.title')}</span>
@@ -957,9 +950,9 @@ function SettingsRow(props: {
           <span>{t('usage.config.enabled')}</span>
           <input
             type="checkbox"
-            checked={value.enabled ?? true}
-            disabled={disabled}
-            onChange={(event) => { void settings.set('enabled', event.target.checked) }}
+            checked={draft.enabled}
+            disabled={disabled || saving}
+            onChange={(event) => { edit('enabled', event.target.checked) }}
           />
         </label>
         <label className={styles.settingRow}>
@@ -968,11 +961,11 @@ function SettingsRow(props: {
             type="number"
             min={30}
             max={3600}
-            value={typeof value.pollIntervalSec === 'number' ? value.pollIntervalSec : 60}
-            disabled={disabled}
+            value={draft.pollIntervalSec}
+            disabled={disabled || saving}
             onChange={(event) => {
               const parsed = Number(event.target.value)
-              if (Number.isFinite(parsed) && parsed >= 30 && parsed <= 3600) void settings.set('pollIntervalSec', Math.round(parsed))
+              if (Number.isFinite(parsed) && parsed >= 30 && parsed <= 3600) edit('pollIntervalSec', Math.round(parsed))
             }}
           />
         </label>
@@ -983,9 +976,12 @@ function SettingsRow(props: {
         <label className={styles.settingRow}>
           <span>{t('usage.config.bubbleMode')}</span>
           <select
-            value={bubbleMode}
-            disabled={disabled}
-            onChange={(event) => { void settings.set('bubbleMode', event.target.value) }}
+            value={draft.bubbleMode}
+            disabled={disabled || saving}
+            onChange={(event) => {
+              const next = event.target.value
+              if (next === 'always' || next === 'change' || next === 'off') edit('bubbleMode', next)
+            }}
           >
             <option value="always">{t('usage.config.bubbleMode.always')}</option>
             <option value="change">{t('usage.config.bubbleMode.change')}</option>
@@ -998,12 +994,25 @@ function SettingsRow(props: {
         <span className={styles.subTitle}>{t('usage.config.external')}</span>
         <label className={styles.settingRow}>
           <span>{t('usage.config.cpamc')}</span>
-          <input type="checkbox" checked={cpamcOn} disabled={disabled} onChange={(event) => { void settings.set('cpamcEnabled', event.target.checked) }} />
+          <input type="checkbox" checked={cpamcOn} disabled={disabled || saving} onChange={(event) => { edit('cpamcEnabled', event.target.checked) }} />
         </label>
         <label className={styles.settingRow}>
           <span>{t('usage.config.cpamcUrl')}</span>
-          <input type="text" value={value.cpamcBaseURL ?? 'http://127.0.0.1:8317'} disabled={disabled || !cpamcOn} onChange={(event) => { void settings.set('cpamcBaseURL', event.target.value) }} />
+          <input
+            type="text"
+            value={draft.cpamcBaseURL}
+            disabled={disabled || saving || !cpamcOn}
+            placeholder={t('usage.config.cpamcUrl.placeholder')}
+            onChange={(event) => { edit('cpamcBaseURL', event.target.value) }}
+          />
         </label>
+        <label className={styles.settingRow}>
+          <span>{t('usage.config.cpamcAllowedHosts')}</span>
+          <input type="text" value={draft.cpamcAllowedHosts} disabled={disabled || saving || !cpamcOn} placeholder="cli.example.com" onChange={(event) => { edit('cpamcAllowedHosts', event.target.value) }} />
+        </label>
+        {cpamcOn && !isCpamcLoopbackUrl(draft.cpamcBaseURL, draft.cpamcAllowedHosts) && (
+          <span className={styles.settingWarn}>{t('usage.config.cpamcUrl.invalid')}</span>
+        )}
         <SecretField
           label={t('usage.config.cpamcToken')}
           configured={credentials?.cpamc === true}
@@ -1015,7 +1024,7 @@ function SettingsRow(props: {
           <span className={styles.settingHint}>
             {cpamc.displayName}
             {cpamc.error !== undefined
-              ? ` · ${cpamc.error}`
+              ? ` · ${friendlyProbeError(cpamc.error) ?? cpamc.error}`
               : `${balanceText(cpamc) !== null ? ` · ${balanceText(cpamc)}` : ''}${
                 cpamc.plan?.windows?.[0]?.percent !== undefined
                   ? ` · ${t('usage.plan.windows.5h.short')} ${Math.round(cpamc.plan.windows[0].percent as number)}%`
@@ -1025,7 +1034,7 @@ function SettingsRow(props: {
         )}
         <label className={styles.settingRow}>
           <span>{t('usage.config.volcano')}</span>
-          <input type="checkbox" checked={volcanoOn} disabled={disabled} onChange={(event) => { void settings.set('volcanoEnabled', event.target.checked) }} />
+          <input type="checkbox" checked={volcanoOn} disabled={disabled || saving} onChange={(event) => { edit('volcanoEnabled', event.target.checked) }} />
         </label>
         <SecretField
           label={t('usage.config.volcanoAk')}
@@ -1056,67 +1065,14 @@ function SettingsRow(props: {
         <span className={styles.muted}>{t('usage.config.externalHint')}</span>
       </div>
 
-      <div className={styles.settingsSection}>
-        <span className={styles.subTitle}>{t('usage.config.customBalance')}</span>
-        <label className={styles.settingRow}>
-          <span>{t('usage.config.customBalance.enabled')}</span>
-          <input type="checkbox" checked={customOn} disabled={disabled} onChange={(event) => { void settings.set('customBalanceEnabled', event.target.checked) }} />
-        </label>
-        <label className={styles.settingRow}>
-          <span>{t('usage.config.customBalance.label')}</span>
-          <input type="text" value={value.customBalanceLabel ?? 'Custom balance'} disabled={disabled || !customOn} onChange={(event) => { void settings.set('customBalanceLabel', event.target.value) }} />
-        </label>
-        <label className={styles.settingRow}>
-          <span>{t('usage.config.customBalance.currency')}</span>
-          <input type="text" value={value.customBalanceCurrency ?? 'USD'} disabled={disabled || !customOn} onChange={(event) => { void settings.set('customBalanceCurrency', event.target.value) }} />
-        </label>
-        <label className={styles.settingRow}>
-          <span>{t('usage.config.customBalance.url')}</span>
-          <input type="text" value={value.customBalanceUrl ?? ''} disabled={disabled || !customOn} placeholder="https://…" onChange={(event) => { void settings.set('customBalanceUrl', event.target.value) }} />
-        </label>
-        <label className={styles.settingRow}>
-          <span>{t('usage.config.customBalance.method')}</span>
-          <select value={(value.customBalanceMethod ?? 'GET').toUpperCase()} disabled={disabled || !customOn} onChange={(event) => { void settings.set('customBalanceMethod', event.target.value) }}>
-            <option value="GET">GET</option>
-            <option value="POST">POST</option>
-          </select>
-        </label>
-        <label className={styles.settingRow}>
-          <span>{t('usage.config.customBalance.headers')}</span>
-          <textarea
-            rows={3}
-            value={value.customBalanceHeadersJson ?? '{"Authorization":"Bearer {{API_KEY}}"}'}
-            disabled={disabled || !customOn}
-            onChange={(event) => { void settings.set('customBalanceHeadersJson', event.target.value) }}
-          />
-        </label>
-        <label className={styles.settingRow}>
-          <span>{t('usage.config.customBalance.extract')}</span>
-          <input type="text" value={value.customBalanceExtractRemaining ?? 'data.total_available'} disabled={disabled || !customOn} onChange={(event) => { void settings.set('customBalanceExtractRemaining', event.target.value) }} />
-        </label>
-        <label className={styles.settingRow}>
-          <span>{t('usage.config.customBalance.allowedHosts')}</span>
-          <input type="text" value={value.customBalanceAllowedHosts ?? ''} disabled={disabled || !customOn} placeholder="api.example.com" onChange={(event) => { void settings.set('customBalanceAllowedHosts', event.target.value) }} />
-        </label>
-        {headerVars.map((name) => (
-          <SecretField
-            key={name}
-            label={t('usage.config.customBalance.var', { name })}
-            configured={credentials?.customVars?.[name] === true}
-            disabled={disabled || !customOn}
-            onSave={(secret) => setCredential(`customVar:${name}`, secret)}
-            onClear={() => clearCredential(`customVar:${name}`)}
-          />
-        ))}
-        {custom !== undefined && (
-          <span className={styles.settingHint}>
-            {custom.displayName}
-            {custom.error !== undefined
-              ? ` · ${custom.error}`
-              : balanceText(custom) !== null ? ` · ${balanceText(custom)}` : ''}
-          </span>
-        )}
-        <span className={styles.muted}>{t('usage.config.customBalance.hint')}</span>
+      <div className={styles.configActions}>
+        {saveError !== undefined && <span className={styles.settingWarn}>{saveError}</span>}
+        <button type="button" className={styles.refreshBtn} disabled={disabled || saving || !dirty} onClick={discard}>
+          {t('usage.config.discard')}
+        </button>
+        <button type="button" className={styles.refreshBtn} disabled={disabled || saving || !dirty} onClick={save}>
+          {saving ? t('usage.config.saving') : t('usage.config.save')}
+        </button>
       </div>
     </div>
   )

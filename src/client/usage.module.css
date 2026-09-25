@@ -73,6 +73,21 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 45%, transparent);
 }
 
+.configActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.configActions .settingWarn {
+  margin-right: auto;
+}
+
 .tabs {
   display: inline-flex;
   gap: 2px;
@@ -922,19 +937,6 @@
   opacity: 0.6;
 }
 
-/* Token 银行：票面 canvas 按容器宽度缩放；按钮行沿用 ghost 按钮样式。 */
-.voucherPreview canvas {
-  display: block;
-  width: 100%;
-  height: auto;
-  border-radius: 8px;
-}
-
-.buttonRow {
-  display: flex;
-  gap: 8px;
-}
-
 .errorLine {
   font-size: 12px;
   opacity: 0.75;
@@ -1056,7 +1058,7 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 45%, transparent);
 }
 
-/* Compact plan meter beside model / ContextMeter (conversation.input.right). */
+/* Compact plan meter on conversation.composer.dock (bottom strip). */
 .quotaMeter {
   display: inline-flex;
   position: relative;
@@ -1171,6 +1173,33 @@
   margin: 0;
 }
 
+.quotaMeterBars {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.quotaMeterBarRow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.quotaMeterBarHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary, inherit);
+}
+
+.quotaMeterBarPct {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary, inherit);
+}
+
 .quotaMeterRow {
   display: flex;
   align-items: center;
@@ -1207,6 +1236,7 @@
 }
 
 .quotaMeterKey {
+  margin-left: 6px;
   opacity: 0.55;
   font-size: 11px;
 }
@@ -1215,9 +1245,32 @@
   font-weight: 400;
   font-size: 11px;
   opacity: 0.62;
+  font-variant-numeric: tabular-nums;
 }
 
 .quotaMeterWarn .quotaMeterSwatch,
 .quotaMeterDanger .quotaMeterSwatch {
   opacity: 0.9;
+}
+
+.settingWarn {
+  font-size: 12px;
+  opacity: 0.9;
+  color: color-mix(in srgb, #dc2626 75%, currentColor);
+  line-height: 1.4;
+  max-width: 36em;
+}
+
+/* Quota ring row: sits between the cache-hit KPI grid and the token buckets. */
+.quotaStripRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  min-height: 22px;
+}
+
+/* Empty state renders an invisible probe; collapse the row too. */
+.quotaStripRow:has(> [data-usage-strip-state]) {
+  display: none;
 }

@@ -8,9 +8,9 @@ export declare const NS = "dsh-usage-plus";
 /** Chinese copy. */
 export declare const zh: {
     'usage.title': string;
+    'usage.intro': string;
     'usage.tab.usage': string;
     'usage.tab.plans': string;
-    'usage.tab.bank': string;
     'usage.tab.settings': string;
     'usage.refresh': string;
     'usage.refreshing': string;
@@ -61,6 +61,8 @@ export declare const zh: {
     'usage.heatmap.dow.wed': string;
     'usage.heatmap.dow.fri': string;
     'usage.history': string;
+    'usage.history.show': string;
+    'usage.history.hide': string;
     'usage.history.empty': string;
     'usage.trend': string;
     'usage.trend.summary': string;
@@ -77,6 +79,9 @@ export declare const zh: {
     'usage.plan.preview': string;
     'usage.plan.seeAll': string;
     'usage.plan.reset': string;
+    'usage.plan.reset.soon': string;
+    'usage.plan.reset.inHours': string;
+    'usage.plan.reset.inDays': string;
     'usage.plan.noPlan': string;
     'usage.plan.noneConfigured': string;
     'usage.plan.groupEmpty': string;
@@ -107,21 +112,13 @@ export declare const zh: {
     'usage.config.bubbleMode.off': string;
     'usage.config.cpamc': string;
     'usage.config.cpamcUrl': string;
+    'usage.config.cpamcUrl.placeholder': string;
+    'usage.config.cpamcUrl.invalid': string;
     'usage.config.cpamcToken': string;
+    'usage.config.cpamcAllowedHosts': string;
     'usage.config.volcano': string;
     'usage.config.volcanoAk': string;
     'usage.config.volcanoSk': string;
-    'usage.config.customBalance': string;
-    'usage.config.customBalance.enabled': string;
-    'usage.config.customBalance.label': string;
-    'usage.config.customBalance.currency': string;
-    'usage.config.customBalance.url': string;
-    'usage.config.customBalance.method': string;
-    'usage.config.customBalance.headers': string;
-    'usage.config.customBalance.extract': string;
-    'usage.config.customBalance.allowedHosts': string;
-    'usage.config.customBalance.var': string;
-    'usage.config.customBalance.hint': string;
     'usage.config.secret.configured': string;
     'usage.config.secret.missing': string;
     'usage.config.secret.placeholder': string;
@@ -130,16 +127,10 @@ export declare const zh: {
     'usage.config.secret.clear': string;
     'usage.config.externalHint': string;
     'usage.config.readonly': string;
-    'usage.bank.title': string;
-    'usage.bank.hint': string;
-    'usage.bank.noUsage': string;
-    'usage.bank.minted': string;
-    'usage.bank.spend.observed': string;
-    'usage.bank.spend.estimated': string;
-    'usage.bank.window': string;
-    'usage.bank.save': string;
-    'usage.bank.share': string;
-    'usage.bank.drawError': string;
+    'usage.config.save': string;
+    'usage.config.saving': string;
+    'usage.config.discard': string;
+    'usage.config.saveFailed': string;
 };
 /** English mirror; every zh key present. */
 export declare const en: Record<UsageKey, string>;
@@ -152,6 +143,12 @@ export type UsageKey = keyof typeof zh;
 export declare function dictionary(): Record<UsageKey, string>;
 /** Translate a key with optional `{name}` template params; missing keys degrade to the key. */
 export declare function t(key: string, params?: Record<string, unknown>): string;
+/** Relative plan-window reset copy; falls back to absolute locale string. */
+export declare function formatPlanReset(iso?: string): string;
+/** Same origin rule as host `cpamcOrigin` (no path/userinfo/query), plus the allowlist. */
+export declare function isCpamcLoopbackUrl(raw: string, allowedHosts?: string): boolean;
+/** Map host probe errors to actionable UI copy when we recognize them. */
+export declare function friendlyProbeError(error: string | undefined): string | undefined;
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface LocaleNamespaceMap {
         /** dsh-usage UI copy. */

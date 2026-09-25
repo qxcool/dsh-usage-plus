@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { adapterFor } from '../src/core/adapters.ts'
-import { customBalanceCredentialVars, extractByRule } from '../src/core/custom-balance.ts'
 import { buildHeatmapGrid } from '../src/core/heatmap.ts'
 import { currentPlanProvider, orderedPlanWindows, planTabProviders } from '../src/core/plan-match.ts'
 import { emptyTotals, type UsageOverviewView } from '../src/core/types.ts'
@@ -148,23 +147,7 @@ describe('official quota rendering', () => {
   })
 })
 
-describe('custom balance extract + 26-week heatmap', () => {
-  it('extracts nested paths and arithmetic rules', () => {
-    const body = { data: { total_available: '12.5', quota: 1_000_000, used: 250_000 } }
-    expect(extractByRule(body, 'data.total_available')).toBe(12.5)
-    expect(extractByRule(body, { op: 'divide', path: 'data.quota', by: 500_000 })).toBe(2)
-    expect(extractByRule(body, { op: 'subtract', paths: ['data.quota', 'data.used'] })).toBe(750_000)
-    expect(extractByRule(body, { op: 'add', paths: ['data.used', 'data.used'] })).toBe(500_000)
-  })
-
-  it('collects {{VAR}} names from headers JSON', () => {
-    expect(customBalanceCredentialVars('{"Authorization":"Bearer {{API_KEY}}","X-Trace":"{{ TRACE_ID }}"}')).toEqual([
-      'API_KEY',
-      'TRACE_ID',
-    ])
-    expect(customBalanceCredentialVars('not-json')).toEqual([])
-  })
-
+describe('26-week heatmap', () => {
   it('builds a 26×7 Mon–Sun grid ending on the current week', () => {
     const now = new Date(2026, 8, 13, 12, 0, 0).getTime() // Sunday local
     const days = [

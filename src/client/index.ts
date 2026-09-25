@@ -1,26 +1,26 @@
 /**
- * dsh-usage browser half — seats the first-level 使用统计 settings section
- * (below the Workshop entry) and polls the host overview only while the
- * section is open. All provider probing and credential handling happens in
- * the host half; this bundle only renders the overview document.
- * @module @linxin666/dsh-usage/client
+ * dsh-usage browser half — Plugins page (plugins.item) over the `usage-plus`
+ * profile entry, plus the composer plan strip. Config reads/writes go through
+ * `ctx.configForms` (DSH 0.1.7+); probing stays on the host.
+ * @module dsh-usage-plus/client
  */
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-import type { SettingsScope, SettingsScopeSpec } from '@deepseek-ai/dsh-client-ui-settings/client'
-// Type-only: pulls the locale plugin's Context merge (ctx.locale).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
-// Type-only: pulls the settings-surface Context merge (ctx.settingsScope).
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
-// Type-only: pulls the ctx.slots merge (the renderer owns the slot registry since 0.1.2).
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-import { createElement } from 'react'
 import { createUsageStore, type UsageStoreInstance } from './usage-store.ts'
-import { UsageSectionCard, type UsageSectionFace, type UsageSettings } from './UsageSectionCard.tsx'
-import { PlanUsageStrip, type PlanUsageStripProps } from './PlanUsageStrip.tsx'
+import { UsageSectionCard, type UsageConfigForm, type UsageSectionFace, type UsageSettings } from './UsageSectionCard.tsx'
+import { PlanUsageStrip, reportDiag, type PlanUsageStripProps } from './PlanUsageStrip.tsx'
 import { NS, en, zh } from './locales.ts'
 import type { ExternalCredentialTarget, UsageOverviewView } from '../core/types.ts'
+
+/**
+ * Must match `USAGE_ENTRY_ID` / cordis.patch.yml `id: usage-plus`.
+ * Host and client bundles compile separately, so this literal is duplicated.
+ */
+export const USAGE_ENTRY_ID = 'usage-plus'
 
 /** The host usage API as the browser sees it (same-origin JSON endpoints). */
 interface UsageHttpApi {
@@ -32,6 +32,9 @@ interface UsageHttpApi {
 
 /** Hard ceiling for one usage API call; a stalled host must not pile up requests. */
 const USAGE_FETCH_TIMEOUT_MS = 20_000
+
+/** Plugins-page order among official / third-party item cards. */
+const PAGE_ORDER = 40
 
 async function usageFetch<T>(path: string, method: 'GET' | 'POST', body?: unknown): Promise<T> {
   const response = await fetch(path, {
@@ -62,47 +65,43 @@ const usageApi: UsageHttpApi = {
   clearCredential: (target) => credentialMutation('clear', target),
 }
 
-/** Settings namespace the section edits (the host plugin registers it). */
-const USAGE_SETTINGS_NS = 'dsh-usage-plus'
-
-/** First-level nav position: directly below the Workshop section (order 150). */
-const SECTION_ORDER = 151
-
-/** Required services. */
-export const inject = ['slots', 'locale', 'connection', 'settingsScope', 'remote']
+/**
+ * Required services.
+ * configForms: Host entry forms keyed by profile entry id
+ * (@see @deepseek-ai/dsh-client-ui-settings README).
+ */
+export const inject = ['slots', 'locale', 'connection', 'remote', 'configForms']
 
 export type { UsageSectionProps, UsageSectionFace } from './UsageSectionCard.tsx'
 export type { UsageUiState } from './usage-store.ts'
 export type { UsageSettings }
 
-declare module '@deepseek-ai/cordis' {
-  interface Context {
-    /**
-     * Optional rc.6 compatibility binder provided by dsh-web-settings;
-     * absent when that group plugin is not installed, so callers fall back to
-     * the official settings scope.
-     */
-    webUiSettings?: { bind<S>(spec: SettingsScopeSpec<S>): SettingsScope<S> }
-  }
-}
-
 // Fallback SlotMap rows when conversation package types are unavailable
 // in the standalone SDK dependency set.
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
-    /** Trailing composer controls — beside model / official ContextMeter. */
-    'conversation.input.right': {
+    /**
+     * Composer bottom dock — below the input card, beside official StatsPills
+     * and ContextMeter (DSH 0.1.7+ moved context/usage chrome here).
+     */
+    'conversation.composer.dock': {
       kind: 'list'
-      scope: 'session-maybe'
+      scope: 'session'
+    }
+    /**
+     * Official / third-party configuration page on the Plugins sidebar.
+     * @see @deepseek-ai/dsh-client-ui-plugin-manager README — Configuration pages
+     */
+    'plugins.item': {
+      kind: 'list'
+      scope: 'root'
     }
   }
 }
 
 /**
- * Client plugin body: register dictionaries and seat the settings section.
- * The overview poll loop and the store live with the section component's
- * mount cycle, so no background traffic exists while the page is closed.
- * @param ctx - client root context.
+ * Client plugin body: register dictionaries, the Plugins-page card (while the
+ * Host serves `usage-plus`), and the composer plan strip.
  */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => {
@@ -113,12 +112,9 @@ export function apply(ctx: ClientContext): void {
     }
   }, 'dsh-usage-plus: dictionaries')
 
-  const binder = ctx.get('webUiSettings') ?? ctx.settingsScope
-  const settingsScope = binder.bind<UsageSettings>({ namespace: USAGE_SETTINGS_NS })
+  // Shared form for the usage-plus profile entry (revision-fenced writes).
+  const settingsForm = ctx.configForms.get(USAGE_ENTRY_ID) as UsageConfigForm
 
-  // One store instance per apply body; the section mounts and unmounts with
-  // the settings page, and the store survives between visits so the last
-  // overview renders instantly on reopen.
   const store: UsageStoreInstance = createUsageStore().create()
 
   let pollSeq = 0
@@ -130,15 +126,9 @@ export function apply(ctx: ClientContext): void {
       store.actions.setSnapshot(snapshot)
     }, (error: unknown) => {
       if (seq !== pollSeq) return
-      // Surface the transport's own message: a 404 here means the host has no
-      // /api/dsh-usage/overview route (plugin disabled), which the panel must be
-      // able to tell apart from a genuine failure.
       store.actions.setState('error', error instanceof Error ? error.message : String(error))
     })
   }
-  // The refresh response is authoritative: it reflects the completed probe
-  // cycle, so it applies even when a faster section poll already bumped the
-  // sequence past it (the poll's pre-cycle snapshot is the stale one).
   const refresh = (): void => {
     const seq = pollSeq + 1
     pollSeq = seq
@@ -164,45 +154,65 @@ export function apply(ctx: ClientContext): void {
     applyOverview(await usageApi.clearCredential(target))
   }
 
-  const face = (): UsageSectionFace => ({ store, poll, refresh, settings: settingsScope, setCredential, clearCredential })
-
-  // Composer model selector writes `agent-default-model`; refresh the strip
-  // as soon as that namespace changes so quota follows the picked provider.
-  try {
-    const modelScope = binder.bind<{ provider?: string; model?: string }>({ namespace: 'agent-default-model' })
-    ctx.effect(() => modelScope.subscribe(() => { poll() }), 'dsh-usage-plus: model watch')
-  } catch {
-    // Settings binder may refuse foreign namespaces on older hosts.
-  }
-
-  ctx.slots.inject('settings.section', () => {
-    try {
-      const unregister = ctx.slots.register({
-        name: 'settings.section',
-        id: 'dsh-usage-plus',
-        order: SECTION_ORDER,
-        label: () => ctx.locale.bind(NS)('usage.title'),
-        locale: NS,
-        inject: face,
-      }, UsageSectionCard)
-      return () => {
-        unregister()
-      }
-    } catch {
-      return () => {}
-    }
+  const face = (): UsageSectionFace => ({
+    store,
+    poll,
+    refresh,
+    settings: settingsForm,
+    setCredential,
+    clearCredential,
   })
 
-  // Compact ring + % beside model / official ContextMeter.
-  ctx.slots.inject('conversation.input.right', () => {
+  // Register the configuration page only while the Host serves this entry.
+  // @see @deepseek-ai/dsh-client-ui-settings README — whileServed
+  // @see @deepseek-ai/dsh-client-ui-plugin-manager README — plugins.item
+  ctx.effect(() => ctx.configForms.whileServed([USAGE_ENTRY_ID], () => {
     try {
-      return ctx.slots.register({
-        name: 'conversation.input.right',
+      return ctx.slots.inject('plugins.item', () => {
+        try {
+          const unregister = ctx.slots.register({
+            name: 'plugins.item',
+            id: USAGE_ENTRY_ID,
+            order: PAGE_ORDER,
+            label: () => ctx.locale.bind(NS)('usage.title'),
+            locale: NS,
+            inject: face,
+          }, UsageSectionCard)
+          return () => {
+            unregister()
+          }
+        } catch (error) {
+          console.error('[dsh-usage-plus] plugins.item registration failed:', error)
+          return () => {}
+        }
+      })
+    } catch (error) {
+      console.error('[dsh-usage-plus] plugins.item inject failed:', error)
+      return () => {}
+    }
+  }), 'dsh-usage-plus: plugins page')
+
+  // Plan quota ring on the composer bottom dock (same row as official
+  // StatsPills + ContextMeter). Do not seat on conversation.input.right —
+  // that trailing seat is for model/send chrome and hides while activity runs.
+  ctx.slots.inject('conversation.composer.dock', () => {
+    try {
+      const unregister = ctx.slots.register({
+        name: 'conversation.composer.dock',
         id: 'dsh-usage-plus-plan-strip',
-        order: 20,
+        // After chat StatsPills (order 0), before the built-in ContextMeter.
+        order: 10,
         inject: (): PlanUsageStripProps => ({ store, poll }),
       }, PlanUsageStrip)
-    } catch {
+      console.info('[dsh-usage-plus] plan strip registered on conversation.composer.dock')
+      reportDiag('registered', 'conversation.composer.dock')
+      return () => {
+        console.info('[dsh-usage-plus] plan strip unregistered from conversation.composer.dock')
+        unregister()
+      }
+    } catch (error) {
+      console.error('[dsh-usage-plus] plan strip registration failed on conversation.composer.dock:', error)
+      reportDiag('registration-failed', `conversation.composer.dock: ${error instanceof Error ? error.message : String(error)}`)
       return () => {}
     }
   })

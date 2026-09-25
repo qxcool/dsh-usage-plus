@@ -10,16 +10,16 @@ export const NS = 'dsh-usage-plus'
 /** Chinese copy. */
 export const zh = {
   'usage.title': '使用统计',
+  'usage.intro': '今日用量、套餐额度与外部数据源（CPAMC / 火山方舟）。',
   'usage.tab.usage': '概览',
   'usage.tab.plans': '套餐额度',
-  'usage.tab.bank': 'Token 银行',
   'usage.tab.settings': '设置',
   'usage.refresh': '刷新',
   'usage.refreshing': '刷新中…',
   'usage.updated': '更新于 {time}',
   'usage.loading': '正在加载用量数据…',
   'usage.error': '加载失败：{error}',
-  'usage.disabled': '插件已停用：切换到「设置」启用即可恢复统计。',
+  'usage.disabled': '插件已停用：在「插件 → 使用统计」中启用即可恢复。',
   'usage.current': '当前',
   'usage.today': '今日用量',
   'usage.today.cost': '今日消费',
@@ -63,6 +63,8 @@ export const zh = {
   'usage.heatmap.dow.wed': '三',
   'usage.heatmap.dow.fri': '五',
   'usage.history': '按日历史',
+  'usage.history.show': '展开最近 14 天',
+  'usage.history.hide': '收起',
   'usage.history.empty': '暂无历史',
   'usage.trend': '近 30 天',
   'usage.trend.summary': '{tokens} · {calls}',
@@ -76,9 +78,12 @@ export const zh = {
   'usage.balance.noneConfigured': '没有已配置的提供方',
   'usage.balance.error': '查询失败',
   'usage.oauth': 'OAuth 凭据，不做余额查询',
-  'usage.plan.preview': '套餐额度',
+  'usage.plan.preview': '当前套餐',
   'usage.plan.seeAll': '查看全部',
   'usage.plan.reset': '{date} 重置',
+  'usage.plan.reset.soon': '即将重置',
+  'usage.plan.reset.inHours': '{n} 小时后重置',
+  'usage.plan.reset.inDays': '{n} 天后重置',
   'usage.plan.noPlan': '未检测到套餐数据',
   'usage.plan.noneConfigured': '没有已配置的套餐类 provider（如 Kimi、GLM、OpenCode Go、MiniMax、Codex 订阅）',
   'usage.plan.groupEmpty': '本组暂无数据',
@@ -109,21 +114,13 @@ export const zh = {
   'usage.config.bubbleMode.off': '关闭',
   'usage.config.cpamc': '启用 CPAMC 独立额度源',
   'usage.config.cpamcUrl': 'CPAMC 管理地址',
+  'usage.config.cpamcUrl.placeholder': 'http://127.0.0.1:8317',
+  'usage.config.cpamcUrl.invalid': '须为本机回环地址，或在 cpamcAllowedHosts 白名单内的主机（仅 origin，无路径），例如 http://127.0.0.1:8317。请勿填写聊天 API 网关。',
   'usage.config.cpamcToken': 'CPAMC Management Token',
+  'usage.config.cpamcAllowedHosts': 'CPAMC 允许的 host（逗号分隔）',
   'usage.config.volcano': '启用火山方舟独立额度源',
   'usage.config.volcanoAk': '火山 Access Key (AK)',
   'usage.config.volcanoSk': '火山 Secret Key (SK)',
-  'usage.config.customBalance': '自定义 HTTP 余额',
-  'usage.config.customBalance.enabled': '启用自定义余额查询',
-  'usage.config.customBalance.label': '显示名称',
-  'usage.config.customBalance.currency': '币种',
-  'usage.config.customBalance.url': 'HTTPS 查询地址',
-  'usage.config.customBalance.method': 'HTTP 方法',
-  'usage.config.customBalance.headers': '请求头 JSON（可用 {{VAR}}）',
-  'usage.config.customBalance.extract': '余额提取规则',
-  'usage.config.customBalance.allowedHosts': '允许的 host（逗号分隔）',
-  'usage.config.customBalance.var': '密钥 {{name}}',
-  'usage.config.customBalance.hint': '仅 HTTPS。提取规则可为路径（如 data.total_available）或 JSON（如 {"op":"divide","path":"data.quota","by":500000}）。含 {{VAR}} 时需填写密钥，且 URL host 须在允许列表中。目标域名还需写入本插件 package.json 的 network 权限。',
   'usage.config.secret.configured': '已配置',
   'usage.config.secret.missing': '未配置',
   'usage.config.secret.placeholder': '输入密钥后保存',
@@ -132,31 +129,25 @@ export const zh = {
   'usage.config.secret.clear': '清除',
   'usage.config.externalHint': '密钥写入 DSH 凭据库（不明文落盘）。也可预先设置环境变量 CPAMC_MANAGEMENT_KEY、VOLC_ACCESSKEY、VOLC_SECRETKEY。CPAMC 仅允许本机 loopback 地址。',
   'usage.config.readonly': '当前配置为只读，请在宿主配置文件中修改。',
-  'usage.bank.title': '鲸元券',
-  'usage.bank.hint': '官方 API 每消耗 1000 tokens 铸造 1 鲸元；保存或分享这张票券。',
-  'usage.bank.noUsage': '暂无 DeepSeek 官方用量数据（统计自插件启用起）',
-  'usage.bank.minted': '累计铸造 {minted} 鲸元（{tokens} tokens）',
-  'usage.bank.spend.observed': '官方余额实测花费 ¥{cost}（自 {since} 起）',
-  'usage.bank.spend.estimated': '消费估算：约 ¥{cost}',
-  'usage.bank.window': '统计窗口 {from} ~ {to}',
-  'usage.bank.save': '保存图片',
-  'usage.bank.share': '分享',
-  'usage.bank.drawError': '票券生成失败：{error}',
+  'usage.config.save': '保存',
+  'usage.config.saving': '保存中…',
+  'usage.config.discard': '放弃',
+  'usage.config.saveFailed': '保存失败，请重试。',
 }
 
 /** English mirror; every zh key present. */
 export const en: Record<UsageKey, string> = {
   'usage.title': 'Usage Statistics',
+  'usage.intro': 'Today’s usage, plan quotas, and external sources (CPAMC / Volcano).',
   'usage.tab.usage': 'Overview',
   'usage.tab.plans': 'Plan quotas',
-  'usage.tab.bank': 'Token Bank',
   'usage.tab.settings': 'Settings',
   'usage.refresh': 'Refresh',
   'usage.refreshing': 'Refreshing…',
   'usage.updated': 'Updated {time}',
   'usage.loading': 'Loading usage data…',
   'usage.error': 'Failed to load: {error}',
-  'usage.disabled': 'Plugin disabled. Open Settings to enable it again.',
+  'usage.disabled': 'Plugin disabled. Re-enable it under Plugins → Usage Statistics.',
   'usage.current': 'Current',
   'usage.today': 'Today',
   'usage.today.cost': 'Today spend',
@@ -200,6 +191,8 @@ export const en: Record<UsageKey, string> = {
   'usage.heatmap.dow.wed': 'W',
   'usage.heatmap.dow.fri': 'F',
   'usage.history': 'Daily history',
+  'usage.history.show': 'Show last 14 days',
+  'usage.history.hide': 'Hide',
   'usage.history.empty': 'No history yet',
   'usage.trend': 'Last 30 days',
   'usage.trend.summary': '{tokens} · {calls}',
@@ -213,9 +206,12 @@ export const en: Record<UsageKey, string> = {
   'usage.balance.noneConfigured': 'No providers configured',
   'usage.balance.error': 'Query failed',
   'usage.oauth': 'OAuth credential, no balance query',
-  'usage.plan.preview': 'Plan quotas',
+  'usage.plan.preview': 'Current plan',
   'usage.plan.seeAll': 'See all',
   'usage.plan.reset': 'resets {date}',
+  'usage.plan.reset.soon': 'Resets soon',
+  'usage.plan.reset.inHours': 'Resets in {n}h',
+  'usage.plan.reset.inDays': 'Resets in {n}d',
   'usage.plan.noPlan': 'No plan data detected',
   'usage.plan.noneConfigured': 'No plan-capable provider configured (such as Kimi, GLM, OpenCode Go, MiniMax, Codex subscription)',
   'usage.plan.groupEmpty': 'Nothing in this group yet',
@@ -246,21 +242,13 @@ export const en: Record<UsageKey, string> = {
   'usage.config.bubbleMode.off': 'Off',
   'usage.config.cpamc': 'Enable the CPAMC quota source',
   'usage.config.cpamcUrl': 'CPAMC management URL',
+  'usage.config.cpamcUrl.placeholder': 'http://127.0.0.1:8317',
+  'usage.config.cpamcUrl.invalid': 'Must be a loopback origin or a host listed in cpamcAllowedHosts (no path), e.g. http://127.0.0.1:8317. Do not paste a chat API gateway URL.',
   'usage.config.cpamcToken': 'CPAMC management token',
+  'usage.config.cpamcAllowedHosts': 'CPAMC allowed hosts (comma-separated)',
   'usage.config.volcano': 'Enable the Volcano Ark quota source',
   'usage.config.volcanoAk': 'Volcano Access Key (AK)',
   'usage.config.volcanoSk': 'Volcano Secret Key (SK)',
-  'usage.config.customBalance': 'Custom HTTP balance',
-  'usage.config.customBalance.enabled': 'Enable custom balance probe',
-  'usage.config.customBalance.label': 'Display name',
-  'usage.config.customBalance.currency': 'Currency',
-  'usage.config.customBalance.url': 'HTTPS probe URL',
-  'usage.config.customBalance.method': 'HTTP method',
-  'usage.config.customBalance.headers': 'Headers JSON ({{VAR}} allowed)',
-  'usage.config.customBalance.extract': 'Balance extract rule',
-  'usage.config.customBalance.allowedHosts': 'Allowed hosts (comma-separated)',
-  'usage.config.customBalance.var': 'Secret {{name}}',
-  'usage.config.customBalance.hint': 'HTTPS only. Extract may be a path (data.total_available) or JSON ({"op":"divide","path":"data.quota","by":500000}). When using {{VAR}}, set the secret and list the URL host under allowedHosts. The host must also be listed in this plugin package.json network permissions.',
   'usage.config.secret.configured': 'Configured',
   'usage.config.secret.missing': 'Missing',
   'usage.config.secret.placeholder': 'Enter a secret, then save',
@@ -269,16 +257,10 @@ export const en: Record<UsageKey, string> = {
   'usage.config.secret.clear': 'Clear',
   'usage.config.externalHint': 'Secrets are stored in the DSH credential vault (never written into config). You can also pre-set CPAMC_MANAGEMENT_KEY, VOLC_ACCESSKEY, and VOLC_SECRETKEY. CPAMC accepts loopback URLs only.',
   'usage.config.readonly': 'Settings are read-only. Edit the host config file instead.',
-  'usage.bank.title': 'Whale-yuan voucher',
-  'usage.bank.hint': 'Every 1,000 tokens spent on the official API mint one whale yuan; save or share the note.',
-  'usage.bank.noUsage': 'No official DeepSeek usage yet (counting starts when the plugin is enabled)',
-  'usage.bank.minted': 'Minted {minted} whale yuan ({tokens} tokens)',
-  'usage.bank.spend.observed': 'Spent ¥{cost} observed on the official balance (watching since {since})',
-  'usage.bank.spend.estimated': 'Estimated spend: about ¥{cost}',
-  'usage.bank.window': 'Window {from} - {to}',
-  'usage.bank.save': 'Save image',
-  'usage.bank.share': 'Share',
-  'usage.bank.drawError': 'Failed to render the voucher: {error}',
+  'usage.config.save': 'Save',
+  'usage.config.saving': 'Saving…',
+  'usage.config.discard': 'Discard',
+  'usage.config.saveFailed': 'Save failed. Please try again.',
 }
 
 export type UsageKey = keyof typeof zh
@@ -302,6 +284,43 @@ export function t(key: string, params?: Record<string, unknown>): string {
     }
   }
   return text
+}
+
+/** Relative plan-window reset copy; falls back to absolute locale string. */
+export function formatPlanReset(iso?: string): string {
+  if (iso === undefined || iso === '') return '—'
+  const target = new Date(iso).getTime()
+  if (Number.isNaN(target)) return '—'
+  const delta = target - Date.now()
+  if (delta <= 0) return t('usage.plan.reset.soon')
+  const hours = Math.round(delta / 3_600_000)
+  if (hours < 48) return t('usage.plan.reset.inHours', { n: Math.max(1, hours) })
+  const days = Math.round(delta / 86_400_000)
+  return t('usage.plan.reset.inDays', { n: Math.max(1, days) })
+}
+
+/** Same origin rule as host `cpamcOrigin` (no path/userinfo/query), plus the allowlist. */
+export function isCpamcLoopbackUrl(raw: string, allowedHosts?: string): boolean {
+  try {
+    const url = new URL(raw)
+    if (url.username || url.password || url.search || url.hash || url.pathname !== '/') return false
+    const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1'
+    const allowed = String(allowedHosts ?? '')
+      .split(',')
+      .map((item) => item.trim().toLowerCase())
+      .filter((item) => item !== '')
+    if (!loopback && !allowed.includes(url.hostname.toLowerCase())) return false
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+/** Map host probe errors to actionable UI copy when we recognize them. */
+export function friendlyProbeError(error: string | undefined): string | undefined {
+  if (error === undefined || error === '') return undefined
+  if (/loopback/i.test(error)) return t('usage.config.cpamcUrl.invalid')
+  return error
 }
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {

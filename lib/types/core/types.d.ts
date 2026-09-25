@@ -88,13 +88,6 @@ export interface UsageWindowSummary {
     totals: UsageTokenTotals;
     providers: UsageProviderSummary[];
 }
-/** Real spend observed from an official balance series rather than priced locally. */
-export interface ObservedSpendView {
-    /** Accrued spend in the account currency (CNY for the DeepSeek official watch). */
-    cny: number;
-    /** Epoch ms of the first balance observation the accrual starts at. */
-    since: number;
-}
 /** One provider row of the overview snapshot. */
 export interface ProviderSnapshotView {
     /** Provider route key (`deepseek`, `kimi-coding`, custom routes, ...). */
@@ -116,8 +109,8 @@ export interface ProviderSnapshotView {
     error?: string;
     updatedAt?: number;
 }
-/** Write-only external secret slots (CPAMC management token, Volcano AK/SK, custom {{VAR}}). */
-export type ExternalCredentialTarget = 'cpamc' | 'volcano.ak' | 'volcano.sk' | `customVar:${string}`;
+/** Write-only external secret slots (CPAMC management token, Volcano AK/SK). */
+export type ExternalCredentialTarget = 'cpamc' | 'volcano.ak' | 'volcano.sk';
 /**
  * Whether each external secret is present in the credential store or process
  * env. Values themselves never cross the wire — only these booleans do.
@@ -126,8 +119,6 @@ export interface ExternalCredentialStatus {
     cpamc: boolean;
     volcanoAk: boolean;
     volcanoSk: boolean;
-    /** Configured flags for {{VAR}} names discovered in custom balance headers. */
-    customVars?: Record<string, boolean>;
 }
 /** The overview the browser section renders. */
 export interface UsageOverviewView {
@@ -166,17 +157,10 @@ export interface UsageOverviewView {
         range?: UsageWindowSummary;
         /**
          * The whole retained ledger (up to `retainDays`, today included)
-         * aggregated per provider — the voucher's minted total. Optional for the
-         * same older-host tolerance as `range`.
+         * aggregated per provider — the overview's all-time totals. Optional for
+         * the same older-host tolerance as `range`.
          */
         all?: UsageWindowSummary;
-        /**
-         * Real CNY spend of the official DeepSeek family, accrued from observed
-         * decreases of the official balance (top-ups never count). Present once
-         * a decrease has been observed; until then the section falls back to the
-         * fold-time estimate.
-         */
-        observedSpend?: ObservedSpendView;
     };
 }
 /**

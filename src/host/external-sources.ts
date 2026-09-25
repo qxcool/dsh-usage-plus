@@ -11,6 +11,8 @@ export interface CpamcOptions {
   enabled: boolean
   baseURL: string
   managementKey?: string
+  /** Comma-separated extra hosts (e.g. `api.example.com,cli.example.org`) allowed as management origins in addition to loopback. */
+  allowedHosts?: string
 }
 
 export interface VolcanoOptions {
@@ -44,12 +46,17 @@ function listOf(payload: unknown): unknown[] {
   return []
 }
 
-function cpamcOrigin(raw: string): string | undefined {
+function cpamcOrigin(raw: string, allowedHosts?: string): string | undefined {
   try {
     const url = new URL(raw)
     if (url.username || url.password || url.search || url.hash || url.pathname !== '/') return undefined
-    const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1'
-    if (!loopback || (url.protocol !== 'http:' && url.protocol !== 'https:')) return undefined
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined
+    const isLoopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1'
+    const allowed = String(allowedHosts ?? '')
+      .split(',')
+      .map((item) => item.trim().toLowerCase())
+      .filter((item) => item !== '')
+    if (!isLoopback && !allowed.includes(url.hostname.toLowerCase())) return undefined
     return url.origin
   } catch {
     return undefined
@@ -113,9 +120,9 @@ export async function probeCpamc(options: CpamcOptions): Promise<ProviderSnapsho
     updatedAt: Date.now(),
   }]
   if (!options.managementKey) return statusRow('missing management token')
-  const origin = cpamcOrigin(options.baseURL)
+  const origin = cpamcOrigin(options.baseURL, options.allowedHosts)
   if (origin === undefined) {
-    return statusRow('CPAMC URL must be a loopback origin such as http://127.0.0.1:8317')
+    return statusRow('CPAMC URL must be a loopback origin or a host listed in cpamcAllowedHosts (e.g. http://127.0.0.1:8317)')
   }
   try {
     const auth = await cpamcFetch(origin, '/v0/management/auth-files', options.managementKey)

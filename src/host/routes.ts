@@ -1,9 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { appendFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { ExternalCredentialTarget } from '../core/types.ts'
 import { asJsonObject, readJsonBody, writeJson } from './http.ts'
 import { isLoopbackRequest } from './loopback.ts'
 import type { UsageService } from './usage-service.ts'
+import { dshHome } from '../dsh-home.ts'
 
 export const USAGE_API_PREFIX = '/api/dsh-usage-plus'
 
@@ -12,8 +15,6 @@ const FIXED_CREDENTIAL_TARGETS = new Set(['cpamc', 'volcano.ak', 'volcano.sk'])
 function parseCredentialTarget(raw: unknown): ExternalCredentialTarget | undefined {
   if (typeof raw !== 'string') return undefined
   if (FIXED_CREDENTIAL_TARGETS.has(raw)) return raw as ExternalCredentialTarget
-  const match = /^customVar:([A-Za-z_][A-Za-z0-9_]*)$/.exec(raw)
-  if (match !== null) return raw as ExternalCredentialTarget
   return undefined
 }
 
@@ -106,6 +107,42 @@ export function makeUsageCredentialsRoute(service: UsageService): WebRoute {
         // Credential write succeeded; a probe failure must not undo it.
       }
       writeJson(res, 200, { ok: true, overview: await service.overview() }, { 'cache-control': 'no-store' })
+    },
+  }
+}
+
+/**
+ * Loopback-fenced client-side diagnostics: the browser half appends one
+ * NDJSON line per strip mount/state change so the failure point of the
+ * quota meter is observable from the host filesystem (desktop shells may
+ * have no devtools). Bounded to keep the file meaningful.
+ */
+export function makeUsageClientDiagRoute(): WebRoute {
+  const path = USAGE_API_PREFIX + '/client-diag'
+  return {
+    kind: 'exact',
+    path,
+    handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+      if (!isLoopbackRequest(req)) {
+        writeJson(res, 403, { ok: false, error: 'forbidden: loopback-only' })
+        return
+      }
+      if (req.method !== 'POST') {
+        writeJson(res, 405, { ok: false, error: 'method not allowed' })
+        return
+      }
+      const body = asJsonObject(await readJsonBody(req, { objectOnly: true, maxBytes: 2 * 1024 }))
+      if (body === undefined) {
+        writeJson(res, 400, { ok: false, error: 'invalid body' })
+        return
+      }
+      const line = `${JSON.stringify({ ts: Date.now(), ...body })}\n`
+      try {
+        await appendFile(join(dshHome(), 'dsh-usage-plus', 'client-diag.ndjson'), line, 'utf8')
+      } catch {
+        // Diagnostics must never break the API surface.
+      }
+      writeJson(res, 200, { ok: true })
     },
   }
 }

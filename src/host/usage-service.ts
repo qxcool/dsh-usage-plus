@@ -19,29 +19,12 @@ import type { BalanceParse, PlanParse } from '../core/adapters.ts'
 import { deepseekModelSpend, deepseekPeriodAt } from '../core/pricing.ts'
 import { createLedgerDocument, deserializeLedger, foldUsage, ledgerDayKeys, localDateKey, pruneLedger, summarizeDays, totalTokens } from '../core/ledger.ts'
 import { currentPlanProvider } from '../core/plan-match.ts'
-import type { BalanceView, CredentialKind, ExternalCredentialStatus, ExternalCredentialTarget, ObservedSpendView, PlanView, ProviderSnapshotState, ProviderSnapshotView, UsageLedgerDocument, UsageOverviewView, UsageTokenTotals } from '../core/types.ts'
+import type { BalanceView, CredentialKind, ExternalCredentialStatus, ExternalCredentialTarget, PlanView, ProviderSnapshotState, ProviderSnapshotView, UsageLedgerDocument, UsageOverviewView, UsageTokenTotals } from '../core/types.ts'
 import { emptyTotals } from '../core/types.ts'
 import { probeCpamc, probeVolcano } from './external-sources.ts'
-import { customBalanceCredentialVars, probeCustomBalance } from './custom-balance.ts'
 
 /** Source tag the plugin stamps onto pet announcements. */
 export const USAGE_ANNOUNCE_SOURCE = 'dsh-usage-plus'
-
-/**
- * Persisted accrual state for the official DeepSeek family's real spend:
- * consecutive observations of the official CNY balance, decreases counted
- * as spent (a rise is a top-up and never accrues). `since` is the first
- * observation; the ledger keeps no such fact, so this watch is the only
- * source of the voucher's observed-spend figure.
- */
-export interface SpendWatch {
-  /** Total observed decrease since `since`, in CNY. */
-  accruedCny: number
-  /** Epoch ms of the first balance observation. */
-  since: number
-  /** The balance the previous observation ended on, when one exists. */
-  lastBalanceCny?: number
-}
 
 /** Per-route credential fact the probes run against. */
 interface ResolvedCredential {
@@ -66,17 +49,10 @@ export interface UsageServiceOptions {
   cpamcEnabled: boolean
   cpamcBaseURL: string
   cpamcManagementKeyEnv: string
+  cpamcAllowedHosts: string
   volcanoEnabled: boolean
   volcanoAccessKeyEnv: string
   volcanoSecretKeyEnv: string
-  customBalanceEnabled: boolean
-  customBalanceLabel: string
-  customBalanceCurrency: string
-  customBalanceUrl: string
-  customBalanceMethod: string
-  customBalanceHeadersJson: string
-  customBalanceExtractRemaining: string
-  customBalanceAllowedHosts: string
 }
 
 /** Probe timeout per HTTP call. */
@@ -261,8 +237,6 @@ export class UsageService {
 
   private ledger: UsageLedgerDocument = createLedgerDocument()
   private readonly snapshots = new Map<string, ProviderSnapshotState>()
-  /** The official DeepSeek family's real-spend watch (see SpendWatch). */
-  private spendWatch: SpendWatch | undefined
   /** Per-live-session route attribution (WeakMap: disposed sessions age out). */
   private readonly sessionRoutes = new WeakMap<Session, { provider: string; model: string }>()
   /** The most recent route seen this boot; the pet bubble follows it. */
@@ -386,9 +360,6 @@ export class UsageService {
           totals: all.totals,
           providers: all.providers,
         },
-        ...(this.spendWatch !== undefined && this.spendWatch.accruedCny > 0
-          ? { observedSpend: { cny: this.spendWatch.accruedCny, since: this.spendWatch.since } satisfies ObservedSpendView }
-          : {}),
       },
     }
   }
@@ -436,15 +407,10 @@ export class UsageService {
 
   /** Configured/missing flags only — never the secret values. */
   async externalCredentialStatus(): Promise<ExternalCredentialStatus> {
-    const customVars: Record<string, boolean> = {}
-    for (const name of customBalanceCredentialVars(this.options.customBalanceHeadersJson)) {
-      customVars[name] = await this.isEnvConfigured(name)
-    }
     return {
       cpamc: await this.isEnvConfigured(this.options.cpamcManagementKeyEnv),
       volcanoAk: await this.isEnvConfigured(this.options.volcanoAccessKeyEnv),
       volcanoSk: await this.isEnvConfigured(this.options.volcanoSecretKeyEnv),
-      ...(Object.keys(customVars).length > 0 ? { customVars } : {}),
     }
   }
 
@@ -452,11 +418,6 @@ export class UsageService {
     if (target === 'cpamc') return this.options.cpamcManagementKeyEnv
     if (target === 'volcano.ak') return this.options.volcanoAccessKeyEnv
     if (target === 'volcano.sk') return this.options.volcanoSecretKeyEnv
-    if (target.startsWith('customVar:')) {
-      const name = target.slice('customVar:'.length)
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error('invalid custom var name')
-      return name
-    }
     throw new Error('unknown credential target')
   }
 
@@ -494,33 +455,6 @@ export class UsageService {
   private providerUsageToday(provider: string): UsageTokenTotals {
     const row = this.daySummary(localDateKey(Date.now())).providers.find((entry) => entry.provider === provider)
     return row?.totals ?? emptyTotals()
-  }
-
-  /**
-   * Accrue the official DeepSeek family's real spend from observed CNY
-   * balance decreases; a balance rise is a top-up and never counts. The
-   * family's route ids can alias one account, so the watch follows the
-   * largest balance seen this cycle and accrues only decreases of that
-   * series — a failed probe keeps the stale balance and accrues nothing
-   * until the next success reports the whole drop at once.
-   */
-  private accrueDeepSeekSpend(): void {
-    let balanceCny: number | undefined
-    for (const [id, snapshot] of this.snapshots) {
-      if (!isDeepSeekProviderRoute(id)) continue
-      const balance = snapshot.balance
-      if (balance === undefined || balance.currency.toUpperCase() !== 'CNY') continue
-      const value = Number(balance.totalBalance)
-      if (!Number.isFinite(value)) continue
-      balanceCny = balanceCny === undefined ? value : Math.max(balanceCny, value)
-    }
-    if (balanceCny === undefined) return
-    const watch = this.spendWatch ?? { accruedCny: 0, since: Date.now() }
-    if (watch.lastBalanceCny !== undefined && balanceCny < watch.lastBalanceCny) {
-      watch.accruedCny += watch.lastBalanceCny - balanceCny
-    }
-    watch.lastBalanceCny = balanceCny
-    this.spendWatch = watch
   }
 
   /**
@@ -619,23 +553,12 @@ export class UsageService {
         this.lastPrune = { dayKey: localDateKey(Date.now()), retainDays: this.options.retainDays }
       }
       if (rawSnapshots !== undefined) {
-        const parsed = JSON.parse(rawSnapshots) as { providers?: Record<string, ProviderSnapshotState>; spendWatch?: SpendWatch }
+        const parsed = JSON.parse(rawSnapshots) as { providers?: Record<string, ProviderSnapshotState> }
         if (typeof parsed === 'object' && parsed !== null && typeof parsed.providers === 'object' && parsed.providers !== null) {
           for (const [provider, snapshot] of Object.entries(parsed.providers)) {
             if (typeof snapshot === 'object' && snapshot !== null && typeof snapshot.provider === 'string') {
               this.snapshots.set(provider, snapshot)
             }
-          }
-        }
-        // Revive the spend watch strictly: a corrupt accrual would otherwise
-        // quietly rewrite the user's real-spend figure.
-        const watch = parsed.spendWatch
-        if (typeof watch === 'object' && watch !== null && typeof watch.accruedCny === 'number' && Number.isFinite(watch.accruedCny) && watch.accruedCny >= 0
-          && typeof watch.since === 'number' && Number.isFinite(watch.since) && watch.since > 0) {
-          this.spendWatch = {
-            accruedCny: watch.accruedCny,
-            since: watch.since,
-            ...(typeof watch.lastBalanceCny === 'number' && Number.isFinite(watch.lastBalanceCny) ? { lastBalanceCny: watch.lastBalanceCny } : {}),
           }
         }
       }
@@ -699,7 +622,6 @@ export class UsageService {
       await writeJsonAtomic(this.snapshotsPath, {
         version: 1,
         providers: Object.fromEntries(this.snapshots),
-        ...(this.spendWatch !== undefined ? { spendWatch: this.spendWatch } : {}),
       })
     } catch {
       // Same silent degradation as the ledger.
@@ -747,7 +669,6 @@ export class UsageService {
         }
         await this.probeExternalSources()
         if (this.disposed) return
-        this.accrueDeepSeekSpend()
         await this.persistSnapshots()
         this.announceCurrent()
       } finally {
@@ -892,27 +813,14 @@ export class UsageService {
 
   private async probeExternalSources(): Promise<void> {
     for (const id of [...this.snapshots.keys()]) {
-      if (id.startsWith('cpamc:') || id.startsWith('volcano:') || id.startsWith('custom:')) this.snapshots.delete(id)
+      if (id.startsWith('cpamc:') || id.startsWith('volcano:')) this.snapshots.delete(id)
     }
     try {
-      const rows = await probeCpamc({ enabled: this.options.cpamcEnabled, baseURL: this.options.cpamcBaseURL, managementKey: await this.resolveEnv(this.options.cpamcManagementKeyEnv) })
+      const rows = await probeCpamc({ enabled: this.options.cpamcEnabled, baseURL: this.options.cpamcBaseURL, managementKey: await this.resolveEnv(this.options.cpamcManagementKeyEnv), allowedHosts: this.options.cpamcAllowedHosts })
       for (const row of rows) this.snapshots.set(row.provider, row)
     } catch {}
     try {
       const rows = await probeVolcano({ enabled: this.options.volcanoEnabled, accessKeyId: await this.resolveEnv(this.options.volcanoAccessKeyEnv), secretAccessKey: await this.resolveEnv(this.options.volcanoSecretKeyEnv) })
-      for (const row of rows) this.snapshots.set(row.provider, row)
-    } catch {}
-    try {
-      const rows = await probeCustomBalance(this.ctx, {
-        enabled: this.options.customBalanceEnabled,
-        label: this.options.customBalanceLabel,
-        currency: this.options.customBalanceCurrency,
-        url: this.options.customBalanceUrl,
-        method: this.options.customBalanceMethod,
-        headersJson: this.options.customBalanceHeadersJson,
-        extractRemaining: this.options.customBalanceExtractRemaining,
-        allowedHosts: this.options.customBalanceAllowedHosts,
-      })
       for (const row of rows) this.snapshots.set(row.provider, row)
     } catch {}
   }
