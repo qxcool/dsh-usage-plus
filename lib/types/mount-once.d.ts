@@ -8,6 +8,9 @@
  * lifetime of the first instance (the browser half is already deduped by
  * package name in the client module host).
  *
+ * Maintained locally in dsh-usage-plus (the historical
+ * scripts/sync-shared.mjs generator is not part of this repo).
+ *
  * The registry rides a global symbol so two module instances of the same
  * package (npm copy vs repository link) still share one verdict. cordis
  * `ctx.effect` runs its callback immediately and treats the callback's

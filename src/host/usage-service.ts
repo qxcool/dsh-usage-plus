@@ -655,14 +655,24 @@ export class UsageService {
         this.pruneIfNeeded()
         const routes = this.listProviderRoutes()
         const seen = new Set<string>()
+        // Probe in bounded-concurrency batches instead of one-by-one: a slow
+        // provider (up to 2 × PROBE_TIMEOUT_MS per route) must not stretch
+        // the whole cycle past the 60s default poll interval. probeRoute only
+        // writes its own snapshot key, so batches can run in parallel safely.
+        const probeable: Array<{ route: ProviderRoute; adapter: NonNullable<ReturnType<typeof adapterFor>> }> = []
         for (const route of routes) {
-          // Probes serialize at up to 2 × PROBE_TIMEOUT_MS per route; bail
-          // out of a cycle that outlived the service.
+          // Bail out of a cycle that outlived the service.
           if (this.disposed) return
           seen.add(route.id)
           const adapter = adapterFor(route.id)
           if (adapter === undefined || (adapter.balance === undefined && adapter.plan === undefined)) continue
-          await this.probeRoute(route, adapter)
+          probeable.push({ route, adapter })
+        }
+        const PROBE_CONCURRENCY = 3
+        for (let offset = 0; offset < probeable.length; offset += PROBE_CONCURRENCY) {
+          if (this.disposed) return
+          const batch = probeable.slice(offset, offset + PROBE_CONCURRENCY)
+          await Promise.all(batch.map(({ route, adapter }) => this.probeRoute(route, adapter)))
         }
         for (const id of [...this.snapshots.keys()]) {
           if (!seen.has(id) && !id.startsWith('cpamc:') && !id.startsWith('volcano:') && !id.startsWith('custom:')) this.snapshots.delete(id)

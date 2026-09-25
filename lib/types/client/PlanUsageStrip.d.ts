@@ -6,7 +6,13 @@ export declare function reportDiag(kind: string, key: string): void;
 export type UseProjection = (key: string) => unknown;
 export interface PlanUsageStripProps {
     store: UsageStoreInstance;
-    poll: () => void;
+    /**
+     * Acquire the shared strip poller: returns a release function. All strip
+     * instances share one interval + one set of document listeners in the
+     * client entry (startStripPolling), so N open conversations never fan out
+     * into N independent /overview pollers.
+     */
+    startStripPolling?: () => () => void;
     /**
      * Session-scope keyed projection hook. Returns the live projection value
      * (already subscribed). Official path for per-conversation modelSelection —

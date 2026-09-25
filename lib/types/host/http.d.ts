@@ -6,11 +6,9 @@
  * family's route module) with drifting contracts: body caps ranging 4 KiB to
  * 1 MiB and four distinct overflow behaviors (reject, undefined, null, throw).
  *
- * Packages receive this file as a generated copy via scripts/sync-shared.mjs;
- * edit this shared source and re-run the sync instead of editing a copy.
- * Consumer code is migrated onto it in follow-up waves; no call site changes
- * belong in the same change as its introduction.
- * @module dsh-web-shared/host/http
+ * This file is maintained locally in dsh-usage-plus (the historical
+ * scripts/sync-shared.mjs shared-source generator is not part of this repo).
+ * @module dsh-usage-plus/host/http
  */
 import type { IncomingMessage, OutgoingHttpHeaders, ServerResponse } from 'node:http';
 /**

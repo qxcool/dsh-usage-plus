@@ -59,6 +59,8 @@ export interface UsageSectionFace {
   refresh: () => void
   /** Shared configuration form for the `usage-plus` profile entry. */
   settings: UsageConfigForm
+  /** Acquire the shared composer-strip poller (same lifecycle as the dock strip). */
+  startStripPolling: () => () => void
   /** Write one external secret into the host credential store (write-only). */
   setCredential: (target: ExternalCredentialTarget, value: string) => Promise<void>
   /** Remove one external secret from the host credential store. */
@@ -137,9 +139,9 @@ function TotalsRow(props: {
   rangeTotals?: UsageTokenTotals
   allTotals?: UsageTokenTotals
   store: UsageStoreInstance
-  poll: () => void
+  startStripPolling: () => () => void
 }): ReactNode {
-  const { totals, rangeTotals, allTotals, store, poll } = props
+  const { totals, rangeTotals, allTotals, store, startStripPolling } = props
   const hit = cacheHitRate(totals)
   const billed = totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens
   const month = rangeTotals ?? emptyLike(totals)
@@ -190,7 +192,7 @@ function TotalsRow(props: {
       {/* Quota ring right after the cache-hit KPI row — the card owns this
           React tree, so it renders regardless of shell slot wiring. */}
       <div className={styles.quotaStripRow}>
-        <PlanUsageStrip store={store} poll={poll} />
+        <PlanUsageStrip store={store} startStripPolling={startStripPolling} />
       </div>
       <TokenBuckets totals={totals} />
     </>
@@ -424,7 +426,7 @@ function balanceText(provider: ProviderSnapshotView): string | null {
 
 /** The section component; the slot merges the face into these props. */
 export function UsageSectionCard(props: UsageSectionProps): ReactNode {
-  const { store, poll, refresh, settings, setCredential, clearCredential, view } = props
+  const { store, poll, refresh, settings, setCredential, clearCredential, startStripPolling, view } = props
   // Plugins page asks for a one-liner under the card title, or the full page.
   if (view === 'summary') return t('usage.intro')
 
@@ -585,7 +587,7 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
                   rangeTotals={snapshot.usage.range?.totals}
                   allTotals={snapshot.usage.all?.totals}
                   store={store}
-                  poll={poll}
+                  startStripPolling={startStripPolling}
                 />}
             <ProviderBreakdown
               rows={snapshot.usage.today.providers}

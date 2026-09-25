@@ -52,6 +52,8 @@ export interface UsageSectionFace {
     refresh: () => void;
     /** Shared configuration form for the `usage-plus` profile entry. */
     settings: UsageConfigForm;
+    /** Acquire the shared composer-strip poller (same lifecycle as the dock strip). */
+    startStripPolling: () => () => void;
     /** Write one external secret into the host credential store (write-only). */
     setCredential: (target: ExternalCredentialTarget, value: string) => Promise<void>;
     /** Remove one external secret from the host credential store. */

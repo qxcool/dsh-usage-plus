@@ -7,11 +7,7 @@
  * plugin's stray rejection would otherwise take every plugin down. These
  * helpers exist so that failure mode is structurally impossible in family
  * code: the rejection becomes a logged error at the plugin boundary instead.
- *
- * Complements the aggregate's shell isolation (packages/dsh-web-all): the
- * shell contains import/activation failures at boot; runGuarded contains
- * run-time failures after activation.
- * @module dsh-web-shared/host/run-guarded
+ * @module dsh-usage-plus/host/run-guarded
  */
 /**
  * Run one async operation, logging (never propagating) a rejection. Use for

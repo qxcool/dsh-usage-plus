@@ -33,7 +33,13 @@ export type UseProjection = (key: string) => unknown
 
 export interface PlanUsageStripProps {
   store: UsageStoreInstance
-  poll: () => void
+  /**
+   * Acquire the shared strip poller: returns a release function. All strip
+   * instances share one interval + one set of document listeners in the
+   * client entry (startStripPolling), so N open conversations never fan out
+   * into N independent /overview pollers.
+   */
+  startStripPolling?: () => () => void
   /**
    * Session-scope keyed projection hook. Returns the live projection value
    * (already subscribed). Official path for per-conversation modelSelection —
@@ -45,7 +51,6 @@ export interface PlanUsageStripProps {
 
 export { currentPlanProvider }
 
-const STRIP_POLL_MS = 5_000
 /** Match official ContextMeter ring geometry (14px viewBox, r=5.5). */
 const RADIUS = 5.5
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS
@@ -95,7 +100,7 @@ function routeOverride(selection: unknown): PlanRouteOverride | undefined {
  * bottom strip beside official StatsPills and ContextMeter.
  */
 export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
-  const { store, poll } = props
+  const { store } = props
   const ui = useSyncExternalStore(store.subscribe, store.getSnapshot)
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLSpanElement | null>(null)
@@ -109,32 +114,12 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
     : undefined) as SessionSelectionView | undefined
   const override = routeOverride(selection)
 
+  // Shared poller lifecycle: the client entry multiplexes one interval and
+  // one document-listener set across every live strip instance.
   useEffect(() => {
-    poll()
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') poll()
-    }, STRIP_POLL_MS)
-    const onVisible = (): void => {
-      if (document.visibilityState === 'visible') poll()
-    }
-    const onComposerInteract = (event: Event): void => {
-      const target = event.target
-      if (!(target instanceof Element)) return
-      if (target.closest('[data-slot="conversation.composer"], [data-slot="conversation.input"], [data-slot="conversation.composer.dock"]') === null) return
-      window.setTimeout(() => {
-        if (document.visibilityState === 'visible') poll()
-      }, 50)
-    }
-    document.addEventListener('visibilitychange', onVisible)
-    document.addEventListener('pointerup', onComposerInteract, true)
-    document.addEventListener('change', onComposerInteract, true)
-    return () => {
-      window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisible)
-      document.removeEventListener('pointerup', onComposerInteract, true)
-      document.removeEventListener('change', onComposerInteract, true)
-    }
-  }, [poll])
+    if (props.startStripPolling === undefined) return
+    return props.startStripPolling()
+  }, [props.startStripPolling])
 
   useEffect(() => {
     if (!open) return

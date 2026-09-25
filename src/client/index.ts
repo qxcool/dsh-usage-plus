@@ -36,6 +36,9 @@ const USAGE_FETCH_TIMEOUT_MS = 20_000
 /** Plugins-page order among official / third-party item cards. */
 const PAGE_ORDER = 40
 
+/** Composer-strip poll cadence (one shared interval for every strip). */
+const STRIP_POLL_MS = 5_000
+
 async function usageFetch<T>(path: string, method: 'GET' | 'POST', body?: unknown): Promise<T> {
   const response = await fetch(path, {
     method,
@@ -146,6 +149,49 @@ export function apply(ctx: ClientContext): void {
     store.actions.setSnapshot(snapshot)
   }
 
+  // Shared composer-strip poller: one interval + one set of document
+  // listeners across every live PlanUsageStrip instance. Each mounted strip
+  // acquires the poller on mount and releases on unmount; timers and
+  // listeners live only while at least one strip is mounted, so N open
+  // conversations never fan out into N independent /overview pollers.
+  let stripRefs = 0
+  let stripTimer: number | undefined
+  const onVisible = (): void => {
+    if (document.visibilityState === 'visible') poll()
+  }
+  const onComposerInteract = (event: Event): void => {
+    const target = event.target
+    if (!(target instanceof Element)) return
+    if (target.closest('[data-slot="conversation.composer"], [data-slot="conversation.input"], [data-slot="conversation.composer.dock"]') === null) return
+    window.setTimeout(() => {
+      if (document.visibilityState === 'visible') poll()
+    }, 50)
+  }
+  const startStripPolling = (): (() => void) => {
+    stripRefs += 1
+    if (stripRefs === 1) {
+      stripTimer = window.setInterval(() => {
+        if (document.visibilityState === 'visible') poll()
+      }, STRIP_POLL_MS)
+      document.addEventListener('visibilitychange', onVisible)
+      document.addEventListener('pointerup', onComposerInteract, true)
+      document.addEventListener('change', onComposerInteract, true)
+    }
+    // Immediate refresh for the newly mounted strip (interval first fires
+    // after one cadence otherwise).
+    poll()
+    return () => {
+      stripRefs -= 1
+      if (stripRefs === 0 && stripTimer !== undefined) {
+        window.clearInterval(stripTimer)
+        stripTimer = undefined
+        document.removeEventListener('visibilitychange', onVisible)
+        document.removeEventListener('pointerup', onComposerInteract, true)
+        document.removeEventListener('change', onComposerInteract, true)
+      }
+    }
+  }
+
   const setCredential = async (target: Parameters<UsageHttpApi['setCredential']>[0], value: string): Promise<void> => {
     applyOverview(await usageApi.setCredential(target, value))
   }
@@ -161,6 +207,7 @@ export function apply(ctx: ClientContext): void {
     settings: settingsForm,
     setCredential,
     clearCredential,
+    startStripPolling,
   })
 
   // Register the configuration page only while the Host serves this entry.
@@ -202,7 +249,7 @@ export function apply(ctx: ClientContext): void {
         id: 'dsh-usage-plus-plan-strip',
         // After chat StatsPills (order 0), before the built-in ContextMeter.
         order: 10,
-        inject: (): PlanUsageStripProps => ({ store, poll }),
+        inject: (): PlanUsageStripProps => ({ store, startStripPolling }),
       }, PlanUsageStrip)
       console.info('[dsh-usage-plus] plan strip registered on conversation.composer.dock')
       reportDiag('registered', 'conversation.composer.dock')

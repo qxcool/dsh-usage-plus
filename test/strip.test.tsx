@@ -78,7 +78,6 @@ describe('PlanUsageStrip per-session route', () => {
     const store = fakeStore(snapshot)
     const { root, host } = mount(createElement(PlanUsageStrip, {
       store: store as never,
-      poll: () => {},
       sessionId: 's1',
       ...projectionOf({ lastUsed: { provider: 'opencode-go', model: 'glm-5.3-flash' }, next: null }),
     }))
@@ -96,7 +95,6 @@ describe('PlanUsageStrip per-session route', () => {
     const store = fakeStore(snapshot)
     const { root, host } = mount(createElement(PlanUsageStrip, {
       store: store as never,
-      poll: () => {},
       sessionId: 's2',
       ...projectionOf({ next: { provider: 'minimax-cn', model: 'MiniMax-M3' } }),
     }))
@@ -111,7 +109,6 @@ describe('PlanUsageStrip per-session route', () => {
     const store = fakeStore(snapshot)
     const { root, host } = mount(createElement(PlanUsageStrip, {
       store: store as never,
-      poll: () => {},
       ...projectionOf({ lastUsed: { provider: 'some-new-route', model: 'm' }, next: null }),
     }))
     await flush()
@@ -123,7 +120,7 @@ describe('PlanUsageStrip per-session route', () => {
   it('renders nothing when neither session nor global route has a plan window', async () => {
     const snapshot = overview()
     const store = fakeStore(snapshot)
-    const { root, host } = mount(createElement(PlanUsageStrip, { store: store as never, poll: () => {} }))
+    const { root, host } = mount(createElement(PlanUsageStrip, { store: store as never }))
     await flush()
     expect(host.querySelector('span[data-dsh-plugin="usage-plus"]')).toBeNull()
     root.unmount()

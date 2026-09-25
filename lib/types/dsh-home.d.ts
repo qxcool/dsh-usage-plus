@@ -1,7 +1,9 @@
 /**
  * DSH_HOME resolution shared by the plugin family's Host halves: the
  * environment override wins, the platform home fallback follows. Mirrors
- * what dsh-pet and dsh-liangshen each used to implement locally.
+ * what dsh-pet and dsh-liangshen each used to implement locally. Maintained
+ * locally in dsh-usage-plus (the historical scripts/sync-shared.mjs
+ * generator is not part of this repo).
  */
 /** Expand a leading ~ (or ~user) in a path, platform-style. */
 export declare function expandHome(path: string, home?: string): string;
