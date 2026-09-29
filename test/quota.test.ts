@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { adapterFor } from '../src/core/adapters.ts'
 import { buildHeatmapGrid } from '../src/core/heatmap.ts'
 import { currentPlanProvider, orderedPlanWindows, planTabProviders } from '../src/core/plan-match.ts'
+import { readEntryConfig, replaceExternalSnapshots } from '../src/host/usage-service.ts'
 import { emptyTotals, type UsageOverviewView } from '../src/core/types.ts'
 
 function overview(partial?: Partial<UsageOverviewView>): UsageOverviewView {
@@ -16,6 +17,63 @@ function overview(partial?: Partial<UsageOverviewView>): UsageOverviewView {
     ...partial,
   }
 }
+
+describe('DSH 0.1.7 entry config reads', () => {
+  it('reads a volatile pi-ai provider dictionary through configEditor', () => {
+    const providers = {
+      'opencode-go': {
+        apiKeyEnv: 'OPENCODE_GO_API_KEY',
+        baseURL: 'https://opencode.ai/zen/go/v1',
+      },
+    }
+    const context = {
+      get: (name: string): unknown => name === 'configEditor'
+        ? {
+            configuration: () => [{
+              entry: {
+                options: { id: 'llm-pi-ai' },
+                fiber: { config: { providers: { get: () => providers } } },
+              },
+            }],
+          }
+        : undefined,
+    }
+
+    expect(readEntryConfig(context as never, 'llm-pi-ai')).toEqual({ providers })
+  })
+
+  it('returns undefined when the requested entry is not active', () => {
+    const context = {
+      get: () => ({ configuration: () => [] }),
+    }
+
+    expect(readEntryConfig(context as never, 'llm-pi-ai')).toBeUndefined()
+  })
+})
+
+describe('external snapshot replacement', () => {
+  it('replaces CPAMC rows only when the complete next result is available', () => {
+    const snapshots = new Map([
+      ['cpamc:codex:0', {
+        provider: 'cpamc:codex:0', displayName: 'old CPAMC', credential: 'env' as const, supported: true,
+        source: 'cpamc' as const, plan: { updatedAt: 1, windows: [{ key: 'week', percent: 42 }] },
+      }],
+      ['opencode-go', { provider: 'opencode-go', displayName: 'OpenCode', credential: 'env' as const, supported: true }],
+    ])
+
+    // While an external request is in flight the service does not mutate this map.
+    expect(snapshots.get('cpamc:codex:0')?.plan?.windows[0]?.percent).toBe(42)
+
+    replaceExternalSnapshots(snapshots, 'cpamc', [{
+      provider: 'cpamc:codex:2', displayName: 'fresh CPAMC', credential: 'env', supported: true,
+      source: 'cpamc', plan: { updatedAt: 2, windows: [{ key: '5h', percent: 1 }] },
+    }])
+
+    expect(snapshots.has('cpamc:codex:0')).toBe(false)
+    expect(snapshots.get('cpamc:codex:2')?.plan?.windows[0]?.percent).toBe(1)
+    expect(snapshots.has('opencode-go')).toBe(true)
+  })
+})
 
 describe('official quota rendering', () => {
   it('keeps only supported 5h/week/month windows for the current provider', () => {

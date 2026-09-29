@@ -86,7 +86,10 @@ describe('PlanUsageStrip per-session route', () => {
     expect(span).not.toBeNull()
     expect(span?.getAttribute('data-usage-plus-rev')).toBe('4')
     expect(span?.querySelector('circle')).not.toBeNull()
-    expect(host.textContent).toContain('41%')
+    expect(host.textContent).toContain('额度')
+    expect(host.textContent).toContain('5h 41%')
+    expect(host.textContent).toContain('周 32%')
+    expect(host.textContent).toContain('月 35%')
     root.unmount()
   })
 

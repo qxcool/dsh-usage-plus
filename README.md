@@ -2,7 +2,7 @@
 
 [中文](README.zh.md) | English
 
-Independent DSH usage and official Plan-quota plugin (Host + Web UI). Requires **DSH ≥ 0.1.7-rc.1**.
+Independent DSH usage and official Plan-quota plugin (Host + Web UI). It does not pin a DSH version: optional UI surfaces activate only when the running DSH exposes the required capabilities.
 
 - Reuses credentials already configured for DSH model providers.
 - Shows real 5-hour, weekly, and monthly windows on `conversation.composer.dock` (alongside StatsPills / ContextMeter).
@@ -49,7 +49,7 @@ Optional credential names are `CPAMC_MANAGEMENT_KEY`, `VOLC_ACCESSKEY`, and `VOL
 
 ## Known Limitations
 
-- Requires DSH Desktop / Harness **≥ 0.1.7-rc.1** (`configForms`, volatile Config, `plugins.item`, `conversation.composer.dock`).
+- DSH versions are not pinned. Missing optional surfaces (`configForms`, `plugins.item`, `conversation.composer.dock`) are treated as unavailable capabilities instead of a startup failure.
 - Providers without an official Plan API show no strip and no fabricated windows.
 - CPAMC accepts loopback origins (or hosts listed in `cpamcAllowedHosts`) only; management routes are read-only and reject redirects.
 - Volcano Ark needs vaulted AK/SK (or `VOLC_ACCESSKEY` / `VOLC_SECRETKEY`); signing runs only in the Host process.

@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-独立的 DSH 用量与官方 Plan 额度插件（Host + Web UI）。需要 **DSH ≥ 0.1.7-rc.1**。
+独立的 DSH 用量与官方 Plan 额度插件（Host + Web UI）。不锁定 DSH 版本；可选界面仅在运行中的 DSH 提供相应能力时启用。
 
 ## 特性
 
@@ -59,7 +59,7 @@ dsh plugin --profile desktop add ./
 
 ## 已知限制（Known Limitations）
 
-- 需要 DSH Desktop / Harness **≥ 0.1.7-rc.1**（`configForms`、volatile Config、`plugins.item`、`conversation.composer.dock`）。
+- 不锁定 DSH Desktop / Harness 版本；缺少 `configForms`、`plugins.item` 或 `conversation.composer.dock` 等可选能力时自动跳过对应界面，不影响 DSH 启动。
 - 无官方 Plan API 的提供方不会显示额度条，也不会伪造窗口。
 - CPAMC 仅允许回环（或白名单 host）；管理路由只读且拒绝重定向。
 - 火山方舟需凭据库 AK/SK（或环境变量）；签名只在 Host 进程执行。

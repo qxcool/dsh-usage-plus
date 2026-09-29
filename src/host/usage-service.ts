@@ -213,19 +213,53 @@ async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   }
 }
 
-/**
- * Read a foreign settings namespace's resolved value (the llm adapter
- * profiles, the agent default model). Unregistered namespaces read as
- * undefined; nothing here throws into the poll loop.
+/** Read a foreign Loader entry's live Config by its stable profile id.
+ *
+ * DSH 0.1.7 exposes `settings` as a forms API; it deliberately has no
+ * `settings.get(namespace)`. ConfigEditor is the host-side read seam for an
+ * active entry. Its fiber config can contain Volatile refs, so snapshot each
+ * top-level ref before consumers inspect it.
  */
-function readNamespace(ctx: Context, ns: string): unknown {
+function isVolatileRef(value: unknown): value is { get(): unknown } {
+  return typeof value === 'object' && value !== null
+    && typeof (value as { get?: unknown }).get === 'function'
+}
+
+export function readEntryConfig(ctx: Context, id: string): Record<string, unknown> | undefined {
   try {
-    const settings = service<{ get(ns: unknown): unknown }>(ctx, 'settings')
-    if (settings === undefined) return undefined
-    return settings.get(ns)
+    const editor = service<{
+      configuration(): Array<{
+        entry: { options: { id: string }; fiber?: { config?: unknown } }
+      }>
+    }>(ctx, 'configEditor')
+    const raw = editor?.configuration().find((row) => row.entry.options.id === id)?.entry.fiber?.config
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined
+    const config: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(raw)) {
+      config[key] = isVolatileRef(value) ? value.get() : value
+    }
+    return config
   } catch {
     return undefined
   }
+}
+
+/**
+ * Replace one external source only after its complete probe result is ready.
+ * Never expose an empty CPAMC/Volcano interval to an overlapping browser
+ * `/overview` poll: a transient fetch failure retains the last known rows;
+ * an intentional disabled/status result still atomically replaces them.
+ */
+export function replaceExternalSnapshots(
+  snapshots: Map<string, ProviderSnapshotState>,
+  source: 'cpamc' | 'volcano',
+  rows: readonly ProviderSnapshotState[],
+): void {
+  const prefix = `${source}:`
+  for (const id of [...snapshots.keys()]) {
+    if (id.startsWith(prefix)) snapshots.delete(id)
+  }
+  for (const row of rows) snapshots.set(row.provider, row)
 }
 
 export class UsageService {
@@ -504,7 +538,8 @@ export class UsageService {
    * when the next request/header event lands.
    */
   private syncCurrentFromComposer(): void {
-    const selected = readNamespace(this.ctx, 'agent-default-model') as { provider?: string; model?: string } | undefined
+    const selected = service<{ currentSelection(): { provider?: string; model?: string } }>(this.ctx, 'agentDefaultModel')?.currentSelection()
+      ?? (readEntryConfig(this.ctx, 'agent-default-model') as { provider?: string; model?: string } | undefined)
     if (selected?.provider === undefined || selected.provider === '') return
     if (this.current.provider === selected.provider && this.current.model === selected.model) return
     this.current = { provider: selected.provider, model: selected.model, source: 'default' }
@@ -822,28 +857,25 @@ export class UsageService {
   }
 
   private async probeExternalSources(): Promise<void> {
-    for (const id of [...this.snapshots.keys()]) {
-      if (id.startsWith('cpamc:') || id.startsWith('volcano:')) this.snapshots.delete(id)
-    }
     try {
       const rows = await probeCpamc({ enabled: this.options.cpamcEnabled, baseURL: this.options.cpamcBaseURL, managementKey: await this.resolveEnv(this.options.cpamcManagementKeyEnv), allowedHosts: this.options.cpamcAllowedHosts })
-      for (const row of rows) this.snapshots.set(row.provider, row)
+      replaceExternalSnapshots(this.snapshots, 'cpamc', rows)
     } catch {}
     try {
       const rows = await probeVolcano({ enabled: this.options.volcanoEnabled, accessKeyId: await this.resolveEnv(this.options.volcanoAccessKeyEnv), secretAccessKey: await this.resolveEnv(this.options.volcanoSecretKeyEnv) })
-      for (const row of rows) this.snapshots.set(row.provider, row)
+      replaceExternalSnapshots(this.snapshots, 'volcano', rows)
     } catch {}
   }
 
   /** The llm-pi-ai profile object for one provider route, when configured. */
   private piAiProfile(provider: string): { apiKeyEnv?: string; baseURL?: string } | undefined {
-    const section = readNamespace(this.ctx, 'llm-pi-ai') as { providers?: Record<string, { apiKeyEnv?: string; baseURL?: string }> } | undefined
+    const section = readEntryConfig(this.ctx, 'llm-pi-ai') as { providers?: Record<string, { apiKeyEnv?: string; baseURL?: string }> } | undefined
     return section?.providers?.[provider]
   }
 
   /** The DeepSeek official adapter's credential reference name. */
   private deepseekApiKeyEnv(): string {
-    const section = readNamespace(this.ctx, 'llm-deepseek') as { apiKeyEnv?: string } | undefined
+    const section = readEntryConfig(this.ctx, 'llm-deepseek') as { apiKeyEnv?: string } | undefined
     return section?.apiKeyEnv ?? 'DEEPSEEK_API_KEY'
   }
 

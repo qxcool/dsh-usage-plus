@@ -169,6 +169,7 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
   const percent = primary.percent as number
   const reading = percentText(percent)
   const level = toneClass(percent)
+  const windowSummary = windows.map((window) => `${windowShort(window)} ${percentText(window.percent as number)}`).join(' · ')
   const model = override?.model ?? snapshot.current.model
   const source = t(planSourceLabelKey(provider))
   const identity = model === undefined || model === ''
@@ -180,10 +181,10 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
       <button
         type="button"
         className={styles.quotaMeterTrigger}
-        aria-label={`${identity} · ${source} · ${windowLabel(primary)} ${reading}`}
+        aria-label={`${identity} · ${source} · ${t('usage.plan.quota')} · ${windowSummary}`}
         aria-haspopup="dialog"
         aria-expanded={open}
-        title={`${identity}\n${source} · ${windowShort(primary)} ${reading}\n${windows.map((window) => `${windowLabel(window)} ${percentText(window.percent as number)}`).join(' · ')}`}
+        title={`${identity}\n${source} · ${t('usage.plan.quota')}\n${windows.map((window) => `${windowLabel(window)} ${percentText(window.percent as number)}`).join(' · ')}`}
         onClick={() => {
           setOpen((value) => !value)
         }}
@@ -199,7 +200,8 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
             transform="rotate(-90 7 7)"
           />
         </svg>
-        <span className={styles.quotaMeterReading}>{reading}</span>
+        <span className={styles.quotaMeterLabel}>{t('usage.plan.quota')}</span>
+        <span className={styles.quotaMeterReading}>{windowSummary}</span>
       </button>
       {open && (
         <div className={styles.quotaMeterPanel} role="dialog" aria-label={identity}>

@@ -77,6 +77,7 @@ export declare const zh: {
     'usage.balance.error': string;
     'usage.oauth': string;
     'usage.plan.preview': string;
+    'usage.plan.quota': string;
     'usage.plan.seeAll': string;
     'usage.plan.reset': string;
     'usage.plan.reset.soon': string;

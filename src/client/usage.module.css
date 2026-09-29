@@ -1116,9 +1116,19 @@
   stroke-linecap: round;
 }
 
+.quotaMeterLabel {
+  flex: none;
+  color: var(--dsw-alias-label-secondary, inherit);
+  font-weight: 600;
+}
+
 .quotaMeterReading {
+  min-width: 0;
+  overflow: hidden;
   color: var(--dsw-alias-label-secondary, inherit);
   opacity: 0.92;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .quotaMeterWarn .quotaMeterFill,

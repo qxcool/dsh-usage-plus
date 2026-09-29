@@ -7,7 +7,7 @@
  * @module @linxin666/dsh-usage/host/usage-service
  */
 import type { Context } from '@deepseek-ai/cordis';
-import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotView, UsageOverviewView, UsageTokenTotals } from '../core/types.ts';
+import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotState, ProviderSnapshotView, UsageOverviewView, UsageTokenTotals } from '../core/types.ts';
 /** Source tag the plugin stamps onto pet announcements. */
 export declare const USAGE_ANNOUNCE_SOURCE = "dsh-usage-plus";
 /** Poll-loop and announce options; re-applied live on settings change. */
@@ -65,6 +65,14 @@ export declare function buildLedgerAnnouncement(input: {
     displayName: string;
     totals: UsageTokenTotals;
 }): Record<string, unknown> | undefined;
+export declare function readEntryConfig(ctx: Context, id: string): Record<string, unknown> | undefined;
+/**
+ * Replace one external source only after its complete probe result is ready.
+ * Never expose an empty CPAMC/Volcano interval to an overlapping browser
+ * `/overview` poll: a transient fetch failure retains the last known rows;
+ * an intentional disabled/status result still atomically replaces them.
+ */
+export declare function replaceExternalSnapshots(snapshots: Map<string, ProviderSnapshotState>, source: 'cpamc' | 'volcano', rows: readonly ProviderSnapshotState[]): void;
 export declare class UsageService {
     private readonly ctx;
     private options;

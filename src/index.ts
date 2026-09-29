@@ -7,7 +7,7 @@ import { UsageService, type UsageServiceOptions } from './host/usage-service.ts'
 import { makeUsageClientDiagRoute, makeUsageCredentialsRoute, makeUsageOverviewRoute, makeUsageRefreshRoute } from './host/routes.ts'
 
 export const name = 'dsh-usage-plus'
-export const inject = ['webServer']
+export const inject = ['webServer', 'configEditor']
 
 /**
  * Profile entry id declared by `cordis.patch.yml`.
