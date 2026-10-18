@@ -112,9 +112,16 @@ function formatCost(cost: number): string {
   return '¥' + cost.toFixed(2)
 }
 
+/**
+ * Fill classes for one plan window. `barFill` always rides along because it
+ * owns the fill's non-colour geometry (height, radius, transition); `barWarn`
+ * and `barLow` only override the colour. Returning a colour class alone
+ * collapses the inner span to zero height, so a >=70% window renders blank
+ * while a lower one looks fine. Mirrors `barTone` in PlanUsageStrip.
+ */
 function toneClass(percent: number): string {
-  if (percent >= 90) return styles.barLow
-  if (percent >= 70) return styles.barWarn
+  if (percent >= 90) return `${styles.barFill} ${styles.barLow}`
+  if (percent >= 70) return `${styles.barFill} ${styles.barWarn}`
   return styles.barFill
 }
 

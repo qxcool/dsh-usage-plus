@@ -13,6 +13,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { PlanUsageStrip } from '../src/client/PlanUsageStrip.tsx'
 import { sessionRouteFrom } from '../src/client/session-route.ts'
 import { emptyTotals, type ProviderSnapshotView, type UsageOverviewView } from '../src/core/types.ts'
+import styles from '../src/client/usage.module.css'
 
 interface FakeStore {
   subscribe: (listener: () => void) => () => void
@@ -104,6 +105,29 @@ describe('PlanUsageStrip per-session route', () => {
     await flush()
     expect(host.textContent).toContain('12%')
     expect(host.textContent).not.toContain('41%')
+    root.unmount()
+  })
+
+  it('keeps the fill geometry for a high-usage monthly window', async () => {
+    const snapshot = overview({
+      current: { provider: 'opencode-go', model: 'glm-5.3-flash', source: 'live' },
+      providers: [provider({
+        provider: 'opencode-go', displayName: 'opencode-go', planSupported: true,
+        plan: { updatedAt: 1, windows: [{ key: '5h', percent: 20 }, { key: 'week', percent: 19 }, { key: 'month', percent: 91 }] },
+      })],
+    })
+    const { root, host } = mount(createElement(PlanUsageStrip, { store: fakeStore(snapshot) as never }))
+    await flush()
+    const ring = host.querySelector(`.${styles.quotaMeterFill}`)
+    const dashLength = Number(ring?.getAttribute('stroke-dasharray')?.split(' ')[0])
+    expect(dashLength).toBeCloseTo(2 * Math.PI * 5.5 * 0.91)
+    expect(host.querySelector('[data-dsh-part="quota-meter"]')?.classList.contains(styles.quotaMeterDanger)).toBe(true)
+    const trigger = host.querySelector('button')
+    act(() => trigger?.click())
+
+    const monthlyFill = host.querySelector('[style*="width: 91%"]')
+    expect(monthlyFill?.classList.contains(styles.barFill)).toBe(true)
+    expect(monthlyFill?.classList.contains(styles.barLow)).toBe(true)
     root.unmount()
   })
 

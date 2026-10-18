@@ -77,14 +77,18 @@ function toneClass(percent: number): string {
 }
 
 function barTone(percent: number): string {
-  if (percent >= 90) return styles.barLow
-  if (percent >= 70) return styles.barWarn
+  // `barFill` supplies the non-colour geometry (most importantly height).
+  // Keep it when applying a warning/danger colour: otherwise the empty inner
+  // span collapses to zero height and a high-usage bar appears blank.
+  if (percent >= 90) return `${styles.barFill} ${styles.barLow}`
+  if (percent >= 70) return `${styles.barFill} ${styles.barWarn}`
   return styles.barFill
 }
 
 function primaryWindow(windows: PlanWindowView[]): PlanWindowView {
-  const fiveHour = windows.find((window) => window.key === '5h')
-  if (fiveHour !== undefined) return fiveHour
+  // Every official window can block further usage. The compact ring must show
+  // the tightest active limit, rather than always favouring a short 5h window
+  // while a week or month is almost exhausted.
   return windows.reduce((worst, window) =>
     (window.percent as number) > (worst.percent as number) ? window : worst)
 }
