@@ -17,13 +17,13 @@ Independent DSH usage and official Plan-quota plugin (Host + Web UI). It does no
 
 ### Composer plan strip (current model)
 
-![Composer plan strip for Volcano Ark Coding Plan: 5h / week / month percents with reset times; the circular ring beside the model picker mirrors the 5h window](docs/screenshots/composer-plan-strip.png)
+![Composer footer for an OpenCode Go route: turn/step counters, total tokens with cache hit rate, the ring level, and the "额度 5h / 周 / 月" plan strip with reset times](docs/screenshots/composer-plan-strip.png)
 
 When the active model matches an official plan source, the composer dock shows real 5-hour / weekly / monthly windows. Hover for reset times and the source chip (for example Volcano). Nothing is rendered when the remote API exposes no official window.
 
 ### Plugins → Usage · Overview
 
-![Usage overview: today / 30-day / all-time tokens and calls, token buckets, per-provider breakdown, account balance, and plan-quota entry](docs/screenshots/settings-overview.png)
+![Usage overview (device-wide): today / 30-day / all-time tokens and calls, cache hit rate, token buckets, per-provider breakdown, the 26-week heatmap, and the account-level quota strip](docs/screenshots/settings-overview.png)
 
 The overview summarizes today and the last 30 days, cache hit rate, token buckets, and per-provider totals. The balance card only lists real balances. Plan quotas and external sources live on the other tabs of the same Plugins page.
 

@@ -21,13 +21,13 @@
 
 ### 输入框额度条（当前模型）
 
-![输入框下方的火山方舟 Coding Plan 额度浮层：5 小时 / 每周 / 每月百分比与重置时间，旁侧环形进度与模型选择器同步显示 5h 用量](docs/screenshots/composer-plan-strip.png)
+![输入框底部状态行（OpenCode Go 路由）：轮次/步数、总 token 与缓存命中率、右侧环形额度、以及「额度 5 小时 / 周 / 月」计划条与重置时间](docs/screenshots/composer-plan-strip.png)
 
 当前模型命中套餐后，在 composer dock 状态条显示官方 5 小时 / 周 / 月额度；悬停可看重置时间与来源徽标（如「火山」）。无官方窗口时不渲染。
 
 ### 插件 → 使用统计 · 概览
 
-![使用统计概览：今日 / 近 30 天 / 累计 Token 与调用、分桶、按提供方明细、账户余额与套餐入口](docs/screenshots/settings-overview.png)
+![使用统计概览（全设备口径）：今日 / 近 30 天 / 累计 Token 与调用、缓存命中率、Token 分桶、按提供方明细、26 周活动热力图，以及账号级额度条](docs/screenshots/settings-overview.png)
 
 概览汇总今日与近 30 天用量、缓存命中、Token 分桶与按提供方明细；余额卡只展示真实余额；套餐额度与外部数据源在同页其它标签中配置。
 
