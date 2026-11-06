@@ -31,6 +31,9 @@ export declare const zh: {
     'usage.session.noUsage': string;
     'usage.session.hint': string;
     'usage.session.needsRestart': string;
+    'usage.session.noRoute': string;
+    'usage.session.context': string;
+    'usage.session.models': string;
     'usage.session.cacheHit': string;
     'usage.session.input': string;
     'usage.session.output': string;

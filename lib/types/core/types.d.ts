@@ -168,11 +168,18 @@ export interface UsageSessionView {
     sessionId: string;
     /** Totals folded from this session's own {@link TokenUsage} reports. */
     totals: UsageTokenTotals;
+    /** Heaviest models of this session (at most 8). */
+    models: Array<{
+        model: string;
+        totals: UsageTokenTotals;
+    }>;
     /** The last route this session requested, when one was seen. */
     route?: {
         provider?: string;
         model?: string;
     };
+    /** Epoch ms of the session's first counted call. */
+    startedAt?: number;
     /** Epoch ms of the last counted event; 0 when the session has no usage yet. */
     updatedAt: number;
 }

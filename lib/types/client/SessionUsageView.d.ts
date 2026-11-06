@@ -1,13 +1,12 @@
 /**
  * Conversation-scoped usage view ("用量"): the current session's own token
- * totals plus the quota windows of the model it uses. It sits beside the
- * built-in Chat / Trajectory views and third-party Context / Team views, so
- * session numbers stay where session numbers belong; the Plugins page keeps
- * the device-wide ledger and configuration.
+ * totals, per-model split, cost, and the quota windows of the model it used.
  *
- * Session totals come from the host's in-memory per-session fold (the durable
- * ledger is device-wide, not session-keyed); quota windows come from the
- * shared overview poller.
+ * It deliberately does NOT repeat per-turn detail: the built-in Trajectory and
+ * session-statistics views already own turn/step/timing tables, and the
+ * Context view owns prompt composition. This view answers the other question —
+ * "what did this conversation cost against which quota" — so it stays a
+ * two-card surface: 计费口径 + 账号额度.
  * @module dsh-usage-plus/client/SessionUsageView
  */
 import { type ReactNode } from 'react';

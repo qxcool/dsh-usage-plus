@@ -52,7 +52,8 @@ function response(): { res: ServerResponse; status: () => number; body: () => st
 describe('session usage fold', () => {
   it('reports zero usage for a session it has never seen', () => {
     const usage = service().sessionUsage('never-seen')
-    expect(usage).toEqual({ sessionId: 'never-seen', totals: expect.objectContaining({ calls: 0 }), updatedAt: 0 })
+    expect(usage).toMatchObject({ sessionId: 'never-seen', updatedAt: 0, models: [] })
+    expect(usage.totals.calls).toBe(0)
   })
 
   it('records the route and folds one assistant/message into that session only', () => {
@@ -83,6 +84,9 @@ describe('session usage fold', () => {
     expect(usage.totals.cacheReadTokens).toBe(2)
     expect(usage.totals.calls).toBe(1)
     expect(usage.updatedAt).toBeGreaterThan(0)
+    expect(usage.startedAt).toBeGreaterThan(0)
+    expect(usage.models.map((row) => row.model)).toEqual(['deepseek-v4.1-flash'])
+    expect(usage.models[0]?.totals.inputTokens).toBe(10)
 
     // The sibling session never contributed (no route seen) and stays isolated.
     expect(svc.sessionUsage('session-b').totals.calls).toBe(0)

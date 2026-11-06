@@ -82,11 +82,15 @@ const HEATMAP_DAYS = 182
  */
 const SESSION_LEDGER_LIMIT = 200
 
-/** One session's live totals and last-seen route. */
+/** One session's live totals, per-model split, and last-seen route. */
 interface SessionLedgerEntry {
   totals: UsageTokenTotals
+  /** Per-model totals, capped on read. */
+  models: Map<string, UsageTokenTotals>
   route: { provider?: string; model?: string }
-  updatedAt: number
+  /** First and last counted event, for the view's active-window line. */
+  firstAt: number
+  lastAt: number
 }
 
 /** Currency symbols the bubble and section render inline; other codes render as `12.00 EUR`. */
@@ -584,7 +588,6 @@ export class UsageService {
           this.sessionRoutes.set(session, { provider: config.provider, model: config.model ?? '' })
           this.current = { provider: config.provider, model: config.model, source: 'live' }
           entry.route = { provider: config.provider, ...(config.model !== undefined && config.model !== '' ? { model: config.model } : {}) }
-          entry.updatedAt = Date.now()
         }
       } else if (event.type === 'request/context') {
         const data = event.data as { provider?: string; model?: string }
@@ -592,7 +595,6 @@ export class UsageService {
           this.sessionRoutes.set(session, { provider: data.provider, model: data.model ?? '' })
           this.current = { provider: data.provider, model: data.model, source: 'live' }
           entry.route = { provider: data.provider, ...(data.model !== undefined && data.model !== '' ? { model: data.model } : {}) }
-          entry.updatedAt = Date.now()
         }
       } else if (event.type === 'assistant/message') {
         const usage = (event.data as { usage?: TokenUsage }).usage
@@ -603,7 +605,12 @@ export class UsageService {
         const totals = this.totalsFrom(usage, route.provider, route.model || 'unknown', now)
         foldUsage(this.ledger, now, route.provider, route.model || 'unknown', totals)
         addTotals(entry.totals, totals)
-        entry.updatedAt = now
+        const modelKey = route.model || 'unknown'
+        const modelTotals = entry.models.get(modelKey) ?? emptyTotals()
+        addTotals(modelTotals, totals)
+        entry.models.set(modelKey, modelTotals)
+        if (entry.firstAt === 0) entry.firstAt = now
+        entry.lastAt = now
         this.scheduleFlush()
       }
     } catch {
@@ -620,13 +627,19 @@ export class UsageService {
   sessionUsage(sessionId: string): UsageSessionView {
     const entry = this.sessionLedger.get(sessionId)
     if (entry === undefined) {
-      return { sessionId, totals: emptyTotals(), updatedAt: 0 }
+      return { sessionId, totals: emptyTotals(), models: [], updatedAt: 0 }
     }
+    const models = [...entry.models]
+      .map(([model, totals]) => ({ model, totals }))
+      .sort((a, b) => totalTokens(b.totals) - totalTokens(a.totals))
+      .slice(0, 8)
     return {
       sessionId,
       totals: entry.totals,
+      models,
       ...(entry.route.provider !== undefined ? { route: entry.route } : {}),
-      updatedAt: entry.updatedAt,
+      ...(entry.firstAt > 0 ? { startedAt: entry.firstAt } : {}),
+      updatedAt: entry.lastAt,
     }
   }
 
@@ -639,7 +652,7 @@ export class UsageService {
       this.sessionLedger.set(sessionId, existing)
       return existing
     }
-    const created: SessionLedgerEntry = { totals: emptyTotals(), route: {}, updatedAt: 0 }
+    const created: SessionLedgerEntry = { totals: emptyTotals(), models: new Map(), route: {}, firstAt: 0, lastAt: 0 }
     this.sessionLedger.set(sessionId, created)
     while (this.sessionLedger.size > SESSION_LEDGER_LIMIT) {
       const oldest = this.sessionLedger.keys().next().value

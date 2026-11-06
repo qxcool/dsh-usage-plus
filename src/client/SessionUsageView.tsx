@@ -1,18 +1,17 @@
 /**
  * Conversation-scoped usage view ("用量"): the current session's own token
- * totals plus the quota windows of the model it uses. It sits beside the
- * built-in Chat / Trajectory views and third-party Context / Team views, so
- * session numbers stay where session numbers belong; the Plugins page keeps
- * the device-wide ledger and configuration.
+ * totals, per-model split, cost, and the quota windows of the model it used.
  *
- * Session totals come from the host's in-memory per-session fold (the durable
- * ledger is device-wide, not session-keyed); quota windows come from the
- * shared overview poller.
+ * It deliberately does NOT repeat per-turn detail: the built-in Trajectory and
+ * session-statistics views already own turn/step/timing tables, and the
+ * Context view owns prompt composition. This view answers the other question —
+ * "what did this conversation cost against which quota" — so it stays a
+ * two-card surface: 计费口径 + 账号额度.
  * @module dsh-usage-plus/client/SessionUsageView
  */
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { currentPlanProvider, orderedPlanWindows, planSourceLabelKey } from '../core/plan-match.ts'
-import type { UsageSessionView } from '../core/types.ts'
+import type { UsageSessionView, UsageTokenTotals } from '../core/types.ts'
 import { formatPlanReset, t } from './locales.ts'
 import type { UsageStoreInstance } from './usage-store.ts'
 import styles from './usage.module.css'
@@ -31,9 +30,10 @@ async function fetchSessionUsage(sessionId: string): Promise<UsageSessionView | 
     '/api/dsh-usage-plus/session?id=' + encodeURIComponent(sessionId),
     { signal: AbortSignal.timeout(10_000) },
   )
-  // A host built before this view shipped answers 404: the client half may be
-  // newer than the running host until the process restarts.
-  if (response.status === 404) return undefined
+  // A host built before this view shipped answers 401/404 (the route does not
+  // exist yet): the client half may be newer than the running host until the
+  // process restarts.
+  if (response.status === 404 || response.status === 401) return undefined
   if (!response.ok) throw new Error('usage session failed: ' + response.status)
   return (await response.json()) as UsageSessionView
 }
@@ -52,8 +52,13 @@ function formatCost(value: number): string {
   return `¥${value.toFixed(value >= 1 ? 2 : 4)}`
 }
 
-function totalOf(totals: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }): number {
+function totalOf(totals: UsageTokenTotals): number {
   return totals.inputTokens + totals.outputTokens + totals.cacheReadTokens + totals.cacheWriteTokens
+}
+
+/** Billed input, the same "上下文" column the session statistics table shows. */
+function contextOf(totals: UsageTokenTotals): number {
+  return totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens
 }
 
 function percentText(value: number): string {
@@ -66,12 +71,24 @@ function barClass(percent: number): string {
   return styles.barFill
 }
 
+function clock(epochMs: number): string {
+  return new Date(epochMs).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+}
+
+function durationText(firstAt: number, lastAt: number): string {
+  const minutes = Math.max(0, Math.round((lastAt - firstAt) / 60_000))
+  if (minutes < 1) return '<1 min'
+  if (minutes < 60) return `${minutes} min`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ${minutes % 60}m`
+}
+
 /** The "用量" Conversation View body. */
 export function SessionUsageView(props: SessionUsageViewProps): ReactNode {
   const ui = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot)
   const [usage, setUsage] = useState<UsageSessionView | undefined>(undefined)
   const [error, setError] = useState<string | undefined>(undefined)
-  /** False while the running host predates this view (404) — needs a restart. */
+  /** False while the running host predates this view — needs a restart. */
   const [hostReady, setHostReady] = useState(true)
 
   useEffect(() => {
@@ -101,7 +118,7 @@ export function SessionUsageView(props: SessionUsageViewProps): ReactNode {
   const totals = usage?.totals
   const route = usage?.route
   const identity = route?.provider === undefined
-    ? t('usage.noData')
+    ? t('usage.session.noRoute')
     : `${route.provider}${route.model !== undefined && route.model !== '' ? ` · ${route.model}` : ''}`
 
   // Quota is account-level; bind it to the route this session actually used.
@@ -116,8 +133,8 @@ export function SessionUsageView(props: SessionUsageViewProps): ReactNode {
     : orderedPlanWindows(matched.plan).filter((window) => typeof window.percent === 'number')
 
   const settled = totals !== undefined && totals.calls > 0
-  const billed = totals === undefined ? 0 : totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens
-  const hitRate = billed > 0 && totals !== undefined ? (totals.cacheReadTokens / billed) * 100 : null
+  const billed = totals === undefined ? 0 : contextOf(totals)
+  const hitRate = billed > 0 ? ((totals?.cacheReadTokens ?? 0) / billed) * 100 : null
 
   return (
     <div className={styles.section} data-dsh-plugin="usage" data-dsh-part="session-view">
@@ -130,7 +147,7 @@ export function SessionUsageView(props: SessionUsageViewProps): ReactNode {
           <span className={styles.muted}>
             {usage === undefined || usage.updatedAt === 0
               ? t('usage.session.noUsage')
-              : new Date(usage.updatedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+              : `${clock(usage.updatedAt)} · ${durationText(usage.startedAt ?? usage.updatedAt, usage.updatedAt)}`}
           </span>
         </span>
       </div>
@@ -144,26 +161,19 @@ export function SessionUsageView(props: SessionUsageViewProps): ReactNode {
             <span className={styles.cardTitle}>{t('usage.session.title')}</span>
             <span className={styles.scopeChip}>{t('usage.scope.session')}</span>
           </span>
+          {settled && totals !== undefined && (
+            <span className={styles.cardSummary}>
+              {totals.cost > 0 ? formatCost(totals.cost) : t('usage.metric.unpriced')}
+            </span>
+          )}
         </div>
-        {!settled || totals === undefined
+        {usage === undefined || !settled || totals === undefined
           ? <span className={styles.muted}>{t('usage.session.noUsage')}</span>
           : <>
               <div className={styles.kpiGrid}>
                 <div className={styles.kpiTile}>
-                  <span className={styles.kpiValue}>{formatTokens(totalOf(totals))}</span>
-                  <span className={styles.kpiLabel}>{t('usage.tokens.total')}</span>
-                  <span className={styles.kpiHint}>
-                    {t('usage.tokens.detail', {
-                      input: formatTokens(billed),
-                      output: formatTokens(totals.outputTokens),
-                    })}
-                  </span>
-                </div>
-                <div className={styles.kpiTile}>
-                  <span className={styles.kpiValue}>
-                    {hitRate === null ? '—' : percentText(hitRate)}
-                  </span>
-                  <span className={styles.kpiLabel}>{t('usage.session.cacheHit')}</span>
+                  <span className={styles.kpiValue}>{formatTokens(billed)}</span>
+                  <span className={styles.kpiLabel}>{t('usage.session.context')}</span>
                   <span className={styles.kpiHint}>
                     {t('usage.tokens.cacheRatio', {
                       read: formatTokens(totals.cacheReadTokens),
@@ -172,19 +182,42 @@ export function SessionUsageView(props: SessionUsageViewProps): ReactNode {
                   </span>
                 </div>
                 <div className={styles.kpiTile}>
-                  <span className={styles.kpiValue}>{formatTokens(totals.inputTokens)}</span>
-                  <span className={styles.kpiLabel}>{t('usage.session.input')}</span>
-                  <span className={styles.kpiHint}>{formatTokens(totals.outputTokens)} {t('usage.session.output')}</span>
+                  <span className={styles.kpiValue}>{formatTokens(totals.outputTokens)}</span>
+                  <span className={styles.kpiLabel}>{t('usage.session.output')}</span>
+                  <span className={styles.kpiHint}>{formatTokens(totalOf(totals))} {t('usage.tokens.total')}</span>
+                </div>
+                <div className={styles.kpiTile}>
+                  <span className={`${styles.kpiValue} ${hitRate !== null && hitRate >= 90 ? styles.kpiGood : ''}`}>
+                    {hitRate === null ? '—' : percentText(hitRate)}
+                  </span>
+                  <span className={styles.kpiLabel}>{t('usage.session.cacheHit')}</span>
+                  <span className={styles.kpiHint}>{formatTokens(totals.cacheReadTokens)}</span>
                 </div>
                 <div className={styles.kpiTile}>
                   <span className={styles.kpiValue}>{totals.calls}</span>
                   <span className={styles.kpiLabel}>{t('usage.session.calls')}</span>
                   <span className={styles.kpiHint}>
-                    {totals.cost > 0 ? formatCost(totals.cost) : t('usage.metric.unpriced')}
+                    {usage.startedAt !== undefined
+                      ? `${clock(usage.startedAt)}–${clock(usage.updatedAt)}`
+                      : ''}
                   </span>
                 </div>
               </div>
-              <ProviderBreakdownInline totals={totals} />
+              {usage.models.length > 0 && (
+                <div className={styles.bucketGrid} data-dsh-part="session-models">
+                  <span className={styles.subTitle}>{t('usage.session.models')}</span>
+                  {usage.models.map((row) => (
+                    <div key={row.model} className={styles.modelRow}>
+                      <span className={styles.modelName}>{row.model}</span>
+                      <span className={styles.providerTokens}>
+                        {formatTokens(totalOf(row.totals))}
+                        {' · '}
+                        {t('usage.calls', { n: row.totals.calls })}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </>}
       </div>
 
@@ -217,15 +250,5 @@ export function SessionUsageView(props: SessionUsageViewProps): ReactNode {
 
       <span className={styles.muted}>{t('usage.session.hint')}</span>
     </div>
-  )
-}
-
-/** One compact line naming the priced/unpriced state of this session. */
-function ProviderBreakdownInline(props: { totals: { cost: number } }): ReactNode {
-  const priced = props.totals.cost > 0
-  return (
-    <span className={styles.cardSummary} data-dsh-part="session-cost">
-      {priced ? formatCost(props.totals.cost) : t('usage.metric.unpriced')}
-    </span>
   )
 }
