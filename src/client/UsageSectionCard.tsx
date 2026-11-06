@@ -392,7 +392,10 @@ function PlanHero(props: {
   return (
     <div className={styles.card} data-dsh-part="plan-hero">
       <div className={styles.cardHead}>
-        <span className={styles.cardTitle}>{t('usage.plan.preview')}</span>
+        <span className={styles.cardHeadGroup}>
+          <span className={styles.cardTitle}>{t('usage.plan.preview')}</span>
+          <span className={styles.scopeChip}>{t('usage.scope.account')}</span>
+        </span>
         <button type="button" className={styles.linkBtn} onClick={onSeeAll}>{t('usage.plan.seeAll')}</button>
       </div>
       <div className={styles.planPreviewBlock}>
@@ -584,7 +587,10 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
 
           <div className={styles.card} data-dsh-part="today-card">
             <div className={styles.cardHead}>
-              <span className={styles.cardTitle}>{t('usage.today')}</span>
+              <span className={styles.cardHeadGroup}>
+                <span className={styles.cardTitle}>{t('usage.today')}</span>
+                <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
+              </span>
               {deepseekVisible && (
                 <span className={styles.peakPill} data-dsh-part="peak-status">
                   {t(deepseekPeriod.peak ? 'usage.peak.on' : 'usage.peak.off', { time: formatClock(deepseekPeriod.boundaryMs) })}
@@ -669,7 +675,10 @@ function HeatmapCard(props: { days: UsageDaySummary[] }): ReactNode {
   return (
     <div className={styles.card} data-dsh-part="heatmap-card">
       <div className={styles.cardHead}>
-        <span className={styles.cardTitle}>{t('usage.heatmap')}</span>
+        <span className={styles.cardHeadGroup}>
+          <span className={styles.cardTitle}>{t('usage.heatmap')}</span>
+          <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
+        </span>
         <span className={styles.muted}>{t('usage.heatmap.weeks')}</span>
       </div>
       {!hasData
@@ -721,7 +730,10 @@ function HistoryCard(props: { days: UsageDaySummary[] }): ReactNode {
   return (
     <div className={styles.card} data-dsh-part="history-card">
       <div className={styles.cardHead}>
-        <span className={styles.cardTitle}>{t('usage.history')}</span>
+        <span className={styles.cardHeadGroup}>
+          <span className={styles.cardTitle}>{t('usage.history')}</span>
+          <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
+        </span>
         <button type="button" className={styles.linkBtn} onClick={() => setOpen((value) => !value)}>
           {open ? t('usage.history.hide') : t('usage.history.show')}
         </button>
@@ -761,7 +773,10 @@ function RangeCard(props: { range?: UsageOverviewView['usage']['range']; provide
   return (
     <div className={styles.card} data-dsh-part="trend-card">
       <div className={styles.cardHead}>
-        <span className={styles.cardTitle}>{t('usage.trend')}</span>
+        <span className={styles.cardHeadGroup}>
+          <span className={styles.cardTitle}>{t('usage.trend')}</span>
+          <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
+        </span>
         {grandTotal > 0 && (
           <span className={styles.cardSummary}>
             {t('usage.trend.summary', {
@@ -828,6 +843,7 @@ function PlanCard(props: { provider: ProviderSnapshotView; currentId?: string })
           {provider.displayName}
           {currentId === provider.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
           <span className={styles.sourceChip}>{t(planSourceLabelKey(provider))}</span>
+          <span className={styles.scopeChip}>{t('usage.scope.account')}</span>
           {provider.plan?.planName !== undefined ? ` · ${provider.plan.planName}` : ''}
         </span>
       </div>

@@ -8,6 +8,8 @@
 
 - 自动复用 DSH 已配置模型的凭据，查询 Kimi Coding、GLM Coding Plan、OpenCode Go、MiniMax Coding Plan 与 Codex/ChatGPT 订阅额度。
 - 在 `conversation.composer.dock`（与官方轮次 / Token / ContextMeter 同行）显示当前模型的真实 5 小时、每周、每月额度；服务端没有返回官方额度窗口时完全不显示。
+- 新增会话级 **用量** 视图（`conversation.view`）：本会话 token、缓存命中率，以及该会话所用模型的额度窗口，和 对话 / 轨迹 / 上下文 / 编队 / 统计 并列。
+- 插件页每个数字都带口径徽标（`全设备` / `账号级` / `本会话`），设备级合计不会被误读成会话级数字。
 - 额度条按「每个会话选择的模型」解析：读取该会话 `modelSelection` 投影（composer 模型位 / `/model` 切换立即生效）。尚未产生会话选择时才回退到宿主当前路由；**会话已选中模型时绝不再串到其它会话或全局套餐**。
 - 在「插件 → 使用统计」页按“模型配置自动查询 / CPAMC / 火山方舟”分组展示（DSH 0.1.7+ 配置表单位于 Plugins 页，草稿需点保存）。
 - CPAMC 只允许回环地址（或 `cpamcAllowedHosts` 白名单），固定调用只读管理路由并拒绝重定向。

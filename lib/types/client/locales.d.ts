@@ -20,6 +20,18 @@ export declare const zh: {
     'usage.disabled': string;
     'usage.current': string;
     'usage.today': string;
+    'usage.scope.device': string;
+    'usage.scope.account': string;
+    'usage.scope.session': string;
+    'usage.view.label': string;
+    'usage.session.title': string;
+    'usage.session.noUsage': string;
+    'usage.session.hint': string;
+    'usage.session.needsRestart': string;
+    'usage.session.cacheHit': string;
+    'usage.session.input': string;
+    'usage.session.output': string;
+    'usage.session.calls': string;
     'usage.today.cost': string;
     'usage.today.breakdown': string;
     'usage.hero.today': string;

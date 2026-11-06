@@ -153,6 +153,29 @@
   opacity: 0.6;
 }
 
+/* Title plus its units-of-measurement chip ("全设备" / "账号级"). */
+.cardHeadGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Data-scope badge: says whether a number is device-wide, account-wide, or
+   scoped to this conversation, so adjacent surfaces never read as one total. */
+.scopeChip {
+  flex: none;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.55;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
 .cardSummary {
   font-size: 11px;
   opacity: 0.55;

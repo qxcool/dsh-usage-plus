@@ -22,6 +22,12 @@ export declare function makeUsageOverviewRoute(service: UsageService): WebRoute;
  */
 export declare function makeUsageRefreshRoute(service: UsageService): WebRoute;
 /**
+ * Loopback-fenced session usage for the conversation "用量" view: the current
+ * session's own token totals plus the last route it requested. Read-only and
+ * probe-free, so it can poll faster than `/overview`.
+ */
+export declare function makeUsageSessionRoute(service: UsageService): WebRoute;
+/**
  * Loopback-fenced write-only credential route for CPAMC management token and
  * Volcano AK/SK. Secrets land in the DSH credential store and never come back
  * on the wire — only ok/error plus a refreshed overview.

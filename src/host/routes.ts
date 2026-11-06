@@ -92,6 +92,35 @@ export function makeUsageRefreshRoute(service: UsageService): WebRoute {
 }
 
 /**
+ * Loopback-fenced session usage for the conversation "用量" view: the current
+ * session's own token totals plus the last route it requested. Read-only and
+ * probe-free, so it can poll faster than `/overview`.
+ */
+export function makeUsageSessionRoute(service: UsageService): WebRoute {
+  return {
+    kind: 'exact',
+    path: USAGE_API_PREFIX + '/session',
+    handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+      if (!isLoopbackRequest(req)) {
+        writeJson(res, 403, { ok: false, error: 'forbidden: loopback-only' })
+        return
+      }
+      let sessionId = ''
+      try {
+        sessionId = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('id') ?? ''
+      } catch {
+        sessionId = ''
+      }
+      if (sessionId === '') {
+        writeJson(res, 400, { ok: false, error: 'session id required' })
+        return
+      }
+      writeJson(res, 200, service.sessionUsage(sessionId), { 'cache-control': 'no-store' })
+    },
+  }
+}
+
+/**
  * Loopback-fenced write-only credential route for CPAMC management token and
  * Volcano AK/SK. Secrets land in the DSH credential store and never come back
  * on the wire — only ok/error plus a refreshed overview.

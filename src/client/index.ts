@@ -12,6 +12,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { createUsageStore, type UsageStoreInstance } from './usage-store.ts'
 import { UsageSectionCard, type UsageConfigForm, type UsageSectionFace, type UsageSettings } from './UsageSectionCard.tsx'
+import { SessionUsageView } from './SessionUsageView.tsx'
 import { PlanUsageStrip, reportDiag, type PlanUsageStripProps } from './PlanUsageStrip.tsx'
 import { NS, en, zh } from './locales.ts'
 import type { ExternalCredentialTarget, UsageOverviewView } from '../core/types.ts'
@@ -124,6 +125,15 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     'plugins.item': {
       kind: 'list'
       scope: 'root'
+    }
+    /**
+     * Conversation body views (对话 / 轨迹 / 上下文 / 编队 / 统计 …). The plugin
+     * contributes 用量 here so session-scoped numbers sit with the other
+     * session surfaces instead of the device-wide Plugins page.
+     */
+    'conversation.view': {
+      kind: 'list'
+      scope: 'session'
     }
   }
 }
@@ -281,6 +291,32 @@ export function apply(ctx: ClientContext): void {
       return () => {}
     }
   }), 'dsh-usage-plus: plugins page')
+
+  // Conversation-scoped "用量" view: session tokens + the quota of the model
+  // this session uses, seated beside Chat / Trajectory / Context / Team /
+  // Session stats. Registered unconditionally (no session is needed to
+  // register; the slot passes the id at render time).
+  ctx.slots.inject('conversation.view', () => {
+    try {
+      const unregister = ctx.slots.register({
+        name: 'conversation.view',
+        id: 'usage',
+        // After Chat(0), Trajectory(10), Context(20); before any later view.
+        order: 30,
+        locale: NS,
+        label: () => ctx.locale.bind(NS)('usage.view.label'),
+        inject: (sessionId: string) => ({ sessionId, store }),
+      }, SessionUsageView)
+      reportDiag('registered', 'conversation.view')
+      return () => {
+        unregister()
+      }
+    } catch (error) {
+      console.error('[dsh-usage-plus] conversation.view registration failed:', error)
+      reportDiag('registration-failed', `conversation.view: ${error instanceof Error ? error.message : String(error)}`)
+      return () => {}
+    }
+  })
 
   // Plan quota ring on the composer bottom dock (same row as official
   // StatsPills + ContextMeter). Do not seat on conversation.input.right —

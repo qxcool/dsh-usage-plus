@@ -38,6 +38,15 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
             kind: 'list';
             scope: 'root';
         };
+        /**
+         * Conversation body views (对话 / 轨迹 / 上下文 / 编队 / 统计 …). The plugin
+         * contributes 用量 here so session-scoped numbers sit with the other
+         * session surfaces instead of the device-wide Plugins page.
+         */
+        'conversation.view': {
+            kind: 'list';
+            scope: 'session';
+        };
     }
 }
 /**

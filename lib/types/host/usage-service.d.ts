@@ -7,7 +7,7 @@
  * @module @linxin666/dsh-usage/host/usage-service
  */
 import type { Context } from '@deepseek-ai/cordis';
-import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotState, ProviderSnapshotView, UsageOverviewView, UsageTokenTotals } from '../core/types.ts';
+import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotState, ProviderSnapshotView, UsageOverviewView, UsageSessionView, UsageTokenTotals } from '../core/types.ts';
 /** Source tag the plugin stamps onto pet announcements. */
 export declare const USAGE_ANNOUNCE_SOURCE = "dsh-usage-plus";
 /** Poll-loop and announce options; re-applied live on settings change. */
@@ -120,6 +120,8 @@ export declare class UsageService {
     private readonly probeBackoff;
     /** Last snapshots document written; an unchanged document is not rewritten. */
     private lastPersistedSnapshots;
+    /** Live per-session totals for the conversation "用量" view (LRU-bounded). */
+    private readonly sessionLedger;
     constructor(ctx: Context, options: UsageServiceOptions);
     /** Start the listeners, load persisted state, and arm the first poll. */
     start(): void;
@@ -169,6 +171,15 @@ export declare class UsageService {
      */
     private routeDisplayName;
     private onSessionEvent;
+    /**
+     * One session's in-memory totals for the conversation "用量" view. Never
+     * persisted: the view is a live surface, and the durable ledger stays the
+     * global (device-wide) record. Entries are LRU-bounded so a long-lived
+     * host cannot grow without limit.
+     */
+    sessionUsage(sessionId: string): UsageSessionView;
+    /** Read-or-create one session entry, refreshing its LRU position. */
+    private sessionEntry;
     /**
      * Follow the composer model selector (`agent-default-model`). The strip
      * must update as soon as the user picks another provider/model, not only

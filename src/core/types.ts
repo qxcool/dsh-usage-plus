@@ -183,6 +183,17 @@ export interface UsageOverviewView {
   }
 }
 
+/** One session's live usage, served to the conversation "用量" view. */
+export interface UsageSessionView {
+  sessionId: string
+  /** Totals folded from this session's own {@link TokenUsage} reports. */
+  totals: UsageTokenTotals
+  /** The last route this session requested, when one was seen. */
+  route?: { provider?: string; model?: string }
+  /** Epoch ms of the last counted event; 0 when the session has no usage yet. */
+  updatedAt: number
+}
+
 /**
  * Host-side snapshot state: the wire view plus one error slot per probed
  * fact. A probe half only clears its own slot, so a plan success can no
