@@ -23,6 +23,9 @@ export declare const zh: {
     'usage.scope.device': string;
     'usage.scope.account': string;
     'usage.scope.session': string;
+    'usage.scope.note.usage': string;
+    'usage.scope.note.plans': string;
+    'usage.scope.note.settings': string;
     'usage.view.label': string;
     'usage.session.title': string;
     'usage.session.noUsage': string;

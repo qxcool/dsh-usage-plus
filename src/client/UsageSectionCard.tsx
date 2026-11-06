@@ -575,6 +575,12 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
         </button>
       </div>
 
+      {/* Scope line: says what the visible tab measures, so the device-wide
+          ledger and the account-level quota are never read as session data. */}
+      <span className={styles.scopeNote} data-dsh-part="scope-note">
+        {t(`usage.scope.note.${tab}`)}
+      </span>
+
       {tab === 'usage' && (
         <>
           {matchedPlan !== undefined && orderedPlanWindows(matchedPlan.plan).length > 0 && (

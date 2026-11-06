@@ -460,7 +460,9 @@ export class UsageService {
           from: allKeys[0] ?? todayKey,
           to: allKeys[allKeys.length - 1] ?? todayKey,
           totals: all.totals,
-          providers: all.providers,
+          // Only the totals are rendered; the per-model breakdown is dead
+          // weight that grows with the retained history.
+          providers: all.providers.map(({ provider, totals }) => ({ provider, totals, models: [] })),
         },
       },
     }
