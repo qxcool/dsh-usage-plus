@@ -188,7 +188,11 @@ function TotalsRow(props: {
         <div className={styles.kpiTile}>
           <span className={styles.kpiValue}>{avgCost === null ? '—' : formatCost(avgCost)}</span>
           <span className={styles.kpiLabel}>{t('usage.metric.avgCost')}</span>
-          <span className={styles.kpiHint}>{t('usage.metric.avgCostHint', { n: totals.calls })}</span>
+          <span className={styles.kpiHint}>
+            {avgCost === null && totals.calls > 0
+              ? t('usage.metric.unpriced')
+              : t('usage.metric.avgCostHint', { n: totals.calls })}
+          </span>
         </div>
         <div className={styles.kpiTile}>
           <span className={styles.kpiValue}>{totals.calls}</span>
@@ -413,7 +417,7 @@ function PlanHero(props: {
                 <span className={styles.bar}>
                   <span className={toneClass(percent)} style={{ width: `${Math.min(100, Math.max(0, percent))}%`, display: 'block' }} />
                 </span>
-                <span className={styles.resetLine}>{formatPlanReset(window.resetsAt)}</span>
+                {window.resetsAt !== undefined ? <span className={styles.resetLine}>{formatPlanReset(window.resetsAt)}</span> : null}
               </div>
             )
           })}
@@ -670,15 +674,6 @@ function HeatmapCard(props: { days: UsageDaySummary[] }): ReactNode {
         ? <span className={styles.muted}>{t('usage.heatmap.empty')}</span>
         : <>
             <div className={styles.heatmapWrap}>
-              <div className={styles.heatmapDow}>
-                <span>{t('usage.heatmap.dow.mon')}</span>
-                <span />
-                <span>{t('usage.heatmap.dow.wed')}</span>
-                <span />
-                <span>{t('usage.heatmap.dow.fri')}</span>
-                <span />
-                <span />
-              </div>
               <div className={styles.heatmapMain}>
                 <div className={styles.heatmapMonths}>
                   {grid.monthLabels.map((label, index) => (
@@ -850,7 +845,7 @@ function PlanCard(props: { provider: ProviderSnapshotView; currentId?: string })
                 <span className={styles.bar}>
                   <span className={toneClass(percent)} style={{ width: `${Math.min(100, Math.max(0, percent))}%`, display: 'block' }} />
                 </span>
-                <span className={styles.resetLine}>{formatPlanReset(window.resetsAt)}</span>
+                {window.resetsAt !== undefined ? <span className={styles.resetLine}>{formatPlanReset(window.resetsAt)}</span> : null}
               </div>
             )
           })}
@@ -1030,7 +1025,7 @@ function SettingsRow(props: {
           onClear={() => clearCredential('cpamc')}
         />
         {cpamc !== undefined && (
-          <span className={styles.settingHint}>
+          <span className={cpamc.error !== undefined ? styles.settingWarn : styles.settingHint}>
             {cpamc.displayName}
             {cpamc.error !== undefined
               ? ` · ${friendlyProbeError(cpamc.error) ?? cpamc.error}`
@@ -1060,7 +1055,7 @@ function SettingsRow(props: {
           onClear={() => clearCredential('volcano.sk')}
         />
         {volcano !== undefined && (
-          <span className={styles.settingHint}>
+          <span className={volcano.error !== undefined ? styles.settingWarn : styles.settingHint}>
             {volcano.displayName}
             {volcano.error !== undefined
               ? ` · ${volcano.error}`

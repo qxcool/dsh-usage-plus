@@ -34,6 +34,7 @@ export declare const zh: {
     'usage.metric.month': string;
     'usage.metric.avgCost': string;
     'usage.metric.avgCostHint': string;
+    'usage.metric.unpriced': string;
     'usage.metric.models': string;
     'usage.peak.on': string;
     'usage.peak.off': string;
