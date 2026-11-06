@@ -141,112 +141,47 @@ function cacheHitRate(totals: UsageTokenTotals): number | null {
   return (totals.cacheReadTokens / billed) * 100
 }
 
-function TotalsRow(props: {
-  totals: UsageTokenTotals
-  rangeTotals?: UsageTokenTotals
-  allTotals?: UsageTokenTotals
-  store: UsageStoreInstance
-  startStripPolling: () => () => void
-}): ReactNode {
-  const { totals, rangeTotals, allTotals, store, startStripPolling } = props
-  const hit = cacheHitRate(totals)
-  const billed = totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens
-  const month = rangeTotals ?? emptyLike(totals)
-  const all = allTotals ?? month
-  const avgCost = totals.calls > 0 && totals.cost > 0 ? totals.cost / totals.calls : null
-
-  return (
-    <>
-      <div className={styles.summaryGrid}>
-        <SummaryTile label={t('usage.summary.today')} totals={totals} />
-        <SummaryTile label={t('usage.summary.month')} totals={month} />
-        <SummaryTile label={t('usage.summary.all')} totals={all} />
-      </div>
-      <div className={styles.kpiGrid}>
-        <div className={`${styles.kpiTile} ${styles.kpiAccent}`}>
-          <span className={`${styles.kpiValue} ${hit !== null && hit >= 90 ? styles.kpiGood : ''}`}>
-            {hit === null ? '—' : `${hit >= 10 ? Math.round(hit) : hit.toFixed(1)}%`}
-          </span>
-          <span className={styles.kpiLabel}>{t('usage.tokens.cacheHit')}</span>
-          <span className={styles.kpiHint}>
-            {t('usage.tokens.cacheRatio', {
-              read: formatTokens(totals.cacheReadTokens),
-              billed: formatTokens(billed),
-            })}
-          </span>
-        </div>
-        <div className={styles.kpiTile}>
-          <span className={styles.kpiValue}>{formatTokens(totalOf(totals))}</span>
-          <span className={styles.kpiLabel}>{t('usage.tokens.total')}</span>
-          <span className={styles.kpiHint}>
-            {t('usage.tokens.detail', {
-              input: formatTokens(totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens),
-              output: formatTokens(totals.outputTokens),
-            })}
-          </span>
-        </div>
-        <div className={styles.kpiTile}>
-          <span className={styles.kpiValue}>{avgCost === null ? '—' : formatCost(avgCost)}</span>
-          <span className={styles.kpiLabel}>{t('usage.metric.avgCost')}</span>
-          <span className={styles.kpiHint}>
-            {avgCost === null && totals.calls > 0
-              ? t('usage.metric.unpriced')
-              : t('usage.metric.avgCostHint', { n: totals.calls })}
-          </span>
-        </div>
-        <div className={styles.kpiTile}>
-          <span className={styles.kpiValue}>{totals.calls}</span>
-          <span className={styles.kpiLabel}>{t('usage.tokens.calls')}</span>
-          <span className={styles.kpiHint}>{t('usage.calls', { n: totals.calls })}</span>
-        </div>
-      </div>
-      {/* Quota ring right after the cache-hit KPI row — the card owns this
-          React tree, so it renders regardless of shell slot wiring. */}
-      <div className={styles.quotaStripRow}>
-        <PlanUsageStrip store={store} startStripPolling={startStripPolling} />
-      </div>
-      <TokenBuckets totals={totals} />
-    </>
-  )
-}
-
 function emptyLike(_totals: UsageTokenTotals): UsageTokenTotals {
   return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, calls: 0, cost: 0 }
 }
 
-function SummaryTile(props: { label: string; totals: UsageTokenTotals }): ReactNode {
-  const { label, totals } = props
-  return (
-    <div className={styles.summaryTile}>
-      <span className={styles.summaryLabel}>{label}</span>
-      <span className={styles.summaryValue}>{totals.cost > 0 ? formatCost(totals.cost) : formatTokens(totalOf(totals))}</span>
-      <span className={styles.summaryHint}>
-        {t('usage.summary.tokens')} {formatTokens(totalOf(totals))} · {t('usage.summary.calls')} {totals.calls}
-        {totals.cost > 0 ? ` · ${t('usage.summary.cost')} ${formatCost(totals.cost)}` : ''}
-      </span>
-    </div>
-  )
-}
-
-function TokenBuckets(props: { totals: UsageTokenTotals }): ReactNode {
+function TokenComposition(props: { totals: UsageTokenTotals }): ReactNode {
   const { totals } = props
-  const rows: Array<{ key: string; label: string; value: number }> = [
-    { key: 'input', label: t('usage.tokens.input'), value: totals.inputTokens },
-    { key: 'cacheRead', label: t('usage.tokens.cacheRead'), value: totals.cacheReadTokens },
-    { key: 'cacheWrite', label: t('usage.tokens.cacheWrite'), value: totals.cacheWriteTokens },
-    { key: 'output', label: t('usage.tokens.output'), value: totals.outputTokens },
+  const segments: Array<{ key: string; label: string; value: number; cls: string }> = [
+    { key: 'cacheRead', label: t('usage.tokens.cacheRead'), value: totals.cacheReadTokens, cls: styles.segCache },
+    { key: 'input', label: t('usage.tokens.input'), value: totals.inputTokens, cls: styles.segInput },
+    { key: 'cacheWrite', label: t('usage.tokens.cacheWrite'), value: totals.cacheWriteTokens, cls: styles.segWrite },
+    { key: 'output', label: t('usage.tokens.output'), value: totals.outputTokens, cls: styles.segOutput },
   ]
-  if (totals.reasoningTokens > 0) rows.push({ key: 'reasoning', label: t('usage.tokens.reasoning'), value: totals.reasoningTokens })
-  rows.push({ key: 'calls', label: t('usage.tokens.calls'), value: totals.calls })
+  if (totals.reasoningTokens > 0) {
+    segments.push({ key: 'reasoning', label: t('usage.tokens.reasoning'), value: totals.reasoningTokens, cls: styles.segReasoning })
+  }
+  const sum = segments.reduce((acc, segment) => acc + segment.value, 0)
   return (
-    <div className={styles.bucketGrid} data-dsh-part="token-buckets">
-      <span className={styles.subTitle}>{t('usage.tokens.buckets')}</span>
-      <div className={styles.bucketRow}>
-        {rows.map((row) => (
-          <div key={row.key} className={styles.bucketCell}>
-            <span className={styles.bucketLabel}>{row.label}</span>
-            <span className={styles.bucketValue}>{row.key === 'calls' ? row.value : formatTokens(row.value)}</span>
-          </div>
+    <div className={styles.composition} data-dsh-part="token-composition">
+      <div className={styles.compositionHead}>
+        <span className={styles.subTitle}>{t('usage.tokens.buckets')}</span>
+        <span className={styles.mono}>{formatTokens(sum)}</span>
+      </div>
+      <div className={styles.stackBar}>
+        {sum === 0
+          ? <span className={styles.stackEmpty} />
+          : segments.filter((segment) => segment.value > 0).map((segment) => (
+              <span
+                key={segment.key}
+                className={`${styles.stackSeg} ${segment.cls}`}
+                style={{ flexGrow: segment.value }}
+                title={`${segment.label} ${formatTokens(segment.value)}`}
+              />
+            ))}
+      </div>
+      <div className={styles.legend}>
+        {segments.map((segment) => (
+          <span key={segment.key} className={styles.legendItem}>
+            <i className={`${styles.legendDot} ${segment.cls}`} aria-hidden="true" />
+            <span className={styles.legendLabel}>{segment.label}</span>
+            <span className={`${styles.legendValue} ${styles.mono}`}>{formatTokens(segment.value)}</span>
+          </span>
         ))}
       </div>
     </div>
@@ -261,6 +196,7 @@ function ProviderBreakdown(props: {
   const { rows, providers, current } = props
   const [open, setOpen] = useState<Record<string, boolean>>({})
   if (rows.length === 0) return null
+  const heaviest = Math.max(1, ...rows.map((row) => totalOf(row.totals)))
   return (
     <div data-dsh-part="provider-list">
       <span className={styles.subTitle}>{t('usage.today.breakdown')}</span>
@@ -269,6 +205,7 @@ function ProviderBreakdown(props: {
         const expanded = open[row.provider] === true
         const hasModels = row.models.length > 0
         const balance = provider === undefined ? null : balanceText(provider)
+        const share = Math.round((totalOf(row.totals) / heaviest) * 100)
         return (
           <div key={row.provider} className={styles.providerBlock}>
             <button
@@ -298,6 +235,9 @@ function ProviderBreakdown(props: {
                 {hasModels && <span className={styles.expandHint}>{expanded ? t('usage.collapse') : t('usage.expand')}</span>}
               </span>
             </button>
+            <span className={styles.providerBar} aria-hidden="true">
+              <span className={styles.providerBarFill} style={{ width: `${share}%` }} />
+            </span>
             {expanded && row.models.map((model) => (
               <div key={model.model} className={styles.modelRow}>
                 <span className={styles.modelName}>{model.model}</span>
@@ -378,58 +318,6 @@ function BalanceInline(props: {
 }
 
 /** Overview hero: only the plan matched to the current model route. */
-function PlanHero(props: {
-  provider: ProviderSnapshotView
-  model?: string
-  onSeeAll: () => void
-}): ReactNode {
-  const { provider, model, onSeeAll } = props
-  const windows = orderedPlanWindows(provider.plan)
-  if (windows.length === 0) return null
-  const title = model === undefined || model === ''
-    ? provider.displayName
-    : `${provider.displayName} · ${model}`
-  return (
-    <div className={styles.card} data-dsh-part="plan-hero">
-      <div className={styles.cardHead}>
-        <span className={styles.cardHeadGroup}>
-          <span className={styles.cardTitle}>{t('usage.plan.preview')}</span>
-          <span className={styles.scopeChip}>{t('usage.scope.account')}</span>
-        </span>
-        <button type="button" className={styles.linkBtn} onClick={onSeeAll}>{t('usage.plan.seeAll')}</button>
-      </div>
-      <div className={styles.planPreviewBlock}>
-        <span className={styles.providerName}>
-          {title}
-          <span className={styles.currentBadge}>{t('usage.current')}</span>
-          <span className={styles.sourceChip}>{t(planSourceLabelKey(provider))}</span>
-          {provider.plan?.planName !== undefined ? <span className={styles.mutedInline}> · {provider.plan.planName}</span> : null}
-        </span>
-        <div className={styles.planMiniGrid}>
-          {windows.slice(0, 3).map((window) => {
-            const percent = window.percent as number
-            const label = window.key === '5h' || window.key === 'week' || window.key === 'month'
-              ? t(`usage.plan.windows.${window.key}`)
-              : (window.name ?? window.key)
-            return (
-              <div key={window.key} className={styles.planMini}>
-                <span className={styles.planMiniLabel}>
-                  <span>{label}</span>
-                  <span>{percent >= 10 ? Math.round(percent) : percent.toFixed(1)}%</span>
-                </span>
-                <span className={styles.bar}>
-                  <span className={toneClass(percent)} style={{ width: `${Math.min(100, Math.max(0, percent))}%`, display: 'block' }} />
-                </span>
-                {window.resetsAt !== undefined ? <span className={styles.resetLine}>{formatPlanReset(window.resetsAt)}</span> : null}
-              </div>
-            )
-          })}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function balanceText(provider: ProviderSnapshotView): string | null {
   if (provider.balance === undefined) return null
   const currency = provider.balance.currency.toUpperCase()
@@ -539,6 +427,22 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
   const cpamcPlans = planProviders.filter((provider) => provider.source === 'cpamc')
   const volcanoPlans = planProviders.filter((provider) => provider.source === 'volcano')
 
+  // ---- cockpit instruments -------------------------------------------
+  const days = snapshot.usage.days
+  const todayTotals = snapshot.usage.today.totals
+  const rangeTotals = snapshot.usage.range?.totals ?? todayTotals
+  const allTotals = snapshot.usage.all?.totals ?? rangeTotals
+  const todayTokens = totalOf(todayTotals)
+  const yesterdayTokens = days.length >= 2 ? totalOf(days[days.length - 2].totals) : undefined
+  const tokenDelta = yesterdayTokens !== undefined && yesterdayTokens > 0
+    ? ((todayTokens - yesterdayTokens) / yesterdayTokens) * 100
+    : null
+  const hitRate = cacheHitRate(todayTotals)
+  const billedToday = todayTotals.inputTokens + todayTotals.cacheReadTokens + todayTotals.cacheWriteTokens
+  const series7 = days.slice(-7).map((day) => totalOf(day.totals))
+  const series30 = days.slice(-30).map((day) => totalOf(day.totals))
+  const avgCost = todayTotals.calls > 0 && todayTotals.cost > 0 ? todayTotals.cost / todayTotals.calls : null
+
   return (
     <div className={styles.section} data-dsh-plugin="usage">
       <div className={styles.header} data-dsh-part="header">
@@ -582,52 +486,98 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
       </span>
 
       {tab === 'usage' && (
-        <>
-          {matchedPlan !== undefined && orderedPlanWindows(matchedPlan.plan).length > 0 && (
-            <PlanHero
-              provider={matchedPlan}
-              model={current.model}
-              onSeeAll={() => setTab('plans')}
+        <div className={styles.cockpit} data-dsh-part="usage-cockpit">
+          <div className={styles.cell2}>
+            <Instrument
+              label={t('usage.summary.today')}
+              value={formatTokens(todayTokens)}
+              hint={`${t('usage.summary.calls')} ${todayTotals.calls}${tokenDelta === null ? '' : ` · ${t('usage.cockpit.vsYesterday', { pct: `${tokenDelta >= 0 ? '+' : ''}${tokenDelta.toFixed(0)}%` })}`}`}
+            >
+              <Sparkline values={series7} />
+            </Instrument>
+          </div>
+          <div className={styles.cell2}>
+            <Instrument
+              label={t('usage.summary.month')}
+              value={formatTokens(totalOf(rangeTotals))}
+              hint={`${t('usage.summary.calls')} ${rangeTotals.calls}`}
+            >
+              <Sparkline values={series30} />
+            </Instrument>
+          </div>
+          <div className={styles.cell2}>
+            <Instrument
+              label={t('usage.summary.all')}
+              value={formatTokens(totalOf(allTotals))}
+              hint={`${t('usage.summary.calls')} ${allTotals.calls}`}
             />
-          )}
-
-          <div className={styles.card} data-dsh-part="today-card">
-            <div className={styles.cardHead}>
-              <span className={styles.cardHeadGroup}>
-                <span className={styles.cardTitle}>{t('usage.today')}</span>
-                <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
-              </span>
-              {deepseekVisible && (
-                <span className={styles.peakPill} data-dsh-part="peak-status">
-                  {t(deepseekPeriod.peak ? 'usage.peak.on' : 'usage.peak.off', { time: formatClock(deepseekPeriod.boundaryMs) })}
-                </span>
-              )}
-            </div>
-            {snapshot.usage.today.totals.calls === 0 && (snapshot.usage.range?.totals.calls ?? 0) === 0
-              ? <span className={styles.muted}>{t('usage.noData')}</span>
-              : <TotalsRow
-                  totals={snapshot.usage.today.totals}
-                  rangeTotals={snapshot.usage.range?.totals}
-                  allTotals={snapshot.usage.all?.totals}
-                  store={store}
-                  startStripPolling={startStripPolling}
-                />}
-            <ProviderBreakdown
-              rows={snapshot.usage.today.providers}
-              providers={snapshot.providers}
-              current={current.provider}
+          </div>
+          <div className={styles.cell2}>
+            <GaugeCard
+              label={t('usage.tokens.cacheHit')}
+              percent={hitRate}
+              hint={t('usage.tokens.cacheRatio', {
+                read: formatTokens(todayTotals.cacheReadTokens),
+                billed: formatTokens(billedToday),
+              })}
             />
-            <BalanceInline
-              providers={snapshot.providers}
-              current={current.provider}
-              excludeIds={new Set(snapshot.usage.today.providers.map((row) => row.provider))}
+          </div>
+          <div className={styles.cell2}>
+            <Instrument
+              label={t('usage.tokens.calls')}
+              value={String(todayTotals.calls)}
+              hint={`${formatTokens(todayTokens)} ${t('usage.tokens.total')}`}
+            />
+          </div>
+          <div className={styles.cell2}>
+            <Instrument
+              label={t('usage.metric.avgCost')}
+              value={avgCost === null ? '—' : formatCost(avgCost)}
+              hint={avgCost === null && todayTotals.calls > 0
+                ? t('usage.metric.unpriced')
+                : t('usage.metric.avgCostHint', { n: todayTotals.calls })}
             />
           </div>
 
-          <HeatmapCard days={snapshot.usage.days} />
-          <RangeCard range={snapshot.usage.range} providers={snapshot.providers} currentProvider={current.provider} />
-          <HistoryCard days={snapshot.usage.days} />
-        </>
+          <div className={styles.cell7}>
+            <HeatmapCard days={days} />
+          </div>
+          <div className={styles.cell5}>
+            <QuotaCard provider={matchedPlan} model={current.model} onSeeAll={() => setTab('plans')} />
+          </div>
+          <div className={styles.cell7}>
+            <RangeCard range={snapshot.usage.range} providers={snapshot.providers} currentProvider={current.provider} />
+          </div>
+          <div className={styles.cell5}>
+            <div className={styles.card} data-dsh-part="provider-card">
+              <div className={styles.cardHead}>
+                <span className={styles.cardHeadGroup}>
+                  <span className={styles.cardTitle}>{t('usage.today')}</span>
+                  <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
+                </span>
+                {deepseekVisible && (
+                  <span className={styles.peakPill} data-dsh-part="peak-status">
+                    {t(deepseekPeriod.peak ? 'usage.peak.on' : 'usage.peak.off', { time: formatClock(deepseekPeriod.boundaryMs) })}
+                  </span>
+                )}
+              </div>
+              <ProviderBreakdown
+                rows={snapshot.usage.today.providers}
+                providers={snapshot.providers}
+                current={current.provider}
+              />
+              <BalanceInline
+                providers={snapshot.providers}
+                current={current.provider}
+                excludeIds={new Set(snapshot.usage.today.providers.map((row) => row.provider))}
+              />
+              <TokenComposition totals={todayTotals} />
+            </div>
+          </div>
+          <div className={styles.cell12}>
+            <HistoryCard days={days} />
+          </div>
+        </div>
       )}
 
       {tab === 'plans' && (
@@ -671,6 +621,135 @@ function PlanGroup(props: {
       {providers.length === 0
         ? <div className={styles.card}><span className={styles.muted}>{t('usage.plan.groupEmpty')}</span></div>
         : providers.map((provider) => <PlanCard key={provider.provider} provider={provider} currentId={currentId} />)}
+    </div>
+  )
+}
+
+/**
+ * Cockpit pieces: the overview is a dashboard of instruments, not a stack of
+ * report cards. Every number is tabular and monospaced so columns line up.
+ */
+
+/** One cockpit instrument: micro-label, big tabular number, optional visual. */
+function Instrument(props: { label: string; value: string; hint?: string; children?: ReactNode }): ReactNode {
+  return (
+    <div className={`${styles.card} ${styles.instrument}`} data-dsh-part="instrument">
+      <span className={styles.instLabel}>{props.label}</span>
+      <span className={styles.instValue}>{props.value}</span>
+      {props.hint !== undefined ? <span className={styles.instHint}>{props.hint}</span> : null}
+      {props.children}
+    </div>
+  )
+}
+
+/** Sparkline for the instrument cards (last N days, oldest first). */
+function Sparkline(props: { values: number[] }): ReactNode {
+  const width = 132
+  const height = 30
+  if (props.values.length < 2) return <span className={styles.sparkEmpty} aria-hidden="true" />
+  const max = Math.max(1, ...props.values)
+  const step = width / (props.values.length - 1)
+  const points = props.values.map((value, index) => [index * step, height - (value / max) * (height - 4) - 2] as const)
+  const line = points.map((point, index) => `${index === 0 ? 'M' : 'L'}${point[0].toFixed(1)},${point[1].toFixed(1)}`).join(' ')
+  const area = `${line} L${width},${height} L0,${height} Z`
+  return (
+    <svg className={styles.spark} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true">
+      <path d={area} className={styles.sparkArea} />
+      <path d={line} className={styles.sparkLine} />
+    </svg>
+  )
+}
+
+/** Ring gauge for a percentage instrument (cache hit). */
+function GaugeCard(props: { label: string; percent: number | null; hint?: string }): ReactNode {
+  const size = 76
+  const radius = 29
+  const circumference = 2 * Math.PI * radius
+  const clamped = props.percent === null ? 0 : Math.min(100, Math.max(0, props.percent))
+  const tone = props.percent === null ? '' : clamped >= 90 ? styles.toneGood : clamped >= 70 ? styles.toneWarn : styles.toneAccent
+  return (
+    <div className={`${styles.card} ${styles.instrument} ${styles.gaugeCard}`} data-dsh-part="instrument-gauge">
+      <span className={styles.instLabel}>{props.label}</span>
+      <span className={styles.gaugeBox}>
+        <svg className={styles.gaugeSvg} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
+          <circle className={styles.gaugeTrack} cx={size / 2} cy={size / 2} r={radius} />
+          <circle
+            className={`${styles.gaugeFill} ${tone}`}
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            strokeDasharray={`${(clamped / 100) * circumference} ${circumference}`}
+            transform={`rotate(-90 ${size / 2} ${size / 2})`}
+          />
+        </svg>
+        <span className={styles.gaugeValue}>{props.percent === null ? '—' : `${Math.round(clamped)}%`}</span>
+      </span>
+      {props.hint !== undefined ? <span className={styles.instHint}>{props.hint}</span> : null}
+    </div>
+  )
+}
+
+/** One quota ring with its window name and reset time. */
+function Gauge(props: { percent?: number; label: string; sub?: string }): ReactNode {
+  const size = 78
+  const radius = 30
+  const circumference = 2 * Math.PI * radius
+  const percent = typeof props.percent === 'number' ? Math.min(100, Math.max(0, props.percent)) : 0
+  const tone = percent >= 90 ? styles.toneBad : percent >= 70 ? styles.toneWarn : styles.toneAccent
+  return (
+    <div className={styles.gauge}>
+      <span className={styles.gaugeBox}>
+        <svg className={styles.gaugeSvg} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
+          <circle className={styles.gaugeTrack} cx={size / 2} cy={size / 2} r={radius} />
+          <circle
+            className={`${styles.gaugeFill} ${tone}`}
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            strokeDasharray={`${(percent / 100) * circumference} ${circumference}`}
+            transform={`rotate(-90 ${size / 2} ${size / 2})`}
+          />
+        </svg>
+        <span className={styles.gaugeValue}>{Math.round(percent)}%</span>
+      </span>
+      <span className={styles.gaugeLabel}>{props.label}</span>
+      {props.sub !== undefined ? <span className={styles.gaugeSub}>{props.sub}</span> : null}
+    </div>
+  )
+}
+
+/** Account quota as three rings for the model the composer currently uses. */
+function QuotaCard(props: { provider?: ProviderSnapshotView; model?: string; onSeeAll: () => void }): ReactNode {
+  const { provider, model, onSeeAll } = props
+  const windows = provider?.plan === undefined ? [] : orderedPlanWindows(provider.plan)
+  return (
+    <div className={`${styles.card} ${styles.quotaCard}`} data-dsh-part="quota-card">
+      <div className={styles.cardHead}>
+        <span className={styles.cardHeadGroup}>
+          <span className={styles.cardTitle}>{t('usage.plan.quota')}</span>
+          <span className={styles.scopeChip}>{t('usage.scope.account')}</span>
+        </span>
+        <button type="button" className={styles.linkBtn} onClick={onSeeAll}>{t('usage.plan.seeAll')}</button>
+      </div>
+      {provider !== undefined ? (
+        <span className={styles.quotaIdentity}>
+          {provider.displayName}
+          {model !== undefined && model !== '' ? ` · ${model}` : ''}
+          <span className={styles.sourceChip}>{t(planSourceLabelKey(provider))}</span>
+        </span>
+      ) : null}
+      {windows.length === 0
+        ? <span className={styles.muted}>{t('usage.plan.noneConfigured')}</span>
+        : <div className={styles.gaugesRow}>
+            {windows.slice(0, 3).map((window) => (
+              <Gauge
+                key={window.key}
+                percent={window.percent}
+                label={window.name ?? t(`usage.plan.windows.${window.key}`)}
+                sub={window.resetsAt !== undefined ? formatPlanReset(window.resetsAt) : undefined}
+              />
+            ))}
+          </div>}
     </div>
   )
 }
