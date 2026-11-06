@@ -6,7 +6,6 @@ Independent DSH usage and official Plan-quota plugin (Host + Web UI). It does no
 
 - Reuses credentials already configured for DSH model providers.
 - Shows real 5-hour, weekly, and monthly windows on `conversation.composer.dock` (alongside StatsPills / ContextMeter).
-- Adds a conversation-level **Usage** view (`conversation.view`): this session's billed input / output / cache-hit tokens, per-model split, estimated cost, and the quota windows of the model it used — seated next to 对话 / 轨迹 / 上下文 / 编队 / 统计. It carries no per-turn table (Trajectory and the stats view own that); the panel answers "what did this conversation cost against which quota".
 - Labels every Plugins-page number with its scope (`全设备` / `账号级` / `本会话`) so device-wide totals never read as session totals.
 - Renders nothing when a provider exposes no official quota window.
 - Keeps CPAMC and Volcano Ark as separate sources (Plugins page → Settings).

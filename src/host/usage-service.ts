@@ -19,8 +19,8 @@ import type { BalanceParse, PlanParse } from '../core/adapters.ts'
 import { deepseekModelSpend, deepseekPeriodAt } from '../core/pricing.ts'
 import { createLedgerDocument, deserializeLedger, foldUsage, ledgerDayKeys, localDateKey, pruneLedger, summarizeDays, totalTokens } from '../core/ledger.ts'
 import { currentPlanProvider } from '../core/plan-match.ts'
-import type { BalanceView, CredentialKind, ExternalCredentialStatus, ExternalCredentialTarget, PlanView, ProviderSnapshotState, ProviderSnapshotView, UsageLedgerDocument, UsageOverviewView, UsageSessionView, UsageTokenTotals } from '../core/types.ts'
-import { addTotals, emptyTotals } from '../core/types.ts'
+import type { BalanceView, CredentialKind, ExternalCredentialStatus, ExternalCredentialTarget, PlanView, ProviderSnapshotState, ProviderSnapshotView, UsageLedgerDocument, UsageOverviewView, UsageTokenTotals } from '../core/types.ts'
+import { emptyTotals } from '../core/types.ts'
 import { probeCpamc, probeVolcano } from './external-sources.ts'
 
 /** Source tag the plugin stamps onto pet announcements. */
@@ -74,24 +74,6 @@ const TREND_DAYS = 30
 
 /** How many daily rows the Codex-style heatmap receives (26 weeks). */
 const HEATMAP_DAYS = 182
-
-/**
- * How many sessions keep in-memory usage totals for the conversation "用量"
- * view. The oldest entry is evicted past this bound; the durable ledger stays
- * the global record.
- */
-const SESSION_LEDGER_LIMIT = 200
-
-/** One session's live totals, per-model split, and last-seen route. */
-interface SessionLedgerEntry {
-  totals: UsageTokenTotals
-  /** Per-model totals, capped on read. */
-  models: Map<string, UsageTokenTotals>
-  route: { provider?: string; model?: string }
-  /** First and last counted event, for the view's active-window line. */
-  firstAt: number
-  lastAt: number
-}
 
 /** Currency symbols the bubble and section render inline; other codes render as `12.00 EUR`. */
 const CURRENCY_SYMBOLS: Readonly<Record<string, string>> = { CNY: '¥', USD: '$', EUR: '€', GBP: '£' }
@@ -352,8 +334,6 @@ export class UsageService {
   private readonly probeBackoff = new Map<string, { failures: number; nextAt: number }>()
   /** Last snapshots document written; an unchanged document is not rewritten. */
   private lastPersistedSnapshots: string | undefined
-  /** Live per-session totals for the conversation "用量" view (LRU-bounded). */
-  private readonly sessionLedger = new Map<string, SessionLedgerEntry>()
 
   constructor(ctx: Context, options: UsageServiceOptions) {
     this.ctx = ctx
@@ -581,20 +561,17 @@ export class UsageService {
 
   private onSessionEvent(session: Session, event: SessionEvent): void {
     try {
-      const entry = this.sessionEntry(String(session.id))
       if (event.type === 'request/header') {
         const config = (event.data as { header?: { config?: { provider?: string; model?: string } } }).header?.config
         if (config?.provider !== undefined) {
           this.sessionRoutes.set(session, { provider: config.provider, model: config.model ?? '' })
           this.current = { provider: config.provider, model: config.model, source: 'live' }
-          entry.route = { provider: config.provider, ...(config.model !== undefined && config.model !== '' ? { model: config.model } : {}) }
         }
       } else if (event.type === 'request/context') {
         const data = event.data as { provider?: string; model?: string }
         if (data.provider !== undefined) {
           this.sessionRoutes.set(session, { provider: data.provider, model: data.model ?? '' })
           this.current = { provider: data.provider, model: data.model, source: 'live' }
-          entry.route = { provider: data.provider, ...(data.model !== undefined && data.model !== '' ? { model: data.model } : {}) }
         }
       } else if (event.type === 'assistant/message') {
         const usage = (event.data as { usage?: TokenUsage }).usage
@@ -602,64 +579,12 @@ export class UsageService {
         const route = this.sessionRoutes.get(session)
         if (route === undefined || route.provider === '') return
         const now = Date.now()
-        const totals = this.totalsFrom(usage, route.provider, route.model || 'unknown', now)
-        foldUsage(this.ledger, now, route.provider, route.model || 'unknown', totals)
-        addTotals(entry.totals, totals)
-        const modelKey = route.model || 'unknown'
-        const modelTotals = entry.models.get(modelKey) ?? emptyTotals()
-        addTotals(modelTotals, totals)
-        entry.models.set(modelKey, modelTotals)
-        if (entry.firstAt === 0) entry.firstAt = now
-        entry.lastAt = now
+        foldUsage(this.ledger, now, route.provider, route.model || 'unknown', this.totalsFrom(usage, route.provider, route.model || 'unknown', now))
         this.scheduleFlush()
       }
     } catch {
       // A malformed event must never break the session loop.
     }
-  }
-
-  /**
-   * One session's in-memory totals for the conversation "用量" view. Never
-   * persisted: the view is a live surface, and the durable ledger stays the
-   * global (device-wide) record. Entries are LRU-bounded so a long-lived
-   * host cannot grow without limit.
-   */
-  sessionUsage(sessionId: string): UsageSessionView {
-    const entry = this.sessionLedger.get(sessionId)
-    if (entry === undefined) {
-      return { sessionId, totals: emptyTotals(), models: [], updatedAt: 0 }
-    }
-    const models = [...entry.models]
-      .map(([model, totals]) => ({ model, totals }))
-      .sort((a, b) => totalTokens(b.totals) - totalTokens(a.totals))
-      .slice(0, 8)
-    return {
-      sessionId,
-      totals: entry.totals,
-      models,
-      ...(entry.route.provider !== undefined ? { route: entry.route } : {}),
-      ...(entry.firstAt > 0 ? { startedAt: entry.firstAt } : {}),
-      updatedAt: entry.lastAt,
-    }
-  }
-
-  /** Read-or-create one session entry, refreshing its LRU position. */
-  private sessionEntry(sessionId: string): SessionLedgerEntry {
-    const existing = this.sessionLedger.get(sessionId)
-    if (existing !== undefined) {
-      // Re-insert so the map's iteration order tracks recency.
-      this.sessionLedger.delete(sessionId)
-      this.sessionLedger.set(sessionId, existing)
-      return existing
-    }
-    const created: SessionLedgerEntry = { totals: emptyTotals(), models: new Map(), route: {}, firstAt: 0, lastAt: 0 }
-    this.sessionLedger.set(sessionId, created)
-    while (this.sessionLedger.size > SESSION_LEDGER_LIMIT) {
-      const oldest = this.sessionLedger.keys().next().value
-      if (oldest === undefined) break
-      this.sessionLedger.delete(oldest)
-    }
-    return created
   }
 
   /**
