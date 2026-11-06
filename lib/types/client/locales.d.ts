@@ -58,9 +58,6 @@ export declare const zh: {
     'usage.heatmap.day': string;
     'usage.heatmap.less': string;
     'usage.heatmap.more': string;
-    'usage.heatmap.dow.mon': string;
-    'usage.heatmap.dow.wed': string;
-    'usage.heatmap.dow.fri': string;
     'usage.history': string;
     'usage.history.show': string;
     'usage.history.hide': string;

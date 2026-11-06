@@ -653,7 +653,9 @@ function PlanGroup(props: {
   if (providers.length === 0 && !showEmpty) return null
   return (
     <div className={styles.planGroup}>
-      <span className={styles.cardTitle}>{t('usage.plan.groupCount', { title, n: providers.length })}</span>
+      <span className={styles.cardTitle}>
+        {providers.length > 1 ? t('usage.plan.groupCount', { title, n: providers.length }) : title}
+      </span>
       {providers.length === 0
         ? <div className={styles.card}><span className={styles.muted}>{t('usage.plan.groupEmpty')}</span></div>
         : providers.map((provider) => <PlanCard key={provider.provider} provider={provider} currentId={currentId} />)}

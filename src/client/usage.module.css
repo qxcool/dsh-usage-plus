@@ -652,8 +652,10 @@
 .heatmapL3 { background: color-mix(in srgb, currentColor 68%, transparent); }
 .heatmapL4 { background: color-mix(in srgb, currentColor 92%, transparent); }
 
+/* A ring OUTSIDE the cell: today's cell is usually the brightest level, so an
+   inset outline disappeared into the fill. */
 .heatmapToday {
-  outline: 1px solid color-mix(in srgb, currentColor 70%, transparent);
+  outline: 2px solid color-mix(in srgb, currentColor 80%, transparent);
   outline-offset: 1px;
 }
 
