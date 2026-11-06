@@ -38,4 +38,11 @@ export declare function asJsonObject(value: unknown): Record<string, unknown> | 
  * override them.
  */
 export declare function writeJson(res: ServerResponse, status: number, body: unknown, headers?: OutgoingHttpHeaders): void;
+/**
+ * A strong ETag for one JSON document: SHA-1 over the document with its
+ * volatile top-level `updatedAt` normalized away, quoted for HTTP. Documents
+ * that differ only in the instant they were assembled share an ETag, so a
+ * polling client revalidates with `If-None-Match` instead of re-downloading.
+ */
+export declare function jsonEtag(document: unknown): string;
 //# sourceMappingURL=http.d.ts.map

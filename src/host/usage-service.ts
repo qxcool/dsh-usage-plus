@@ -58,6 +58,14 @@ export interface UsageServiceOptions {
 /** Probe timeout per HTTP call. */
 const PROBE_TIMEOUT_MS = 10_000
 
+/**
+ * Retry delays for a provider whose probe keeps failing, by consecutive
+ * failure count and capped at the last entry. Without it a permanently
+ * invalid credential (a 401) is re-probed every cycle forever. The current
+ * route is exempt so a transient failure recovers at the normal cadence.
+ */
+const PROBE_BACKOFF_MS = [60_000, 300_000, 900_000] as const
+
 /** Ledger flush debounce. */
 const FLUSH_DEBOUNCE_MS = 3_000
 
@@ -75,6 +83,38 @@ export function formatMoney(currency: string, totalBalance: string): string {
   const symbol = CURRENCY_SYMBOLS[currency.toUpperCase()]
   if (symbol !== undefined) return symbol + totalBalance
   return `${totalBalance} ${currency.toUpperCase()}`
+}
+
+/**
+ * Delay before the next probe of a provider that just failed that many times
+ * in a row; 0 (probe normally next cycle) for a provider with no failures.
+ */
+export function probeBackoffDelayMs(failures: number): number {
+  if (!Number.isFinite(failures) || failures <= 0) return 0
+  const index = Math.min(Math.floor(failures) - 1, PROBE_BACKOFF_MS.length - 1)
+  return PROBE_BACKOFF_MS[index] as number
+}
+
+/**
+ * Drop overview rows no surface renders: the wire document otherwise carries
+ * every catalog provider the runtime knows (40+ empty rows ≈ 6 KiB per poll).
+ * A row survives when it carries a fact (plan/balance/error), a configured
+ * credential, a usage total, is the current route, or comes from an external
+ * source. `supported`-only rows without any of those are pure catalog noise:
+ * nothing in the browser half reads `supported`/`planSupported`.
+ */
+export function selectOverviewProviders(
+  rows: readonly ProviderSnapshotView[],
+  options: { usageProviders: ReadonlySet<string>; currentProvider?: string },
+): ProviderSnapshotView[] {
+  return rows.filter((row) =>
+    row.plan !== undefined
+    || row.balance !== undefined
+    || row.error !== undefined
+    || row.credential !== 'none'
+    || (row.source !== undefined && row.source !== 'model')
+    || (options.currentProvider !== undefined && row.provider === options.currentProvider)
+    || options.usageProviders.has(row.provider))
 }
 
 /** Map a used percent to the announcement tone. */
@@ -290,6 +330,10 @@ export class UsageService {
   private lastSignature: string | undefined
   /** Last prune guard: once per local day, and whenever retention shrinks. */
   private lastPrune: { dayKey: string; retainDays: number } | undefined
+  /** Consecutive probe failures per provider; drives the retry backoff. */
+  private readonly probeBackoff = new Map<string, { failures: number; nextAt: number }>()
+  /** Last snapshots document written; an unchanged document is not rewritten. */
+  private lastPersistedSnapshots: string | undefined
 
   constructor(ctx: Context, options: UsageServiceOptions) {
     this.ctx = ctx
@@ -336,13 +380,25 @@ export class UsageService {
     // selector updates the strip without waiting for the next request.
     this.syncCurrentFromComposer()
     const todayKey = localDateKey(Date.now())
+    const allKeys = ledgerDayKeys(this.ledger)
+    const heatmapKeys = allKeys.slice(-Math.min(HEATMAP_DAYS, this.options.retainDays))
+    const rangeKeys = allKeys.slice(-TREND_DAYS)
+    const range = summarizeDays(rangeKeys.map((key) => this.ledger.days[key] ?? {}))
+    const all = summarizeDays(allKeys.map((key) => this.ledger.days[key] ?? {}))
+    const today = this.daySummary(todayKey)
+    // Providers the browser looks up by usage row must survive the trim below.
+    const usageProviders = new Set<string>([
+      ...today.providers.map((row) => row.provider),
+      ...range.providers.map((row) => row.provider),
+      ...all.providers.map((row) => row.provider),
+    ])
     const routes = this.listProviderRoutes()
-    const providers: ProviderSnapshotView[] = []
+    const rows: ProviderSnapshotView[] = []
     for (const route of routes) {
       const adapter = adapterFor(route.id)
       const snapshot = this.snapshots.get(route.id)
       const error = snapshot?.balanceError ?? snapshot?.planError
-      providers.push({
+      rows.push({
         provider: route.id,
         source: 'model',
         displayName: route.displayName || adapter?.displayName || route.id,
@@ -359,14 +415,10 @@ export class UsageService {
     for (const snapshot of this.snapshots.values()) {
       if (snapshot.source !== 'cpamc' && snapshot.source !== 'volcano' && snapshot.source !== 'custom') continue
       const error = snapshot.balanceError ?? snapshot.planError
-      providers.push({ ...snapshot, ...(error !== undefined ? { error } : {}) })
+      rows.push({ ...snapshot, ...(error !== undefined ? { error } : {}) })
     }
+    const providers = selectOverviewProviders(rows, { usageProviders, currentProvider: this.current.provider })
     providers.sort((a, b) => Number(b.supported) - Number(a.supported) || a.displayName.localeCompare(b.displayName))
-    const allKeys = ledgerDayKeys(this.ledger)
-    const heatmapKeys = allKeys.slice(-Math.min(HEATMAP_DAYS, this.options.retainDays))
-    const rangeKeys = allKeys.slice(-TREND_DAYS)
-    const range = summarizeDays(rangeKeys.map((key) => this.ledger.days[key] ?? {}))
-    const all = summarizeDays(allKeys.map((key) => this.ledger.days[key] ?? {}))
     const baseURL = this.current.provider !== undefined ? this.piAiProfile(this.current.provider)?.baseURL : undefined
     return {
       updatedAt: Date.now(),
@@ -377,7 +429,7 @@ export class UsageService {
       },
       externalCredentials: await this.externalCredentialStatus(),
       usage: {
-        today: this.daySummary(todayKey),
+        today,
         days: heatmapKeys.map((date) => {
           const summary = this.daySummary(date)
           return { date, totals: summary.totals }
@@ -652,12 +704,14 @@ export class UsageService {
 
   private async persistSnapshots(): Promise<void> {
     if (!this.loaded) return
+    // Unchanged facts (a provider backing off, an idle cycle) need no write.
+    const providers = Object.fromEntries(this.snapshots)
+    const signature = JSON.stringify(providers)
+    if (signature === this.lastPersistedSnapshots) return
     try {
       await mkdir(dirname(this.snapshotsPath), { recursive: true })
-      await writeJsonAtomic(this.snapshotsPath, {
-        version: 1,
-        providers: Object.fromEntries(this.snapshots),
-      })
+      await writeJsonAtomic(this.snapshotsPath, { version: 1, providers })
+      this.lastPersistedSnapshots = signature
     } catch {
       // Same silent degradation as the ledger.
     }
@@ -672,7 +726,14 @@ export class UsageService {
     if (this.pollTimer !== undefined) clearTimeout(this.pollTimer)
     this.pollTimer = setTimeout(() => {
       this.pollTimer = undefined
-      void this.pollNow().finally(() => this.rearmPoll(Math.max(30, this.options.pollIntervalSec) * 1000))
+      // A rejected cycle must never surface as an unhandled rejection: DSH is
+      // fail-loud and exits the host process on one. The cycle itself stays
+      // rejecting so a manual refresh can still report the failure.
+      void this.pollNow()
+        .catch(() => {
+          // Degrade silently, like the rest of this service; the next poll retries.
+        })
+        .finally(() => this.rearmPoll(Math.max(30, this.options.pollIntervalSec) * 1000))
     }, delayMs)
   }
 
@@ -695,12 +756,19 @@ export class UsageService {
         // the whole cycle past the 60s default poll interval. probeRoute only
         // writes its own snapshot key, so batches can run in parallel safely.
         const probeable: Array<{ route: ProviderRoute; adapter: NonNullable<ReturnType<typeof adapterFor>> }> = []
+        const now = Date.now()
         for (const route of routes) {
           // Bail out of a cycle that outlived the service.
           if (this.disposed) return
+          // `seen` keeps a skipped provider's retained snapshot alive.
           seen.add(route.id)
           const adapter = adapterFor(route.id)
           if (adapter === undefined || (adapter.balance === undefined && adapter.plan === undefined)) continue
+          // Skip a provider backing off after failures, except the current
+          // route: its operator is watching this one and a transient failure
+          // should recover at the normal cadence.
+          const backoff = this.probeBackoff.get(route.id)
+          if (backoff !== undefined && backoff.nextAt > now && route.id !== this.current.provider) continue
           probeable.push({ route, adapter })
         }
         const PROBE_CONCURRENCY = 3
@@ -801,6 +869,20 @@ export class UsageService {
     if (plan !== undefined) snapshot.plan = plan as PlanView
     else if (previous?.plan !== undefined) snapshot.plan = previous.plan
     this.snapshots.set(route.id, snapshot)
+    // One half failing is enough to back this provider off; a success in
+    // either half clears the counter (the other half may legitimately have
+    // no adapter at all).
+    this.recordProbeOutcome(route.id, snapshot.balanceError !== undefined || snapshot.planError !== undefined)
+  }
+
+  /** Advance or clear the retry backoff after one provider's probe run. */
+  private recordProbeOutcome(provider: string, failed: boolean): void {
+    if (!failed) {
+      this.probeBackoff.delete(provider)
+      return
+    }
+    const failures = (this.probeBackoff.get(provider)?.failures ?? 0) + 1
+    this.probeBackoff.set(provider, { failures, nextAt: Date.now() + probeBackoffDelayMs(failures) })
   }
 
   /**

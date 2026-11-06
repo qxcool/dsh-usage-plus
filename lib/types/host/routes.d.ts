@@ -2,9 +2,18 @@ import type { WebRoute } from '@deepseek-ai/dsh-host-webserver';
 import type { UsageService } from './usage-service.ts';
 export declare const USAGE_API_PREFIX = "/api/dsh-usage-plus";
 /**
+ * Whether an `If-None-Match` header names this ETag. Handles the list form,
+ * weak validators (`W/"..."`), and the `*` wildcard.
+ */
+export declare function requestEtagMatches(ifNoneMatch: string, etag: string): boolean;
+/**
  * Loopback-fenced overview route: provider balances, plan quotas, and token
  * usage totals. Personal account data, so the loopback fence mirrors
  * dsh-perf's stats surface; the browser runs on the same machine.
+ *
+ * Conditional GET: the browser-strip poller revalidates with
+ * `If-None-Match`, so an unchanged document costs a 304 instead of a full
+ * body every cadence.
  */
 export declare function makeUsageOverviewRoute(service: UsageService): WebRoute;
 /**

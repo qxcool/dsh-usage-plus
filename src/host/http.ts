@@ -11,6 +11,7 @@
  * @module dsh-usage-plus/host/http
  */
 
+import { createHash } from 'node:crypto'
 import type { IncomingMessage, OutgoingHttpHeaders, ServerResponse } from 'node:http'
 
 /** Default body cap for readJsonBody: 64 KiB. */
@@ -99,4 +100,17 @@ export function writeJson(
   const payload = JSON.stringify(body)
   res.writeHead(status, { ...JSON_HEADERS, ...headers })
   res.end(payload)
+}
+
+/**
+ * A strong ETag for one JSON document: SHA-1 over the document with its
+ * volatile top-level `updatedAt` normalized away, quoted for HTTP. Documents
+ * that differ only in the instant they were assembled share an ETag, so a
+ * polling client revalidates with `If-None-Match` instead of re-downloading.
+ */
+export function jsonEtag(document: unknown): string {
+  const stable = isJsonObject(document) && Object.hasOwn(document, 'updatedAt')
+    ? { ...document, updatedAt: 0 }
+    : document
+  return `"${createHash('sha1').update(JSON.stringify(stable)).digest('base64url')}"`
 }

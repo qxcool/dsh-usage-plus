@@ -25,6 +25,23 @@ export interface UsageServiceOptions {
 }
 /** Format a balance for display: symbol prefix when known, code suffix otherwise. */
 export declare function formatMoney(currency: string, totalBalance: string): string;
+/**
+ * Delay before the next probe of a provider that just failed that many times
+ * in a row; 0 (probe normally next cycle) for a provider with no failures.
+ */
+export declare function probeBackoffDelayMs(failures: number): number;
+/**
+ * Drop overview rows no surface renders: the wire document otherwise carries
+ * every catalog provider the runtime knows (40+ empty rows ≈ 6 KiB per poll).
+ * A row survives when it carries a fact (plan/balance/error), a configured
+ * credential, a usage total, is the current route, or comes from an external
+ * source. `supported`-only rows without any of those are pure catalog noise:
+ * nothing in the browser half reads `supported`/`planSupported`.
+ */
+export declare function selectOverviewProviders(rows: readonly ProviderSnapshotView[], options: {
+    usageProviders: ReadonlySet<string>;
+    currentProvider?: string;
+}): ProviderSnapshotView[];
 /** Map a used percent to the announcement tone. */
 export declare function planTone(percent: number): 'ok' | 'warn' | 'low';
 /** Announcement context the service computes per poll: today's family spend and the DeepSeek period. */
@@ -99,6 +116,10 @@ export declare class UsageService {
     private lastSignature;
     /** Last prune guard: once per local day, and whenever retention shrinks. */
     private lastPrune;
+    /** Consecutive probe failures per provider; drives the retry backoff. */
+    private readonly probeBackoff;
+    /** Last snapshots document written; an unchanged document is not rewritten. */
+    private lastPersistedSnapshots;
     constructor(ctx: Context, options: UsageServiceOptions);
     /** Start the listeners, load persisted state, and arm the first poll. */
     start(): void;
@@ -185,6 +206,8 @@ export declare class UsageService {
     pollNow(): Promise<void>;
     private listProviderRoutes;
     private probeRoute;
+    /** Advance or clear the retry backoff after one provider's probe run. */
+    private recordProbeOutcome;
     /**
      * Resolve the credential backing one route: pi-ai credential records
      * first, then the profile's apiKeyEnv reference, then the DeepSeek

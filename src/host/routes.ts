@@ -1,16 +1,30 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { appendFile } from 'node:fs/promises'
+import { appendFile, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { ExternalCredentialTarget } from '../core/types.ts'
-import { asJsonObject, readJsonBody, writeJson } from './http.ts'
+import { asJsonObject, jsonEtag, readJsonBody, writeJson } from './http.ts'
 import { isLoopbackRequest } from './loopback.ts'
 import type { UsageService } from './usage-service.ts'
 import { dshHome } from '../dsh-home.ts'
 
 export const USAGE_API_PREFIX = '/api/dsh-usage-plus'
 
+/** Rotate the client-diagnostic NDJSON once it passes this size. */
+const CLIENT_DIAG_MAX_BYTES = 256 * 1024
+
 const FIXED_CREDENTIAL_TARGETS = new Set(['cpamc', 'volcano.ak', 'volcano.sk'])
+
+/**
+ * Whether an `If-None-Match` header names this ETag. Handles the list form,
+ * weak validators (`W/"..."`), and the `*` wildcard.
+ */
+export function requestEtagMatches(ifNoneMatch: string, etag: string): boolean {
+  return ifNoneMatch.split(',').some((candidate) => {
+    const value = candidate.trim().replace(/^W\//i, '')
+    return value === etag || value === '*'
+  })
+}
 
 function parseCredentialTarget(raw: unknown): ExternalCredentialTarget | undefined {
   if (typeof raw !== 'string') return undefined
@@ -22,6 +36,10 @@ function parseCredentialTarget(raw: unknown): ExternalCredentialTarget | undefin
  * Loopback-fenced overview route: provider balances, plan quotas, and token
  * usage totals. Personal account data, so the loopback fence mirrors
  * dsh-perf's stats surface; the browser runs on the same machine.
+ *
+ * Conditional GET: the browser-strip poller revalidates with
+ * `If-None-Match`, so an unchanged document costs a 304 instead of a full
+ * body every cadence.
  */
 export function makeUsageOverviewRoute(service: UsageService): WebRoute {
   return {
@@ -32,7 +50,15 @@ export function makeUsageOverviewRoute(service: UsageService): WebRoute {
         writeJson(res, 403, { ok: false, error: 'forbidden: loopback-only' })
         return
       }
-      writeJson(res, 200, await service.overview(), { 'cache-control': 'no-store' })
+      const document = await service.overview()
+      const etag = jsonEtag(document)
+      const ifNoneMatch = req.headers['if-none-match']
+      if (typeof ifNoneMatch === 'string' && requestEtagMatches(ifNoneMatch, etag)) {
+        res.writeHead(304, { etag, 'cache-control': 'no-store' })
+        res.end()
+        return
+      }
+      writeJson(res, 200, document, { etag, 'cache-control': 'no-store' })
     },
   }
 }
@@ -137,8 +163,17 @@ export function makeUsageClientDiagRoute(): WebRoute {
         return
       }
       const line = `${JSON.stringify({ ts: Date.now(), ...body })}\n`
+      const file = join(dshHome(), 'dsh-usage-plus', 'client-diag.ndjson')
       try {
-        await appendFile(join(dshHome(), 'dsh-usage-plus', 'client-diag.ndjson'), line, 'utf8')
+        // Bound the file: a long-running host must not accumulate diagnostics
+        // without limit. Start a fresh file once the current one is full.
+        const info = await stat(file)
+        if (info.size > CLIENT_DIAG_MAX_BYTES) await rm(file, { force: true })
+      } catch {
+        // Missing file on the first write is the normal case.
+      }
+      try {
+        await appendFile(file, line, 'utf8')
       } catch {
         // Diagnostics must never break the API surface.
       }

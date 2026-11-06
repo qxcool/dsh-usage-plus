@@ -24,11 +24,15 @@ export const USAGE_ENTRY_ID = 'usage-plus'
 
 /** The host usage API as the browser sees it (same-origin JSON endpoints). */
 interface UsageHttpApi {
-  overview(): Promise<UsageOverviewView>
   refresh(): Promise<UsageOverviewView>
   setCredential(target: ExternalCredentialTarget, value: string): Promise<UsageOverviewView>
   clearCredential(target: ExternalCredentialTarget): Promise<UsageOverviewView>
 }
+
+/** One revalidating overview read: a 304 keeps the snapshot already rendered. */
+type OverviewPollResult =
+  | { notModified: true }
+  | { notModified: false; snapshot: UsageOverviewView; etag?: string }
 
 /** Hard ceiling for one usage API call; a stalled host must not pile up requests. */
 const USAGE_FETCH_TIMEOUT_MS = 20_000
@@ -37,7 +41,10 @@ const USAGE_FETCH_TIMEOUT_MS = 20_000
 const PAGE_ORDER = 40
 
 /** Composer-strip poll cadence (one shared interval for every strip). */
-const STRIP_POLL_MS = 5_000
+const STRIP_POLL_MS = 30_000
+
+/** Collapse a burst of composer interactions into one trailing poll. */
+const STRIP_INTERACTION_DEBOUNCE_MS = 250
 
 async function usageFetch<T>(path: string, method: 'GET' | 'POST', body?: unknown): Promise<T> {
   const response = await fetch(path, {
@@ -61,8 +68,27 @@ async function credentialMutation(action: 'set' | 'clear', target: ExternalCrede
   return payload.overview
 }
 
+/**
+ * Read the overview, revalidating with the previous ETag so an unchanged
+ * document answers 304 instead of a full body on every poll.
+ */
+async function fetchOverview(ifNoneMatch: string | undefined): Promise<OverviewPollResult> {
+  const response = await fetch('/api/dsh-usage-plus/overview', {
+    method: 'GET',
+    ...(ifNoneMatch === undefined ? {} : { headers: { 'if-none-match': ifNoneMatch } }),
+    signal: AbortSignal.timeout(USAGE_FETCH_TIMEOUT_MS),
+  })
+  if (response.status === 304) return { notModified: true }
+  if (!response.ok) throw new Error('usage /api/dsh-usage-plus/overview failed: ' + response.status)
+  const etag = response.headers.get('etag')
+  return {
+    notModified: false,
+    snapshot: (await response.json()) as UsageOverviewView,
+    ...(etag === null ? {} : { etag }),
+  }
+}
+
 const usageApi: UsageHttpApi = {
-  overview: () => usageFetch('/api/dsh-usage-plus/overview', 'GET'),
   refresh: () => usageFetch('/api/dsh-usage-plus/refresh', 'POST'),
   setCredential: (target, value) => credentialMutation('set', target, value),
   clearCredential: (target) => credentialMutation('clear', target),
@@ -121,12 +147,20 @@ export function apply(ctx: ClientContext): void {
   const store: UsageStoreInstance = createUsageStore().create()
 
   let pollSeq = 0
+  /** Last ETag served for the overview; `undefined` forces a full read. */
+  let overviewEtag: string | undefined
   const poll = (): void => {
     const seq = pollSeq + 1
     pollSeq = seq
-    usageApi.overview().then((snapshot) => {
+    fetchOverview(overviewEtag).then((result) => {
       if (seq !== pollSeq) return
-      store.actions.setSnapshot(snapshot)
+      if (result.notModified) {
+        // Data is still current; only a stale error state needs clearing.
+        if (store.getSnapshot().status !== 'ready') store.actions.setState('ready', null)
+        return
+      }
+      if (result.etag !== undefined) overviewEtag = result.etag
+      store.actions.setSnapshot(result.snapshot)
     }, (error: unknown) => {
       if (seq !== pollSeq) return
       store.actions.setState('error', error instanceof Error ? error.message : String(error))
@@ -156,6 +190,7 @@ export function apply(ctx: ClientContext): void {
   // conversations never fan out into N independent /overview pollers.
   let stripRefs = 0
   let stripTimer: number | undefined
+  let interactionTimer: number | undefined
   const onVisible = (): void => {
     if (document.visibilityState === 'visible') poll()
   }
@@ -163,9 +198,13 @@ export function apply(ctx: ClientContext): void {
     const target = event.target
     if (!(target instanceof Element)) return
     if (target.closest('[data-slot="conversation.composer"], [data-slot="conversation.input"], [data-slot="conversation.composer.dock"]') === null) return
-    window.setTimeout(() => {
+    // A model pick fires pointerup + change, and clicking around the composer
+    // fires many more: collapse the burst into one trailing poll.
+    if (interactionTimer !== undefined) window.clearTimeout(interactionTimer)
+    interactionTimer = window.setTimeout(() => {
+      interactionTimer = undefined
       if (document.visibilityState === 'visible') poll()
-    }, 50)
+    }, STRIP_INTERACTION_DEBOUNCE_MS)
   }
   const startStripPolling = (): (() => void) => {
     stripRefs += 1
@@ -185,6 +224,10 @@ export function apply(ctx: ClientContext): void {
       if (stripRefs === 0 && stripTimer !== undefined) {
         window.clearInterval(stripTimer)
         stripTimer = undefined
+        if (interactionTimer !== undefined) {
+          window.clearTimeout(interactionTimer)
+          interactionTimer = undefined
+        }
         document.removeEventListener('visibilitychange', onVisible)
         document.removeEventListener('pointerup', onComposerInteract, true)
         document.removeEventListener('change', onComposerInteract, true)

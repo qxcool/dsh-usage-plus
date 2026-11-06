@@ -1,7 +1,7 @@
 {
   "name": "dsh-usage-plus",
   "description": "Independent DSH usage and plan-quota plugin with official provider windows, CPAMC / Volcano sources, and a composer-dock quota strip.",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "type": "module",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
@@ -55,11 +55,6 @@
       "host",
       "web"
     ],
-    "capabilities": {
-      "provides": [
-        "service:usage-plus"
-      ]
-    },
     "permissions": {
       "network": [
         "https://api.minimaxi.com",
