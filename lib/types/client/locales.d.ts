@@ -14,6 +14,7 @@ export declare const zh: {
     'usage.tab.settings': string;
     'usage.refresh': string;
     'usage.refreshing': string;
+    'usage.retry': string;
     'usage.updated': string;
     'usage.loading': string;
     'usage.error': string;
@@ -40,6 +41,7 @@ export declare const zh: {
     'usage.metric.month': string;
     'usage.metric.avgCost': string;
     'usage.cockpit.vsYesterday': string;
+    'usage.vsYesterday': string;
     'usage.metric.avgCostHint': string;
     'usage.metric.unpriced': string;
     'usage.metric.models': string;
@@ -63,6 +65,12 @@ export declare const zh: {
     'usage.heatmap.weeks': string;
     'usage.heatmap.empty': string;
     'usage.heatmap.day': string;
+    'usage.heatmap.activeDays': string;
+    'usage.heatmap.busiest': string;
+    'usage.heatmap.week': string;
+    'usage.heatmap.dow.mon': string;
+    'usage.heatmap.dow.wed': string;
+    'usage.heatmap.dow.fri': string;
     'usage.heatmap.less': string;
     'usage.heatmap.more': string;
     'usage.history': string;
@@ -89,6 +97,8 @@ export declare const zh: {
     'usage.plan.reset.inHours': string;
     'usage.plan.reset.inDays': string;
     'usage.plan.noPlan': string;
+    'usage.plan.emptyHint': string;
+    'usage.plan.quota.tightest': string;
     'usage.plan.noneConfigured': string;
     'usage.plan.groupEmpty': string;
     'usage.plan.groupCount': string;

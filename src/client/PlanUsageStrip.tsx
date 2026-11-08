@@ -102,6 +102,11 @@ function routeOverride(selection: unknown): PlanRouteOverride | undefined {
 /**
  * Compact plan-quota meter for `conversation.composer.dock`, seated on the
  * bottom strip beside official StatsPills and ContextMeter.
+ *
+ * The trigger stays a single quiet pill: a 16px ring for the tightest window
+ * plus the per-window reading. The popover is the detailed view (per-window
+ * bars, tone colours, reset copy) and explains that the ring tracks the
+ * tightest window, so the arc and the numbers can never be misread.
  */
 export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
   const { store } = props
@@ -171,7 +176,6 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
 
   const primary = primaryWindow(windows)
   const percent = primary.percent as number
-  const reading = percentText(percent)
   const level = toneClass(percent)
   const windowSummary = windows.map((window) => `${windowShort(window)} ${percentText(window.percent as number)}`).join(' · ')
   const model = override?.model ?? snapshot.current.model
@@ -193,7 +197,7 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
           setOpen((value) => !value)
         }}
       >
-        <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">
+        <svg viewBox="0 0 14 14" width="16" height="16" aria-hidden="true">
           <circle className={styles.quotaMeterTrack} cx="7" cy="7" r={RADIUS} />
           <circle
             className={styles.quotaMeterFill}
@@ -210,8 +214,13 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
       {open && (
         <div className={styles.quotaMeterPanel} role="dialog" aria-label={identity}>
           <div className={styles.quotaMeterHeader}>
-            <span className={styles.quotaMeterIdentity}>{identity}</span>
-            <span className={styles.sourceChip}>{source}</span>
+            <div className={styles.quotaMeterIdentity}>
+              <span className={styles.quotaMeterName}>{identity}</span>
+              <span className={styles.quotaMeterMeta}>
+                <span className={styles.sourceChip}>{source}</span>
+                {provider.plan?.planName !== undefined ? <span>{provider.plan.planName}</span> : null}
+              </span>
+            </div>
           </div>
           <div className={styles.quotaMeterBars}>
             {windows.map((window) => {
@@ -219,10 +228,7 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
               return (
                 <div key={window.key} className={`${styles.quotaMeterBarRow} ${toneClass(value)}`}>
                   <div className={styles.quotaMeterBarHead}>
-                    <span>
-                      {windowLabel(window)}
-                      <span className={styles.quotaMeterKey}>{windowShort(window)}</span>
-                    </span>
+                    <span>{windowLabel(window)}</span>
                     <span className={styles.quotaMeterBarPct}>{percentText(value)}</span>
                   </div>
                   <span className={styles.bar}>
@@ -233,6 +239,7 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
               )
             })}
           </div>
+          <div className={styles.quotaMeterFoot}>{t('usage.plan.quota.tightest')}</div>
         </div>
       )}
     </span>

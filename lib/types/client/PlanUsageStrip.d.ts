@@ -25,6 +25,11 @@ export { currentPlanProvider };
 /**
  * Compact plan-quota meter for `conversation.composer.dock`, seated on the
  * bottom strip beside official StatsPills and ContextMeter.
+ *
+ * The trigger stays a single quiet pill: a 16px ring for the tightest window
+ * plus the per-window reading. The popover is the detailed view (per-window
+ * bars, tone colours, reset copy) and explains that the ring tracks the
+ * tightest window, so the arc and the numbers can never be misread.
  */
 export declare function PlanUsageStrip(props: PlanUsageStripProps): ReactNode;
 //# sourceMappingURL=PlanUsageStrip.d.ts.map

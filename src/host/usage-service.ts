@@ -17,11 +17,13 @@ import { dshHome } from '../dsh-home.ts'
 import { adapterFor, isDeepSeekProviderRoute, providerErrorMessage } from '../core/adapters.ts'
 import type { BalanceParse, PlanParse } from '../core/adapters.ts'
 import { deepseekModelSpend, deepseekPeriodAt } from '../core/pricing.ts'
-import { createLedgerDocument, deserializeLedger, foldUsage, ledgerDayKeys, localDateKey, pruneLedger, summarizeDays, totalTokens } from '../core/ledger.ts'
+import { createLedgerDocument, deserializeLedger, foldUsage, localDateKey, pruneLedger, summarizeLedgerUsage, totalTokens } from '../core/ledger.ts'
+import type { LedgerUsageSummary } from '../core/ledger.ts'
 import { currentPlanProvider } from '../core/plan-match.ts'
 import type { BalanceView, CredentialKind, ExternalCredentialStatus, ExternalCredentialTarget, PlanView, ProviderSnapshotState, ProviderSnapshotView, UsageLedgerDocument, UsageOverviewView, UsageTokenTotals } from '../core/types.ts'
 import { emptyTotals } from '../core/types.ts'
 import { probeCpamc, probeVolcano } from './external-sources.ts'
+import { jsonEtag } from './http.ts'
 
 /** Source tag the plugin stamps onto pet announcements. */
 export const USAGE_ANNOUNCE_SOURCE = 'dsh-usage-plus'
@@ -74,6 +76,24 @@ const TREND_DAYS = 30
 
 /** How many daily rows the Codex-style heatmap receives (26 weeks). */
 const HEATMAP_DAYS = 182
+
+/** TTL for the provider route list: an llm-registry config scan, not data. */
+const ROUTE_CACHE_TTL_MS = 5_000
+
+/** TTL for the external credential flags: three credential-vault reads. */
+const CREDENTIAL_STATUS_TTL_MS = 5_000
+
+/** TTL for configEditor entry snapshots a document read depends on (baseURL). */
+const CONFIG_CACHE_TTL_MS = 5_000
+
+/** How many times one overview assembly retries when a mutation lands mid-await. */
+const OVERVIEW_ASSEMBLY_ATTEMPTS = 2
+
+/** The wire payload of one overview read: the cached document plus its ETag. */
+export interface UsageOverviewPayload {
+  document: UsageOverviewView
+  etag: string
+}
 
 /** Currency symbols the bubble and section render inline; other codes render as `12.00 EUR`. */
 const CURRENCY_SYMBOLS: Readonly<Record<string, string>> = { CNY: '¥', USD: '$', EUR: '€', GBP: '£' }
@@ -302,6 +322,30 @@ export function replaceExternalSnapshots(
   for (const row of rows) snapshots.set(row.provider, row)
 }
 
+/** Structural equality for two configEditor entry snapshots (plain JSON data). */
+function configsEqual(
+  left: Record<string, unknown> | undefined,
+  right: Record<string, unknown> | undefined,
+): boolean {
+  if (left === right) return true
+  try {
+    return JSON.stringify(left) === JSON.stringify(right)
+  } catch {
+    return false
+  }
+}
+
+/** Whether two provider route snapshots are identical, order included. */
+function sameRoutes(left: readonly ProviderRoute[], right: readonly ProviderRoute[]): boolean {
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index] as ProviderRoute
+    const b = right[index] as ProviderRoute
+    if (a.id !== b.id || a.displayName !== b.displayName) return false
+  }
+  return true
+}
+
 export class UsageService {
   private readonly ctx: Context
   private options: UsageServiceOptions
@@ -335,6 +379,32 @@ export class UsageService {
   /** Last snapshots document written; an unchanged document is not rewritten. */
   private lastPersistedSnapshots: string | undefined
 
+  /**
+   * Bumped on every document-visible mutation: ledger fold, persisted merge,
+   * prune, settings/retention change, composer/current change, probe result,
+   * or a route/config/credential-flag change. The derived overview document
+   * is served from cache until this moves.
+   */
+  private revision = 0
+  /** Bumped only by ledger mutations; the usage windows aggregate from it. */
+  private ledgerRevision = 0
+  /** Derived overview document, rebuilt at most once per revision. */
+  private overviewCache: { revision: number; dayKey: string; document: UsageOverviewView; etag: string } | undefined
+  /** Aggregated usage windows, rebuilt at most once per ledger revision. */
+  private usageCache: { ledgerRevision: number; retainDays: number; dayKey: string; usage: LedgerUsageSummary } | undefined
+  /** Provider route list TTL cache (the llm registry is a config scan). */
+  private routesCache: { at: number; routes: ProviderRoute[] } | undefined
+  /** configEditor entry snapshots a document read depends on; TTL-cached. */
+  private readonly entryConfigCache = new Map<string, { at: number; config: Record<string, unknown> | undefined }>()
+  /** External credential-status TTL cache: three vault reads per assembly otherwise. */
+  private credentialStatusCache: { at: number; value: ExternalCredentialStatus } | undefined
+  /** Last credential flags observed before a cache invalidation; drives invalidation. */
+  private lastCredentialStatus: ExternalCredentialStatus | undefined
+  /** Dedupes overlapping credential-status reads. */
+  private credentialStatusInFlight: Promise<ExternalCredentialStatus> | undefined
+  /** Invalidates in-flight credential-status reads that predate a credential write. */
+  private credentialStatusGeneration = 0
+
   constructor(ctx: Context, options: UsageServiceOptions) {
     this.ctx = ctx
     this.options = options
@@ -360,12 +430,23 @@ export class UsageService {
     if (this.pollTimer !== undefined) clearTimeout(this.pollTimer)
     if (this.flushTimer !== undefined) clearTimeout(this.flushTimer)
     this.sessionListenerDisposer?.()
+    // Release the derived document/caches; a successor instance rebuilds.
+    this.overviewCache = undefined
+    this.usageCache = undefined
+    this.routesCache = undefined
+    this.entryConfigCache.clear()
+    this.credentialStatusCache = undefined
     return this.flushLedger()
   }
 
   /** Re-apply options live (settings change); retention shrink prunes now. */
   applyOptions(options: UsageServiceOptions): void {
     this.options = options
+    // Every option is document-visible: retention resizes the windows, the
+    // external env names change the status flags, and the poll cadence rides
+    // the pet TTL. Invalidate once, then prune immediately on a shrink.
+    this.bumpRevision()
+    this.invalidateCredentialStatus()
     this.pruneIfNeeded()
   }
 
@@ -376,22 +457,56 @@ export class UsageService {
 
   /** Assemble the overview document the browser section renders. */
   async overview(): Promise<UsageOverviewView> {
-    // Always re-sync to the composer selection so switching the model
-    // selector updates the strip without waiting for the next request.
+    return (await this.overviewPayload()).document
+  }
+
+  /**
+   * The overview document plus its strong ETag. A warm request (same data
+   * revision) answers from the derived cache: no ledger re-summarization, no
+   * provider rebuild, and no SHA-1 over the JSON — the GET route only needs
+   * the cached validator to answer 304. `updatedAt` moves with each read but
+   * stays out of the ETag, exactly like the uncached path.
+   */
+  async overviewPayload(): Promise<UsageOverviewPayload> {
+    // Always re-sync to the composer selection first: switching the model
+    // selector updates the strip without waiting for the next request, and a
+    // change must invalidate the cache before the lookup below.
     this.syncCurrentFromComposer()
-    const todayKey = localDateKey(Date.now())
-    const allKeys = ledgerDayKeys(this.ledger)
-    const heatmapKeys = allKeys.slice(-Math.min(HEATMAP_DAYS, this.options.retainDays))
-    const rangeKeys = allKeys.slice(-TREND_DAYS)
-    const range = summarizeDays(rangeKeys.map((key) => this.ledger.days[key] ?? {}))
-    const all = summarizeDays(allKeys.map((key) => this.ledger.days[key] ?? {}))
-    const today = this.daySummary(todayKey)
-    // Providers the browser looks up by usage row must survive the trim below.
-    const usageProviders = new Set<string>([
-      ...today.providers.map((row) => row.provider),
-      ...range.providers.map((row) => row.provider),
-      ...all.providers.map((row) => row.provider),
-    ])
+    // The route list and the current route's baseURL are part of the document;
+    // both ride short TTLs, and a change bumps the revision (invalidating).
+    this.listProviderRoutes()
+    if (this.current.provider !== undefined) this.piAiProfile(this.current.provider)
+    for (let attempt = 0; attempt < OVERVIEW_ASSEMBLY_ATTEMPTS; attempt += 1) {
+      const revision = this.revision
+      const dayKey = localDateKey(Date.now())
+      // The credential flags ride a short TTL; a changed value bumps the
+      // revision, and a fold/probe landing during the await is caught by the
+      // re-check below: never cache a document built on stale state.
+      const externalCredentials = await this.externalCredentialStatus()
+      if (this.revision !== revision || localDateKey(Date.now()) !== dayKey) continue
+      const cached = this.overviewCache
+      if (cached !== undefined && cached.revision === revision && cached.dayKey === dayKey) {
+        cached.document.updatedAt = Date.now()
+        return { document: cached.document, etag: cached.etag }
+      }
+      const document = this.assembleOverview(this.usageSummary(), externalCredentials)
+      const etag = jsonEtag(document)
+      if (this.revision === revision) this.overviewCache = { revision, dayKey, document, etag }
+      return { document, etag }
+    }
+    // Two races in a row (a fold or probe landed mid-await both times): answer
+    // with a consistent document, but do not cache it under a moving revision.
+    const document = this.assembleOverview(this.usageSummary(), await this.externalCredentialStatus())
+    return { document, etag: jsonEtag(document) }
+  }
+
+  /**
+   * Build the wire document from an already-aggregated usage summary. Rows
+   * and the provider keep-set (the exact ids the trend/today cards look up)
+   * are computed once per revision. The returned `providers` array is freshly
+   * sorted, so it never aliases the cached route list.
+   */
+  private assembleOverview(usage: LedgerUsageSummary, externalCredentials: ExternalCredentialStatus): UsageOverviewView {
     const routes = this.listProviderRoutes()
     const rows: ProviderSnapshotView[] = []
     for (const route of routes) {
@@ -417,7 +532,10 @@ export class UsageService {
       const error = snapshot.balanceError ?? snapshot.planError
       rows.push({ ...snapshot, ...(error !== undefined ? { error } : {}) })
     }
-    const providers = selectOverviewProviders(rows, { usageProviders, currentProvider: this.current.provider })
+    const providers = selectOverviewProviders(rows, {
+      usageProviders: usage.usageProviders,
+      currentProvider: this.current.provider,
+    })
     providers.sort((a, b) => Number(b.supported) - Number(a.supported) || a.displayName.localeCompare(b.displayName))
     const baseURL = this.current.provider !== undefined ? this.piAiProfile(this.current.provider)?.baseURL : undefined
     return {
@@ -427,29 +545,65 @@ export class UsageService {
         ...this.current,
         ...(typeof baseURL === 'string' && baseURL.trim() !== '' ? { baseURL: baseURL.trim() } : {}),
       },
-      externalCredentials: await this.externalCredentialStatus(),
+      externalCredentials,
       usage: {
-        today,
-        days: heatmapKeys.map((date) => {
-          const summary = this.daySummary(date)
-          return { date, totals: summary.totals }
-        }),
-        range: {
-          from: rangeKeys[0] ?? todayKey,
-          to: rangeKeys[rangeKeys.length - 1] ?? todayKey,
-          totals: range.totals,
-          providers: range.providers,
-        },
-        all: {
-          from: allKeys[0] ?? todayKey,
-          to: allKeys[allKeys.length - 1] ?? todayKey,
-          totals: all.totals,
-          // Only the totals are rendered; the per-model breakdown is dead
-          // weight that grows with the retained history.
-          providers: all.providers.map(({ provider, totals }) => ({ provider, totals, models: [] })),
-        },
+        today: usage.today,
+        days: usage.days,
+        range: usage.range,
+        all: usage.all,
       },
     }
+  }
+
+  /**
+   * Aggregate the usage windows for the current ledger revision and local day.
+   * One pass over the retained ledger per revision; warm polls (and the pet
+   * bubble's today lookup) reuse it instead of re-summarizing 182 days.
+   */
+  private usageSummary(): LedgerUsageSummary {
+    const ledgerRevision = this.ledgerRevision
+    const dayKey = localDateKey(Date.now())
+    const retainDays = this.options.retainDays
+    const cached = this.usageCache
+    if (
+      cached !== undefined
+      && cached.ledgerRevision === ledgerRevision
+      && cached.retainDays === retainDays
+      && cached.dayKey === dayKey
+    ) {
+      return cached.usage
+    }
+    const usage = summarizeLedgerUsage(this.ledger, {
+      todayKey: dayKey,
+      heatmapDays: Math.min(HEATMAP_DAYS, retainDays),
+      rangeDays: TREND_DAYS,
+    })
+    this.usageCache = { ledgerRevision, retainDays, dayKey, usage }
+    return usage
+  }
+
+  /** Mark a document-visible mutation: the next overview read rebuilds. */
+  private bumpRevision(): void {
+    this.revision += 1
+  }
+
+  /** Mark a ledger mutation: both the document and the usage windows rebuild. */
+  private bumpLedgerRevision(): void {
+    this.ledgerRevision += 1
+    this.revision += 1
+  }
+
+  /** Adopt a new current route, bumping the revision only when it changed. */
+  private setCurrent(next: { provider?: string; model?: string; source: 'live' | 'default' }): void {
+    if (
+      this.current.provider === next.provider
+      && this.current.model === next.model
+      && this.current.source === next.source
+    ) {
+      return
+    }
+    this.current = next
+    this.bumpRevision()
   }
 
   /**
@@ -469,6 +623,9 @@ export class UsageService {
     if (credentials === undefined) return { ok: false, error: 'credential store unavailable' }
     try {
       await credentials.set(credentialRef(name), trimmed)
+      // The status flags are document-visible: fetch fresh on the next read.
+      this.invalidateCredentialStatus()
+      this.bumpRevision()
       return { ok: true }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : 'credential write failed' }
@@ -487,14 +644,62 @@ export class UsageService {
     if (credentials === undefined) return { ok: false, error: 'credential store unavailable' }
     try {
       await credentials.unset(credentialRef(name))
+      // The status flags are document-visible: fetch fresh on the next read.
+      this.invalidateCredentialStatus()
+      this.bumpRevision()
       return { ok: true }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : 'credential clear failed' }
     }
   }
 
-  /** Configured/missing flags only — never the secret values. */
+  /**
+   * Configured/missing flags only — never the secret values. Short-TTL cached:
+   * the document renders them and a 10s poll must not read the vault three
+   * times per request. A changed flag bumps the revision so the next overview
+   * rebuilds; credential writes and settings changes invalidate explicitly.
+   */
   async externalCredentialStatus(): Promise<ExternalCredentialStatus> {
+    const now = Date.now()
+    const cached = this.credentialStatusCache
+    if (cached !== undefined && now - cached.at < CREDENTIAL_STATUS_TTL_MS) return cached.value
+    if (this.credentialStatusInFlight !== undefined) return this.credentialStatusInFlight
+    const generation = this.credentialStatusGeneration
+    let pending!: Promise<ExternalCredentialStatus>
+    pending = this.readExternalCredentialStatus()
+      .then((value) => {
+        // A credential write landed while this read was in flight: its result
+        // is already stale, so it must not populate the cache.
+        if (generation === this.credentialStatusGeneration) {
+          const previous = this.lastCredentialStatus
+          this.credentialStatusCache = { at: Date.now(), value }
+          this.lastCredentialStatus = value
+          if (
+            previous !== undefined
+            && (previous.cpamc !== value.cpamc || previous.volcanoAk !== value.volcanoAk || previous.volcanoSk !== value.volcanoSk)
+          ) {
+            this.bumpRevision()
+          }
+        }
+        return value
+      })
+      .finally(() => {
+        if (this.credentialStatusInFlight === pending) this.credentialStatusInFlight = undefined
+      })
+    this.credentialStatusInFlight = pending
+    return pending
+  }
+
+  /** Drop the cached flags after a credential write or env-name change. */
+  private invalidateCredentialStatus(): void {
+    this.credentialStatusGeneration += 1
+    this.credentialStatusCache = undefined
+    // Do not hand a pre-write in-flight read to the next caller.
+    this.credentialStatusInFlight = undefined
+  }
+
+  /** The live (uncached) credential-status read: three vault describes. */
+  private async readExternalCredentialStatus(): Promise<ExternalCredentialStatus> {
     return {
       cpamc: await this.isEnvConfigured(this.options.cpamcManagementKeyEnv),
       volcanoAk: await this.isEnvConfigured(this.options.volcanoAccessKeyEnv),
@@ -521,19 +726,12 @@ export class UsageService {
     return typeof value === 'string' && value.trim() !== ''
   }
 
-  /** One local day aggregated per provider. */
-  private daySummary(dateKey: string): UsageOverviewView['usage']['today'] {
-    const day = this.ledger.days[dateKey] ?? {}
-    const { totals, providers } = summarizeDays([day])
-    return { date: dateKey, totals, providers }
-  }
-
   /** Today's ledger spend for one provider's adapter family (0 when unpriced). */
   private familyCostToday(provider: string): number {
     const family = adapterFor(provider)
     if (family === undefined) return 0
     let cost = 0
-    for (const row of this.daySummary(localDateKey(Date.now())).providers) {
+    for (const row of this.usageSummary().today.providers) {
       if (adapterFor(row.provider) === family) cost += row.totals.cost
     }
     return cost
@@ -541,7 +739,7 @@ export class UsageService {
 
   /** Today's ledger totals for one provider route (the exact id, not the family). */
   private providerUsageToday(provider: string): UsageTokenTotals {
-    const row = this.daySummary(localDateKey(Date.now())).providers.find((entry) => entry.provider === provider)
+    const row = this.usageSummary().today.providers.find((entry) => entry.provider === provider)
     return row?.totals ?? emptyTotals()
   }
 
@@ -565,13 +763,13 @@ export class UsageService {
         const config = (event.data as { header?: { config?: { provider?: string; model?: string } } }).header?.config
         if (config?.provider !== undefined) {
           this.sessionRoutes.set(session, { provider: config.provider, model: config.model ?? '' })
-          this.current = { provider: config.provider, model: config.model, source: 'live' }
+          this.setCurrent({ provider: config.provider, model: config.model, source: 'live' })
         }
       } else if (event.type === 'request/context') {
         const data = event.data as { provider?: string; model?: string }
         if (data.provider !== undefined) {
           this.sessionRoutes.set(session, { provider: data.provider, model: data.model ?? '' })
-          this.current = { provider: data.provider, model: data.model, source: 'live' }
+          this.setCurrent({ provider: data.provider, model: data.model, source: 'live' })
         }
       } else if (event.type === 'assistant/message') {
         const usage = (event.data as { usage?: TokenUsage }).usage
@@ -580,6 +778,7 @@ export class UsageService {
         if (route === undefined || route.provider === '') return
         const now = Date.now()
         foldUsage(this.ledger, now, route.provider, route.model || 'unknown', this.totalsFrom(usage, route.provider, route.model || 'unknown', now))
+        this.bumpLedgerRevision()
         this.scheduleFlush()
       }
     } catch {
@@ -596,8 +795,10 @@ export class UsageService {
     const selected = service<{ currentSelection(): { provider?: string; model?: string } }>(this.ctx, 'agentDefaultModel')?.currentSelection()
       ?? (readEntryConfig(this.ctx, 'agent-default-model') as { provider?: string; model?: string } | undefined)
     if (selected?.provider === undefined || selected.provider === '') return
+    // Same route already tracked: keep its `live` source, do not bounce it
+    // back to `default` just because the composer agrees with it.
     if (this.current.provider === selected.provider && this.current.model === selected.model) return
-    this.current = { provider: selected.provider, model: selected.model, source: 'default' }
+    this.setCurrent({ provider: selected.provider, model: selected.model, source: 'default' })
   }
 
   /**
@@ -641,15 +842,21 @@ export class UsageService {
         }
         pruneLedger(this.ledger, localDateKey(Date.now()), this.options.retainDays)
         this.lastPrune = { dayKey: localDateKey(Date.now()), retainDays: this.options.retainDays }
+        // Merged (and possibly pruned) history is document-visible: a cached
+        // overview assembled during the read window must be rebuilt.
+        this.bumpLedgerRevision()
       }
       if (rawSnapshots !== undefined) {
         const parsed = JSON.parse(rawSnapshots) as { providers?: Record<string, ProviderSnapshotState> }
         if (typeof parsed === 'object' && parsed !== null && typeof parsed.providers === 'object' && parsed.providers !== null) {
+          let loadedSnapshots = false
           for (const [provider, snapshot] of Object.entries(parsed.providers)) {
             if (typeof snapshot === 'object' && snapshot !== null && typeof snapshot.provider === 'string') {
               this.snapshots.set(provider, snapshot)
+              loadedSnapshots = true
             }
           }
+          if (loadedSnapshots) this.bumpRevision()
         }
       }
     } catch {
@@ -702,7 +909,11 @@ export class UsageService {
     if (this.lastPrune?.dayKey === todayKey && this.lastPrune.retainDays === this.options.retainDays) return
     const pruned = pruneLedger(this.ledger, todayKey, this.options.retainDays)
     this.lastPrune = { dayKey: todayKey, retainDays: this.options.retainDays }
-    if (pruned > 0) this.scheduleFlush()
+    if (pruned > 0) {
+      // Pruned days are document-visible (windows, usage providers).
+      this.bumpLedgerRevision()
+      this.scheduleFlush()
+    }
   }
 
   private async persistSnapshots(): Promise<void> {
@@ -780,9 +991,14 @@ export class UsageService {
           const batch = probeable.slice(offset, offset + PROBE_CONCURRENCY)
           await Promise.all(batch.map(({ route, adapter }) => this.probeRoute(route, adapter)))
         }
+        let droppedSnapshots = false
         for (const id of [...this.snapshots.keys()]) {
-          if (!seen.has(id) && !id.startsWith('cpamc:') && !id.startsWith('volcano:') && !id.startsWith('custom:')) this.snapshots.delete(id)
+          if (!seen.has(id) && !id.startsWith('cpamc:') && !id.startsWith('volcano:') && !id.startsWith('custom:')) {
+            this.snapshots.delete(id)
+            droppedSnapshots = true
+          }
         }
+        if (droppedSnapshots) this.bumpRevision()
         await this.probeExternalSources()
         if (this.disposed) return
         await this.persistSnapshots()
@@ -796,7 +1012,23 @@ export class UsageService {
     return cycle
   }
 
+  /**
+   * The live LLM provider routes, short-TTL cached: the registry call walks
+   * config, and every overview/poll/announce reads it. A registry change is
+   * document-visible (provider rows), so it bumps the revision.
+   */
   private listProviderRoutes(): ProviderRoute[] {
+    const now = Date.now()
+    const cached = this.routesCache
+    if (cached !== undefined && now - cached.at < ROUTE_CACHE_TTL_MS) return cached.routes
+    const routes = this.readProviderRoutes()
+    this.routesCache = { at: now, routes }
+    // The first read has no document to invalidate yet; later changes do.
+    if (cached !== undefined && !sameRoutes(cached.routes, routes)) this.bumpRevision()
+    return routes
+  }
+
+  private readProviderRoutes(): ProviderRoute[] {
     const routes = new Map<string, string>()
     const runtime = service<{ listProviders(): Array<{ id: string; name: string }>; listConfigurableProviders(): Array<{ provider: string; displayName: string }> }>(this.ctx, 'llm')
     if (runtime !== undefined) {
@@ -828,6 +1060,7 @@ export class UsageService {
         supported: true,
         updatedAt: Date.now(),
       })
+      this.bumpRevision()
       return
     }
     const snapshot: ProviderSnapshotState = {
@@ -872,6 +1105,7 @@ export class UsageService {
     if (plan !== undefined) snapshot.plan = plan as PlanView
     else if (previous?.plan !== undefined) snapshot.plan = previous.plan
     this.snapshots.set(route.id, snapshot)
+    this.bumpRevision()
     // One half failing is enough to back this provider off; a success in
     // either half clears the counter (the other half may legitimately have
     // no adapter at all).
@@ -944,23 +1178,54 @@ export class UsageService {
   private async probeExternalSources(): Promise<void> {
     try {
       const rows = await probeCpamc({ enabled: this.options.cpamcEnabled, baseURL: this.options.cpamcBaseURL, managementKey: await this.resolveEnv(this.options.cpamcManagementKeyEnv), allowedHosts: this.options.cpamcAllowedHosts })
-      replaceExternalSnapshots(this.snapshots, 'cpamc', rows)
+      this.replaceExternalSnapshotsChecked('cpamc', rows)
     } catch {}
     try {
       const rows = await probeVolcano({ enabled: this.options.volcanoEnabled, accessKeyId: await this.resolveEnv(this.options.volcanoAccessKeyEnv), secretAccessKey: await this.resolveEnv(this.options.volcanoSecretKeyEnv) })
-      replaceExternalSnapshots(this.snapshots, 'volcano', rows)
+      this.replaceExternalSnapshotsChecked('volcano', rows)
     } catch {}
+  }
+
+  /**
+   * Replace one external source's rows, bumping the revision only when the
+   * map actually changed (a disabled/idle source must not invalidate the
+   * cached overview on every poll).
+   */
+  private replaceExternalSnapshotsChecked(source: 'cpamc' | 'volcano', rows: readonly ProviderSnapshotState[]): void {
+    const prefix = `${source}:`
+    let previousRows = 0
+    for (const id of this.snapshots.keys()) {
+      if (id.startsWith(prefix)) previousRows += 1
+    }
+    if (previousRows === 0 && rows.length === 0) return
+    replaceExternalSnapshots(this.snapshots, source, rows)
+    this.bumpRevision()
+  }
+
+  /**
+   * A configEditor entry snapshot, short-TTL cached. Config is part of the
+   * document (the current route's baseURL), so a changed value bumps the
+   * revision; the TTL keeps the config scan off the warm poll path.
+   */
+  private cachedEntryConfig(id: string): Record<string, unknown> | undefined {
+    const now = Date.now()
+    const cached = this.entryConfigCache.get(id)
+    if (cached !== undefined && now - cached.at < CONFIG_CACHE_TTL_MS) return cached.config
+    const config = readEntryConfig(this.ctx, id)
+    this.entryConfigCache.set(id, { at: now, config })
+    if (cached !== undefined && !configsEqual(cached.config, config)) this.bumpRevision()
+    return config
   }
 
   /** The llm-pi-ai profile object for one provider route, when configured. */
   private piAiProfile(provider: string): { apiKeyEnv?: string; baseURL?: string } | undefined {
-    const section = readEntryConfig(this.ctx, 'llm-pi-ai') as { providers?: Record<string, { apiKeyEnv?: string; baseURL?: string }> } | undefined
+    const section = this.cachedEntryConfig('llm-pi-ai') as { providers?: Record<string, { apiKeyEnv?: string; baseURL?: string }> } | undefined
     return section?.providers?.[provider]
   }
 
   /** The DeepSeek official adapter's credential reference name. */
   private deepseekApiKeyEnv(): string {
-    const section = readEntryConfig(this.ctx, 'llm-deepseek') as { apiKeyEnv?: string } | undefined
+    const section = this.cachedEntryConfig('llm-deepseek') as { apiKeyEnv?: string } | undefined
     return section?.apiKeyEnv ?? 'DEEPSEEK_API_KEY'
   }
 

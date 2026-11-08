@@ -1,8 +1,13 @@
 /**
- * The usage statistics settings section: overview (today's usage, balances,
- * trend), plan quotas, and settings. Data comes from the host's
+ * The usage statistics settings section: overview (today's usage, plan
+ * quotas, trend), plan windows, and settings. Data comes from the host's
  * loopback-fenced /api/dsh-usage-plus/overview document; polling runs only
  * while the section is mounted and the tab is visible.
+ *
+ * The overview is a quiet instrument panel: one hero figure for today, a
+ * compact comparator group, then the 26-week activity heatmap and the account
+ * quota rings as the two rich moments. Every derived value is formatted from
+ * the host document; the component invents no numbers.
  * @module dsh-usage-plus/client/UsageSectionCard
  */
 import { type ReactNode } from 'react';

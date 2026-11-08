@@ -11,20 +11,22 @@ Independent DSH usage and official Plan-quota plugin (Host + Web UI). It does no
 - Keeps CPAMC and Volcano Ark as separate sources (Plugins page → Settings).
 - Overview includes a full 26-week Mon–Sun activity heatmap (ledger default 182 days).
 - Keeps all secrets in the host process / credential vault.
+- Shares one conditional-GET poller across the Plugins page and every composer strip; requests never overlap and a hidden tab pauses.
+- Serves the overview from a per-revision host cache, so warm polls skip ledger aggregation and answer `304` from a cached ETag.
 
 ## Screenshots
 
 ### Composer plan strip (current model)
 
-![Composer footer for an OpenCode Go route: turn/step counters, total tokens with cache hit rate, the ring level, and the "额度 5h / 周 / 月" plan strip with reset times](docs/screenshots/composer-plan-strip.png)
+![Composer footer for an OpenCode Go route: turn/step counters, total tokens with cache hit rate, and the compact "额度 5h 64% · 周 78% · 月 18%" plan pill](docs/screenshots/composer-plan-strip.png)
 
-When the active model matches an official plan source, the composer dock shows real 5-hour / weekly / monthly windows. Hover for reset times and the source chip (for example Volcano). Nothing is rendered when the remote API exposes no official window.
+When the active model matches an official plan source, the composer dock shows a compact pill with the real 5-hour / weekly / monthly readings; the ring marks the tightest window. Open it for per-window bars, reset times, and the source chip (for example Volcano). Nothing is rendered when the remote API exposes no official window.
 
 ### Plugins → Usage · Overview
 
-![Usage overview (device-wide): today / 30-day / all-time tokens and calls, cache hit rate, token buckets, per-provider breakdown, the 26-week heatmap, and the account-level quota strip](docs/screenshots/settings-overview.png)
+![Usage overview (device-wide): a today hero figure with vs-yesterday comparator, 30-day / all-time / calls / average-cost stats, cache-hit ring, the 26-week Mon–Sun heatmap with weekday gutter, column-anchored month labels and active-day / peak facts, account-level quota rings, the 30-day provider trend, today's provider breakdown with token mix, and a collapsible per-day history](docs/screenshots/settings-overview.png)
 
-The overview summarizes today and the last 30 days, cache hit rate, token buckets, and per-provider totals. The balance card only lists real balances. Plan quotas and external sources live on the other tabs of the same Plugins page.
+The overview reads as one instrument panel: a hero figure for today, the 26-week heatmap as the main chart, account-level quota rings, and a 30-day provider ranking. Every figure is labelled with its scope (`全设备` / `账号级`); the balance line only lists real balances. Plan quotas and external sources live on the other tabs of the same Plugins page.
 
 ## Install
 
@@ -55,6 +57,16 @@ Optional credential names are `CPAMC_MANAGEMENT_KEY`, `VOLC_ACCESSKEY`, and `VOL
 - CPAMC accepts loopback origins (or hosts listed in `cpamcAllowedHosts`) only; management routes are read-only and reject redirects.
 - Volcano Ark needs vaulted AK/SK (or `VOLC_ACCESSKEY` / `VOLC_SECRETKEY`); signing runs only in the Host process.
 - Floating pet bubble announcements need a separate pet service in the profile; `bubbleMode: off` disables them.
+
+## Performance
+
+- **One shared poll loop.** The Plugins page and every composer strip share one in-flight overview read; burst triggers collapse into a trailing request, a manual refresh queues behind a read, and a hidden document pauses polling.
+- **Cached host overview.** The host rebuilds the overview at most once per data revision. Warm reads answer `304 Not Modified` from a cached ETag without re-aggregating the retained ledger (measured warm overhead ≈0.02 ms vs ≈5 ms before on a 182-day / 2-provider × 3-model ledger; cold assembly is unchanged).
+- **One-pass aggregation.** The 26-week heatmap is built from one precomputed per-day table, and the all-time window skips the per-model rows the page never renders.
+
+## Development
+
+`pnpm typecheck`, `pnpm test`, and `pnpm build` cover the plugin. To review the Web UI without the authenticated DSH Web GUI, run `python scripts/preview/shot.py` and inspect the PNGs under `docs/screenshots/`; see [scripts/preview/README.md](scripts/preview/README.md).
 
 ## Accuracy
 

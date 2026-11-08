@@ -1,12 +1,17 @@
 /**
- * The usage statistics settings section: overview (today's usage, balances,
- * trend), plan quotas, and settings. Data comes from the host's
+ * The usage statistics settings section: overview (today's usage, plan
+ * quotas, trend), plan windows, and settings. Data comes from the host's
  * loopback-fenced /api/dsh-usage-plus/overview document; polling runs only
  * while the section is mounted and the tab is visible.
+ *
+ * The overview is a quiet instrument panel: one hero figure for today, a
+ * compact comparator group, then the 26-week activity heatmap and the account
+ * quota rings as the two rich moments. Every derived value is formatted from
+ * the host document; the component invents no numbers.
  * @module dsh-usage-plus/client/UsageSectionCard
  */
 
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { memo, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { UsageStoreInstance } from './usage-store.ts'
 import { formatPlanReset, friendlyProbeError, isCpamcLoopbackUrl, t } from './locales.ts'
 import { PlanUsageStrip } from './PlanUsageStrip.tsx'
@@ -78,6 +83,15 @@ export interface UsageSectionProps extends UsageSectionFace {
 /** Poll cadence while the section is open. */
 const SECTION_POLL_MS = 10_000
 
+/**
+ * A document older than this is presented as stale: the freshness dot next to
+ * `更新于` dims and the exact timestamp still carries the truth.
+ */
+const FRESH_WINDOW_MS = 30_000
+
+/** How many model sub-bars render under one provider bar. */
+const CHART_MODEL_CAP = 3
+
 /** Compact token count: 12345 -> 12.3k, 1234567 -> 1.23M. */
 export function formatTokens(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return '0'
@@ -112,6 +126,62 @@ function formatCost(cost: number): string {
   return '¥' + cost.toFixed(2)
 }
 
+/** One percent reading, same format everywhere in the panel. */
+function percentText(value: number): string {
+  return `${value >= 10 ? Math.round(value) : value.toFixed(1)}%`
+}
+
+function totalOf(totals: UsageTokenTotals): number {
+  return totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens + totals.outputTokens
+}
+
+function cacheHitRate(totals: UsageTokenTotals): number | null {
+  const billed = totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens
+  if (billed <= 0) return null
+  return (totals.cacheReadTokens / billed) * 100
+}
+
+/** A provider row backed by a configured credential (api key, env key, or OAuth grant). */
+function isConfigured(provider: ProviderSnapshotView): boolean {
+  // An older wire document without the credential field renders as before.
+  return provider.credential !== 'none'
+}
+
+function balanceAmount(provider: ProviderSnapshotView): number | null {
+  if (provider.balance === undefined) return null
+  const raw = Number(provider.balance.totalBalance)
+  return Number.isFinite(raw) ? raw : null
+}
+
+function balanceStatus(provider: ProviderSnapshotView): string {
+  const amount = balanceAmount(provider)
+  if (amount === null) return t('usage.balance.empty')
+  if (amount <= 5) return t('usage.balance.low')
+  return t('usage.balance.ok')
+}
+
+function balanceText(provider: ProviderSnapshotView): string | null {
+  if (provider.balance === undefined) return null
+  const currency = provider.balance.currency.toUpperCase()
+  const prefix = currency === 'CNY' ? '¥' : currency === 'USD' ? '$' : ''
+  const suffix = currency !== 'CNY' && currency !== 'USD' ? ` ${currency}` : ''
+  return `${prefix}${provider.balance.totalBalance}${suffix}`
+}
+
+/** Only providers with a real balance fact — skip unconfigured / unsupported noise. */
+function balanceCardRows(providers: ProviderSnapshotView[]): ProviderSnapshotView[] {
+  const seen = new Set<string>()
+  const rows: ProviderSnapshotView[] = []
+  for (const provider of providers) {
+    if (!isConfigured(provider) || balanceText(provider) === null) continue
+    const key = `${provider.displayName.trim().toLowerCase()}|${balanceText(provider)}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    rows.push(provider)
+  }
+  return rows
+}
+
 /**
  * Fill classes for one plan window. `barFill` always rides along because it
  * owns the fill's non-colour geometry (height, radius, transition); `barWarn`
@@ -125,38 +195,46 @@ function toneClass(percent: number): string {
   return styles.barFill
 }
 
-/** A provider row backed by a configured credential (api key, env key, or OAuth grant). */
-function isConfigured(provider: ProviderSnapshotView): boolean {
-  // An older wire document without the credential field renders as before.
-  return provider.credential !== 'none'
+// ---------------------------------------------------------------------------
+// Small inline line icons: one 16px box, one 1.5 stroke, text-colour inherited.
+// ---------------------------------------------------------------------------
+
+function RefreshIcon(props: { spinning?: boolean }): ReactNode {
+  return (
+    <svg className={props.spinning === true ? `${styles.icon} ${styles.iconSpin}` : styles.icon} viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+      <path d="M21 3v6h-6" />
+    </svg>
+  )
 }
 
-function totalOf(totals: UsageTokenTotals): number {
-  return totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens + totals.outputTokens
+function ChevronIcon(props: { open: boolean }): ReactNode {
+  return (
+    <svg className={props.open ? `${styles.icon} ${styles.iconOpen}` : styles.icon} viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6 9l6 6 6-6" />
+    </svg>
+  )
 }
 
-function cacheHitRate(totals: UsageTokenTotals): number | null {
-  const billed = totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens
-  if (billed <= 0) return null
-  return (totals.cacheReadTokens / billed) * 100
-}
+// ---------------------------------------------------------------------------
+// Token composition: one stacked share bar with a quiet legend.
+// ---------------------------------------------------------------------------
 
-function emptyLike(_totals: UsageTokenTotals): UsageTokenTotals {
-  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, calls: 0, cost: 0 }
-}
-
-function TokenComposition(props: { totals: UsageTokenTotals }): ReactNode {
+const TokenComposition = memo(function TokenComposition(props: { totals: UsageTokenTotals }): ReactNode {
   const { totals } = props
-  const segments: Array<{ key: string; label: string; value: number; cls: string }> = [
-    { key: 'cacheRead', label: t('usage.tokens.cacheRead'), value: totals.cacheReadTokens, cls: styles.segCache },
-    { key: 'input', label: t('usage.tokens.input'), value: totals.inputTokens, cls: styles.segInput },
-    { key: 'cacheWrite', label: t('usage.tokens.cacheWrite'), value: totals.cacheWriteTokens, cls: styles.segWrite },
-    { key: 'output', label: t('usage.tokens.output'), value: totals.outputTokens, cls: styles.segOutput },
-  ]
-  if (totals.reasoningTokens > 0) {
-    segments.push({ key: 'reasoning', label: t('usage.tokens.reasoning'), value: totals.reasoningTokens, cls: styles.segReasoning })
-  }
-  const sum = segments.reduce((acc, segment) => acc + segment.value, 0)
+  const segments = useMemo(() => {
+    const rows: Array<{ key: string; label: string; value: number; cls: string }> = [
+      { key: 'cacheRead', label: t('usage.tokens.cacheRead'), value: totals.cacheReadTokens, cls: styles.segCache },
+      { key: 'input', label: t('usage.tokens.input'), value: totals.inputTokens, cls: styles.segInput },
+      { key: 'cacheWrite', label: t('usage.tokens.cacheWrite'), value: totals.cacheWriteTokens, cls: styles.segWrite },
+      { key: 'output', label: t('usage.tokens.output'), value: totals.outputTokens, cls: styles.segOutput },
+    ]
+    if (totals.reasoningTokens > 0) {
+      rows.push({ key: 'reasoning', label: t('usage.tokens.reasoning'), value: totals.reasoningTokens, cls: styles.segReasoning })
+    }
+    return rows
+  }, [totals])
+  const sum = useMemo(() => segments.reduce((acc, segment) => acc + segment.value, 0), [segments])
   return (
     <div className={styles.composition} data-dsh-part="token-composition">
       <div className={styles.compositionHead}>
@@ -186,102 +264,92 @@ function TokenComposition(props: { totals: UsageTokenTotals }): ReactNode {
       </div>
     </div>
   )
-}
+})
 
-function ProviderBreakdown(props: {
+// ---------------------------------------------------------------------------
+// Today's provider breakdown.
+// ---------------------------------------------------------------------------
+
+const ProviderBreakdown = memo(function ProviderBreakdown(props: {
   rows: UsageProviderSummary[]
   providers: ProviderSnapshotView[]
   current?: string
 }): ReactNode {
   const { rows, providers, current } = props
-  const [open, setOpen] = useState<Record<string, boolean>>({})
+  // The current route's model split is the interesting part of "today", so it
+  // starts expanded; every row still toggles.
+  const [open, setOpen] = useState<Record<string, boolean>>(() => (
+    current === undefined ? {} : { [current]: true }
+  ))
+  const derived = useMemo(() => {
+    const byProvider = new Map(providers.map((provider) => [provider.provider, provider]))
+    const total = rows.reduce((acc, row) => acc + totalOf(row.totals), 0)
+    return { byProvider, total }
+  }, [providers, rows])
   if (rows.length === 0) return null
-  const heaviest = Math.max(1, ...rows.map((row) => totalOf(row.totals)))
   return (
-    <div data-dsh-part="provider-list">
+    <div className={styles.providerList} data-dsh-part="provider-list">
       <span className={styles.subTitle}>{t('usage.today.breakdown')}</span>
       {rows.map((row) => {
-        const provider = providers.find((item) => item.provider === row.provider)
+        const provider = derived.byProvider.get(row.provider)
         const expanded = open[row.provider] === true
         const hasModels = row.models.length > 0
         const balance = provider === undefined ? null : balanceText(provider)
-        const share = Math.round((totalOf(row.totals) / heaviest) * 100)
+        const total = totalOf(row.totals)
+        const share = derived.total > 0 ? Math.round((total / derived.total) * 100) : 0
+        const accent = current === row.provider
         return (
-          <div key={row.provider} className={styles.providerBlock}>
+          <div key={row.provider} className={styles.providerBlock} data-accent={accent ? 'yes' : 'no'}>
             <button
               type="button"
-              className={styles.providerRowBtn}
+              className={styles.providerRow}
               disabled={!hasModels}
-              aria-expanded={expanded}
+              aria-expanded={hasModels ? expanded : undefined}
               onClick={() => {
                 if (!hasModels) return
                 setOpen((prev) => ({ ...prev, [row.provider]: !expanded }))
               }}
             >
-              <span className={styles.providerName}>
-                {provider?.displayName ?? row.provider}
-                {current === row.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
+              <span className={styles.providerLead}>
+                <i className={styles.providerDot} aria-hidden="true" />
+                <span className={styles.providerName}>{provider?.displayName ?? row.provider}</span>
+                {accent && <span className={styles.currentBadge}>{t('usage.current')}</span>}
               </span>
               <span className={styles.providerMeta}>
-                {balance !== null && (
-                  <span className={styles.providerBalanceInline}>{balance}</span>
-                )}
+                {balance !== null && <span className={styles.providerBalance}>{balance}</span>}
                 <span className={styles.providerTokens}>
-                  {formatTokens(totalOf(row.totals))}
-                  {' · '}
-                  {t('usage.calls', { n: row.totals.calls })}
-                  {row.totals.cost > 0 ? ` · ${formatCost(row.totals.cost)}` : ''}
+                  {formatTokens(total)}
+                  <span className={styles.dim}>{` · ${t('usage.calls', { n: row.totals.calls })}`}</span>
+                  {row.totals.cost > 0 ? <span className={styles.dim}>{` · ${formatCost(row.totals.cost)}`}</span> : null}
                 </span>
-                {hasModels && <span className={styles.expandHint}>{expanded ? t('usage.collapse') : t('usage.expand')}</span>}
+                <span className={`${styles.providerShare} ${styles.mono}`}>{share}%</span>
+                {hasModels ? <ChevronIcon open={expanded} /> : <span className={styles.iconSpacer} aria-hidden="true" />}
               </span>
             </button>
-            <span className={styles.providerBar} aria-hidden="true">
-              <span className={styles.providerBarFill} style={{ width: `${share}%` }} />
+            <span className={styles.providerTrack} aria-hidden="true">
+              <span className={styles.providerFill} style={{ width: `${Math.max(1.5, share)}%` }} />
             </span>
-            {expanded && row.models.map((model) => (
-              <div key={model.model} className={styles.modelRow}>
-                <span className={styles.modelName}>{model.model}</span>
-                <span className={styles.providerTokens}>
-                  {formatTokens(totalOf(model.totals))}
-                  {' · '}
-                  {t('usage.calls', { n: model.totals.calls })}
-                  {model.totals.cost > 0 ? ` · ${formatCost(model.totals.cost)}` : ''}
-                </span>
-              </div>
-            ))}
+            {expanded && row.models.map((model) => {
+              const modelTotal = totalOf(model.totals)
+              const modelShare = total > 0 ? Math.round((modelTotal / total) * 100) : 0
+              return (
+                <div key={model.model} className={styles.modelRow}>
+                  <span className={styles.modelName}>{model.model}</span>
+                  <span className={styles.modelMeta}>
+                    <span className={`${styles.mono}`}>{formatTokens(modelTotal)}</span>
+                    <span className={styles.dim}>{t('usage.calls', { n: model.totals.calls })}</span>
+                    {model.totals.cost > 0 ? <span className={styles.dim}>{formatCost(model.totals.cost)}</span> : null}
+                    <span className={`${styles.modelShare} ${styles.mono}`}>{modelShare}%</span>
+                  </span>
+                </div>
+              )
+            })}
           </div>
         )
       })}
     </div>
   )
-}
-
-function balanceAmount(provider: ProviderSnapshotView): number | null {
-  if (provider.balance === undefined) return null
-  const raw = Number(provider.balance.totalBalance)
-  return Number.isFinite(raw) ? raw : null
-}
-
-function balanceStatus(provider: ProviderSnapshotView): string {
-  const amount = balanceAmount(provider)
-  if (amount === null) return t('usage.balance.empty')
-  if (amount <= 5) return t('usage.balance.low')
-  return t('usage.balance.ok')
-}
-
-/** Only providers with a real balance fact — skip unconfigured / unsupported noise. */
-function balanceCardRows(providers: ProviderSnapshotView[]): ProviderSnapshotView[] {
-  const seen = new Set<string>()
-  const rows: ProviderSnapshotView[] = []
-  for (const provider of providers) {
-    if (!isConfigured(provider) || balanceText(provider) === null) continue
-    const key = `${provider.displayName.trim().toLowerCase()}|${balanceText(provider)}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    rows.push(provider)
-  }
-  return rows
-}
+})
 
 /** Balance rows not already shown beside today's provider breakdown. */
 function BalanceInline(props: {
@@ -298,572 +366,377 @@ function BalanceInline(props: {
         const amount = balanceAmount(provider)
         const low = amount !== null && amount <= 5
         return (
-        <div key={provider.provider} className={styles.balanceRow}>
-          <span className={styles.balanceLead}>
-            <span className={`${styles.statusDot} ${low ? styles.statusWarn : styles.statusOk}`} aria-hidden="true" />
-            <span className={styles.providerName}>
-              {provider.displayName}
-              {props.current === provider.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
+          <div key={provider.provider} className={styles.balanceRow}>
+            <span className={styles.balanceLead}>
+              <i className={`${styles.statusDot} ${low ? styles.statusWarn : styles.statusOk}`} aria-hidden="true" />
+              <span className={styles.providerName}>
+                {provider.displayName}
+                {props.current === provider.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
+              </span>
             </span>
-          </span>
-          <span className={styles.balanceMeta}>
-            <span className={styles.providerBalance}>{balanceText(provider)}</span>
-            <span className={styles.balanceHint}>{balanceStatus(provider)}</span>
-          </span>
-        </div>
+            <span className={styles.balanceMeta}>
+              <span className={`${styles.balanceAmount} ${styles.mono}`}>{balanceText(provider)}</span>
+              <span className={styles.balanceHint}>{balanceStatus(provider)}</span>
+            </span>
+          </div>
         )
       })}
     </div>
   )
 }
 
-/** Overview hero: only the plan matched to the current model route. */
-function balanceText(provider: ProviderSnapshotView): string | null {
-  if (provider.balance === undefined) return null
-  const currency = provider.balance.currency.toUpperCase()
-  const prefix = currency === 'CNY' ? '¥' : currency === 'USD' ? '$' : ''
-  const suffix = currency !== 'CNY' && currency !== 'USD' ? ` ${currency}` : ''
-  return `${prefix}${provider.balance.totalBalance}${suffix}`
-}
+// ---------------------------------------------------------------------------
+// Hero: one figure carries the panel, the rest is a quiet comparator group.
+// ---------------------------------------------------------------------------
 
-/** The section component; the slot merges the face into these props. */
-export function UsageSectionCard(props: UsageSectionProps): ReactNode {
-  const { store, poll, refresh, settings, setCredential, clearCredential, startStripPolling, view } = props
-  // Plugins page asks for a one-liner under the card title, or the full page.
-  if (view === 'summary') return t('usage.intro')
-
-  const ui = useSyncExternalStore(store.subscribe, store.getSnapshot)
-  const settingsSnapshot = settings.getSnapshot()
-  const settingsValue = settingsSnapshot.value ?? {}
-  const [tab, setTab] = useState<'usage' | 'plans' | 'settings'>('usage')
-  const [refreshing, setRefreshing] = useState(false)
-  // The enable checkbox writes through the settings scope, so subscribing here
-  // keeps the flag below live: the poll starts and stops with it instead of
-  // waiting for an unrelated render.
-  const [, bumpSettings] = useState(0)
-  useEffect(() => settings.subscribe(() => bumpSettings((count) => count + 1)), [settings])
-  const enabled = settingsValue.enabled ?? true
-
-  // Poll while mounted, enabled and visible; the overview is cheap (no probes —
-  // the host's own cycle owns those) so 10 s keeps balances fresh-ish between
-  // manual refreshes.
-  useEffect(() => {
-    // A disabled plugin deregisters its host routes, so the poll must stop with
-    // it; the section re-enables by writing the flag back through the checkbox.
-    if (!enabled) return undefined
-    poll()
-    let timer: number | undefined
-    const start = (): void => {
-      if (timer === undefined && document.visibilityState === 'visible') timer = window.setInterval(poll, SECTION_POLL_MS)
-    }
-    const onVisibility = (): void => {
-      if (document.visibilityState === 'visible') {
-        poll()
-        start()
-      } else if (timer !== undefined) {
-        window.clearInterval(timer)
-        timer = undefined
-      }
-    }
-    start()
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => {
-      if (timer !== undefined) window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisibility)
-    }
-  }, [poll, enabled])
-
-  const snapshot = ui.snapshot
-
-  const onRefresh = (): void => {
-    setRefreshing(true)
-    try {
-      refresh()
-    } finally {
-      // The POST resolves through the next poll tick; unlock shortly either way.
-      window.setTimeout(() => setRefreshing(false), 3000)
-    }
-  }
-
-  // Disabled, failed and still-loading states keep the settings row mounted:
-  // it owns the enable checkbox, so replacing the whole panel would leave the
-  // user no way back from the UI.
-  if (!enabled || ui.status === 'error' || snapshot === null) {
-    return (
-      <div className={styles.section} data-dsh-plugin="usage">
-        <span className={styles.muted} data-dsh-part="status-line">
-          {!enabled
-            ? t('usage.disabled')
-            : ui.status === 'error'
-              ? t('usage.error', { error: ui.error ?? '' })
-              : t('usage.loading')}
-        </span>
-        <div className={styles.tabs} role="tablist">
-          <button type="button" role="tab" aria-selected className={`${styles.tab} ${styles.tabActive}`}>
-            {t('usage.tab.settings')}
-          </button>
-        </div>
-        <SettingsRow
-          settings={settings}
-          snapshot={settingsSnapshot.status === 'ready' ? settingsSnapshot : undefined}
-          value={settingsValue}
-          setCredential={setCredential}
-          clearCredential={clearCredential}
-        />
-      </div>
-    )
-  }
-
-  const current = snapshot.current
-  const currentProvider = snapshot.providers.find((provider) => provider.provider === current.provider)
-  const matchedPlan = currentPlanProvider(snapshot)
-  // Peak-period line: only when the official DeepSeek family is in play this
-  // session (the current route, or spend recorded under one today).
-  const deepseekPeriod = deepseekPeriodAt(Date.now())
-  const deepseekVisible = (current.provider !== undefined && isDeepSeekProviderRoute(current.provider))
-    || snapshot.usage.today.providers.some((row) => isDeepSeekProviderRoute(row.provider))
-  const planProviders = planTabProviders(snapshot.providers)
-  const modelPlans = planProviders.filter((provider) => provider.source === undefined || provider.source === 'model')
-  const cpamcPlans = planProviders.filter((provider) => provider.source === 'cpamc')
-  const volcanoPlans = planProviders.filter((provider) => provider.source === 'volcano')
-
-  // ---- cockpit instruments -------------------------------------------
-  const days = snapshot.usage.days
-  const todayTotals = snapshot.usage.today.totals
-  const rangeTotals = snapshot.usage.range?.totals ?? todayTotals
-  const allTotals = snapshot.usage.all?.totals ?? rangeTotals
-  const todayTokens = totalOf(todayTotals)
-  const yesterdayTokens = days.length >= 2 ? totalOf(days[days.length - 2].totals) : undefined
-  const tokenDelta = yesterdayTokens !== undefined && yesterdayTokens > 0
-    ? ((todayTokens - yesterdayTokens) / yesterdayTokens) * 100
-    : null
-  const hitRate = cacheHitRate(todayTotals)
-  const billedToday = todayTotals.inputTokens + todayTotals.cacheReadTokens + todayTotals.cacheWriteTokens
-  const series7 = days.slice(-7).map((day) => totalOf(day.totals))
-  const series30 = days.slice(-30).map((day) => totalOf(day.totals))
-  const avgCost = todayTotals.calls > 0 && todayTotals.cost > 0 ? todayTotals.cost / todayTotals.calls : null
-
+function Stat(props: { label: string; value: string; hint?: string }): ReactNode {
   return (
-    <div className={styles.section} data-dsh-plugin="usage">
-      <div className={styles.header} data-dsh-part="header">
-        <span className={styles.currentProvider}>
-          {currentProvider !== undefined
-            ? <>
-                <span className={styles.identityName}>
-                  {currentProvider.displayName}
-                  {current.model !== undefined && current.model !== '' ? ` · ${current.model}` : ''}
-                </span>
-                {balanceText(currentProvider) !== null && (
-                  <span className={styles.identityBalance}>{balanceText(currentProvider)}</span>
-                )}
-              </>
-            : t('usage.noData')}
-        </span>
-        <span className={styles.headerActions}>
-          <span className={styles.muted}>{t('usage.updated', { time: formatTime(snapshot.updatedAt) })}</span>
-          <button type="button" className={styles.refreshBtn} onClick={onRefresh} disabled={refreshing}>
-            {refreshing ? t('usage.refreshing') : t('usage.refresh')}
-          </button>
-        </span>
-      </div>
-
-      <div className={styles.tabs} role="tablist" data-dsh-part="tabs">
-        <button type="button" role="tab" aria-selected={tab === 'usage'} className={tab === 'usage' ? `${styles.tab} ${styles.tabActive}` : styles.tab} onClick={() => setTab('usage')}>
-          {t('usage.tab.usage')}
-        </button>
-        <button type="button" role="tab" aria-selected={tab === 'plans'} className={tab === 'plans' ? `${styles.tab} ${styles.tabActive}` : styles.tab} onClick={() => setTab('plans')}>
-          {t('usage.tab.plans')}
-        </button>
-        <button type="button" role="tab" aria-selected={tab === 'settings'} className={tab === 'settings' ? `${styles.tab} ${styles.tabActive}` : styles.tab} onClick={() => setTab('settings')}>
-          {t('usage.tab.settings')}
-        </button>
-      </div>
-
-      {/* Scope line: says what the visible tab measures, so the device-wide
-          ledger and the account-level quota are never read as session data. */}
-      <span className={styles.scopeNote} data-dsh-part="scope-note">
-        {t(`usage.scope.note.${tab}`)}
-      </span>
-
-      {tab === 'usage' && (
-        <div className={styles.cockpit} data-dsh-part="usage-cockpit">
-          <div className={styles.cell2}>
-            <Instrument
-              label={t('usage.summary.today')}
-              value={formatTokens(todayTokens)}
-              hint={`${t('usage.summary.calls')} ${todayTotals.calls}${tokenDelta === null ? '' : ` · ${t('usage.cockpit.vsYesterday', { pct: `${tokenDelta >= 0 ? '+' : ''}${tokenDelta.toFixed(0)}%` })}`}`}
-            >
-              <Sparkline values={series7} />
-            </Instrument>
-          </div>
-          <div className={styles.cell2}>
-            <Instrument
-              label={t('usage.summary.month')}
-              value={formatTokens(totalOf(rangeTotals))}
-              hint={`${t('usage.summary.calls')} ${rangeTotals.calls}`}
-            >
-              <Sparkline values={series30} />
-            </Instrument>
-          </div>
-          <div className={styles.cell2}>
-            <Instrument
-              label={t('usage.summary.all')}
-              value={formatTokens(totalOf(allTotals))}
-              hint={`${t('usage.summary.calls')} ${allTotals.calls}`}
-            />
-          </div>
-          <div className={styles.cell2}>
-            <GaugeCard
-              label={t('usage.tokens.cacheHit')}
-              percent={hitRate}
-              hint={t('usage.tokens.cacheRatio', {
-                read: formatTokens(todayTotals.cacheReadTokens),
-                billed: formatTokens(billedToday),
-              })}
-            />
-          </div>
-          <div className={styles.cell2}>
-            <Instrument
-              label={t('usage.tokens.calls')}
-              value={String(todayTotals.calls)}
-              hint={`${formatTokens(todayTokens)} ${t('usage.tokens.total')}`}
-            />
-          </div>
-          <div className={styles.cell2}>
-            <Instrument
-              label={t('usage.metric.avgCost')}
-              value={avgCost === null ? '—' : formatCost(avgCost)}
-              hint={avgCost === null && todayTotals.calls > 0
-                ? t('usage.metric.unpriced')
-                : t('usage.metric.avgCostHint', { n: todayTotals.calls })}
-            />
-          </div>
-
-          <div className={styles.cell7}>
-            <HeatmapCard days={days} />
-          </div>
-          <div className={styles.cell5}>
-            <QuotaCard provider={matchedPlan} model={current.model} onSeeAll={() => setTab('plans')} />
-          </div>
-          <div className={styles.cell7}>
-            <RangeCard range={snapshot.usage.range} providers={snapshot.providers} currentProvider={current.provider} />
-          </div>
-          <div className={styles.cell5}>
-            <div className={styles.card} data-dsh-part="provider-card">
-              <div className={styles.cardHead}>
-                <span className={styles.cardHeadGroup}>
-                  <span className={styles.cardTitle}>{t('usage.today')}</span>
-                  <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
-                </span>
-                {deepseekVisible && (
-                  <span className={styles.peakPill} data-dsh-part="peak-status">
-                    {t(deepseekPeriod.peak ? 'usage.peak.on' : 'usage.peak.off', { time: formatClock(deepseekPeriod.boundaryMs) })}
-                  </span>
-                )}
-              </div>
-              <ProviderBreakdown
-                rows={snapshot.usage.today.providers}
-                providers={snapshot.providers}
-                current={current.provider}
-              />
-              <BalanceInline
-                providers={snapshot.providers}
-                current={current.provider}
-                excludeIds={new Set(snapshot.usage.today.providers.map((row) => row.provider))}
-              />
-              <TokenComposition totals={todayTotals} />
-            </div>
-          </div>
-          <div className={styles.cell12}>
-            <HistoryCard days={days} />
-          </div>
-        </div>
-      )}
-
-      {tab === 'plans' && (
-        planProviders.length === 0
-          ? <div className={styles.card}><span className={styles.muted}>{t('usage.plan.noneConfigured')}</span></div>
-          : <>
-              <PlanGroup title={t('usage.plan.group.models')} providers={modelPlans} currentId={matchedPlan?.provider} showEmpty />
-              <PlanGroup title={t('usage.plan.group.cpamc')} providers={cpamcPlans} currentId={matchedPlan?.provider} showEmpty />
-              <PlanGroup title={t('usage.plan.group.volcano')} providers={volcanoPlans} currentId={matchedPlan?.provider} showEmpty />
-            </>
-      )}
-
-      {tab === 'settings' && (
-        <SettingsRow
-          settings={settings}
-          snapshot={settingsSnapshot.status === 'ready' ? settingsSnapshot : undefined}
-          value={settingsValue}
-          providers={snapshot.providers}
-          credentials={snapshot.externalCredentials}
-          setCredential={setCredential}
-          clearCredential={clearCredential}
-        />
-      )}
-    </div>
-  )
-}
-
-function PlanGroup(props: {
-  title: string
-  providers: ProviderSnapshotView[]
-  currentId?: string
-  showEmpty?: boolean
-}): ReactNode {
-  const { title, providers, currentId, showEmpty } = props
-  if (providers.length === 0 && !showEmpty) return null
-  return (
-    <div className={styles.planGroup}>
-      <span className={styles.cardTitle}>
-        {providers.length > 1 ? t('usage.plan.groupCount', { title, n: providers.length }) : title}
-      </span>
-      {providers.length === 0
-        ? <div className={styles.card}><span className={styles.muted}>{t('usage.plan.groupEmpty')}</span></div>
-        : providers.map((provider) => <PlanCard key={provider.provider} provider={provider} currentId={currentId} />)}
+    <div className={styles.stat}>
+      <span className={styles.statLabel}>{props.label}</span>
+      <span className={styles.statValue}>{props.value}</span>
+      {props.hint !== undefined ? <span className={styles.statHint}>{props.hint}</span> : null}
     </div>
   )
 }
 
 /**
- * Cockpit pieces: the overview is a dashboard of instruments, not a stack of
- * report cards. Every number is tabular and monospaced so columns line up.
+ * One ring gauge. The arc is drawn on a fixed viewBox so every ring in the
+ * panel (hero cache hit, quota windows) shares one geometry.
  */
-
-/** One cockpit instrument: micro-label, big tabular number, optional visual. */
-function Instrument(props: { label: string; value: string; hint?: string; children?: ReactNode }): ReactNode {
-  return (
-    <div className={`${styles.card} ${styles.instrument}`} data-dsh-part="instrument">
-      <span className={styles.instLabel}>{props.label}</span>
-      <span className={styles.instValue}>{props.value}</span>
-      {props.hint !== undefined ? <span className={styles.instHint}>{props.hint}</span> : null}
-      {props.children}
-    </div>
-  )
-}
-
-/** Sparkline for the instrument cards (last N days, oldest first). */
-function Sparkline(props: { values: number[] }): ReactNode {
-  const width = 132
-  const height = 30
-  if (props.values.length < 2) return <span className={styles.sparkEmpty} aria-hidden="true" />
-  const max = Math.max(1, ...props.values)
-  const step = width / (props.values.length - 1)
-  const points = props.values.map((value, index) => [index * step, height - (value / max) * (height - 4) - 2] as const)
-  const line = points.map((point, index) => `${index === 0 ? 'M' : 'L'}${point[0].toFixed(1)},${point[1].toFixed(1)}`).join(' ')
-  const area = `${line} L${width},${height} L0,${height} Z`
-  return (
-    <svg className={styles.spark} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true">
-      <path d={area} className={styles.sparkArea} />
-      <path d={line} className={styles.sparkLine} />
-    </svg>
-  )
-}
-
-/** Ring gauge for a percentage instrument (cache hit). */
-function GaugeCard(props: { label: string; percent: number | null; hint?: string }): ReactNode {
-  const size = 76
-  const radius = 29
+function Ring(props: { percent: number | null; size: number; stroke: number; tone: string }): ReactNode {
+  const { percent, size, stroke, tone } = props
+  const radius = size / 2 - stroke / 2 - 1
   const circumference = 2 * Math.PI * radius
-  const clamped = props.percent === null ? 0 : Math.min(100, Math.max(0, props.percent))
-  const tone = props.percent === null ? '' : clamped >= 90 ? styles.toneGood : clamped >= 70 ? styles.toneWarn : styles.toneAccent
+  const clamped = percent === null ? 0 : Math.min(100, Math.max(0, percent))
   return (
-    <div className={`${styles.card} ${styles.instrument} ${styles.gaugeCard}`} data-dsh-part="instrument-gauge">
-      <span className={styles.instLabel}>{props.label}</span>
-      <span className={styles.gaugeBox}>
-        <svg className={styles.gaugeSvg} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
-          <circle className={styles.gaugeTrack} cx={size / 2} cy={size / 2} r={radius} />
+    <span className={styles.ringBox} style={{ width: size, height: size }}>
+      <svg className={styles.ringSvg} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
+        <circle className={styles.ringTrack} cx={size / 2} cy={size / 2} r={radius} strokeWidth={stroke} />
+        {percent !== null && (
           <circle
-            className={`${styles.gaugeFill} ${tone}`}
+            className={`${styles.ringFill} ${tone}`}
             cx={size / 2}
             cy={size / 2}
             r={radius}
+            strokeWidth={stroke}
             strokeDasharray={`${(clamped / 100) * circumference} ${circumference}`}
             transform={`rotate(-90 ${size / 2} ${size / 2})`}
           />
-        </svg>
-        <span className={styles.gaugeValue}>{props.percent === null ? '—' : `${Math.round(clamped)}%`}</span>
-      </span>
-      {props.hint !== undefined ? <span className={styles.instHint}>{props.hint}</span> : null}
-    </div>
+        )}
+      </svg>
+      <span className={`${styles.ringValue} ${styles.mono}`}>{percent === null ? '—' : `${Math.round(clamped)}%`}</span>
+    </span>
   )
 }
 
-/** One quota ring with its window name and reset time. */
-function Gauge(props: { percent?: number; label: string; sub?: string }): ReactNode {
-  const size = 78
-  const radius = 30
-  const circumference = 2 * Math.PI * radius
-  const percent = typeof props.percent === 'number' ? Math.min(100, Math.max(0, props.percent)) : 0
+function HeroBand(props: {
+  todayTokens: number
+  todayCalls: number
+  todayCost: number
+  tokenDelta: number | null
+  rangeTokens: number
+  rangeCalls: number
+  allTokens: number
+  allCalls: number
+  hitRate: number | null
+  cacheRead: number
+  billed: number
+  avgCost: number | null
+}): ReactNode {
+  const hitTone = props.hitRate === null
+    ? styles.toneAccent
+    : props.hitRate >= 90
+      ? styles.toneGood
+      : props.hitRate >= 60
+        ? styles.toneAccent
+        : styles.toneWarn
+  return (
+    <section className={`${styles.card} ${styles.hero}`} data-dsh-part="hero">
+      <div className={styles.heroToday}>
+        <span className={styles.heroLabel}>{`${t('usage.summary.today')} ${t('usage.tokens.total')}`}</span>
+        <div className={styles.heroFigure}>
+          <span className={styles.heroValue}>{formatTokens(props.todayTokens)}</span>
+          {props.tokenDelta !== null && (
+            <span className={styles.delta} data-dir={props.tokenDelta >= 0 ? 'up' : 'down'}>
+              <span className={`${styles.deltaValue} ${styles.mono}`}>{props.tokenDelta >= 0 ? '+' : ''}{Math.round(props.tokenDelta)}%</span>
+              <span className={styles.deltaLabel}>{t('usage.vsYesterday')}</span>
+            </span>
+          )}
+        </div>
+        <span className={styles.heroHint}>
+          {props.todayCost > 0
+            ? `${t('usage.calls', { n: props.todayCalls })} · ${formatCost(props.todayCost)}`
+            : t('usage.calls', { n: props.todayCalls })}
+        </span>
+      </div>
+      <div className={styles.statGroup}>
+        <Stat
+          label={t('usage.summary.month')}
+          value={formatTokens(props.rangeTokens)}
+          hint={t('usage.calls', { n: props.rangeCalls })}
+        />
+        <Stat
+          label={t('usage.summary.all')}
+          value={formatTokens(props.allTokens)}
+          hint={t('usage.calls', { n: props.allCalls })}
+        />
+        <Stat
+          label={t('usage.tokens.calls')}
+          value={String(props.todayCalls)}
+          hint={`${formatTokens(props.todayTokens)} ${t('usage.tokens.total')}`}
+        />
+        <Stat
+          label={t('usage.metric.avgCost')}
+          value={props.avgCost === null ? '—' : formatCost(props.avgCost)}
+          hint={props.avgCost === null && props.todayCalls > 0
+            ? t('usage.metric.unpriced')
+            : t('usage.metric.avgCostHint', { n: props.todayCalls })}
+        />
+      </div>
+      <div className={styles.heroRing}>
+        <Ring percent={props.hitRate} size={84} stroke={7} tone={hitTone} />
+        <span className={styles.heroRingLabel}>{t('usage.tokens.cacheHit')}</span>
+        <span className={styles.heroRingHint}>
+          {t('usage.tokens.cacheRatio', {
+            read: formatTokens(props.cacheRead),
+            billed: formatTokens(props.billed),
+          })}
+        </span>
+      </div>
+    </section>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 26-week activity heatmap: the main chart.
+// ---------------------------------------------------------------------------
+
+interface MonthRun {
+  label: string
+  start: number
+  span: number
+}
+
+/** Group the per-week month labels into runs so each label starts on its column. */
+function monthRuns(labels: string[]): MonthRun[] {
+  const starts: number[] = []
+  labels.forEach((label, index) => {
+    if (label !== '') starts.push(index)
+  })
+  return starts.map((start, index) => ({
+    label: labels[start] ?? '',
+    start,
+    span: (starts[index + 1] ?? labels.length) - start,
+  }))
+}
+
+const HeatmapCard = memo(function HeatmapCard(props: { days: UsageDaySummary[] }): ReactNode {
+  const { days } = props
+  const grid = useMemo(() => buildHeatmapGrid(days), [days])
+  const months = useMemo(() => monthRuns(grid.monthLabels), [grid])
+  const week = useMemo(() => {
+    const recent = days.slice(-7)
+    return {
+      tokens: recent.reduce((acc, day) => acc + totalOf(day.totals), 0),
+      calls: recent.reduce((acc, day) => acc + day.totals.calls, 0),
+    }
+  }, [days])
+  const facts = useMemo(() => {
+    let activeDays = 0
+    let busiest = grid.cells[0]
+    for (const cell of grid.cells) {
+      if (cell.tokens > 0) activeDays += 1
+      if (busiest === undefined || cell.tokens > busiest.tokens) busiest = cell
+    }
+    return { activeDays, busiest }
+  }, [grid])
+  const hasData = facts.activeDays > 0
+  return (
+    <section className={styles.card} data-dsh-part="heatmap-card">
+      <div className={styles.cardHead}>
+        <div className={styles.cardHeadGroup}>
+          <span className={styles.cardTitle}>{t('usage.heatmap')}</span>
+          <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
+        </div>
+        <span className={styles.cardMeta}>{t('usage.heatmap.weeks')}</span>
+      </div>
+      <div className={styles.heatmapLayout}>
+        <div className={styles.heatmapLeft}>
+          <div className={styles.heatmapBody}>
+            <div className={styles.heatmapLabels} aria-hidden="true">
+              <span className={styles.heatmapCorner} />
+              <div className={styles.heatmapDow}>
+                <span>{t('usage.heatmap.dow.mon')}</span>
+                <span />
+                <span>{t('usage.heatmap.dow.wed')}</span>
+                <span />
+                <span>{t('usage.heatmap.dow.fri')}</span>
+                <span />
+                <span />
+              </div>
+            </div>
+            <div className={styles.heatmapMain}>
+              <div className={styles.heatmapMonths}>
+                {months.map((run) => (
+                  <span
+                    key={`${run.label}-${run.start}`}
+                    className={styles.heatmapMonth}
+                    style={{ gridColumn: `${run.start + 1} / span ${run.span}` }}
+                  >
+                    {run.label}
+                  </span>
+                ))}
+              </div>
+              <div className={styles.heatmapGrid} data-dsh-part="heatmap-grid">
+                {grid.cells.map((cell) => {
+                  const cost = cell.totals.cost > 0 ? ` · ${formatCost(cell.totals.cost)}` : ''
+                  return (
+                    <span
+                      key={cell.date}
+                      className={cell.isToday ? `${styles.heatmapCell} ${styles.heatmapToday}` : styles.heatmapCell}
+                      data-level={cell.level}
+                      title={t('usage.heatmap.day', {
+                        date: cell.date,
+                        tokens: formatTokens(cell.tokens),
+                        calls: t('usage.calls', { n: cell.totals.calls }),
+                        cost,
+                      })}
+                    />
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+          <div className={styles.heatmapLegend}>
+            {hasData ? (
+              <>
+                <span>{t('usage.heatmap.less')}</span>
+                {[0, 1, 2, 3, 4].map((level) => (
+                  <span key={level} className={styles.heatmapCell} data-level={level} aria-hidden="true" />
+                ))}
+                <span>{t('usage.heatmap.more')}</span>
+              </>
+            ) : (
+              <span className={styles.muted}>{t('usage.heatmap.empty')}</span>
+            )}
+          </div>
+        </div>
+        <div className={styles.heatmapSide}>
+          <div className={styles.sideStat}>
+            <span className={styles.sideLabel}>{t('usage.heatmap.activeDays')}</span>
+            <span className={styles.sideValue}>
+              <span className={`${styles.mono}`}>{facts.activeDays}</span>
+              <span className={styles.sideUnit}>{`/${grid.cells.length}`}</span>
+            </span>
+          </div>
+          <div className={styles.sideStat}>
+            <span className={styles.sideLabel}>{t('usage.heatmap.busiest')}</span>
+            <span className={`${styles.sideValue} ${styles.mono}`}>{facts.busiest === undefined ? '—' : formatTokens(facts.busiest.tokens)}</span>
+            <span className={styles.sideHint}>{facts.busiest === undefined ? '' : facts.busiest.date.slice(5)}</span>
+          </div>
+          <div className={styles.sideStat}>
+            <span className={styles.sideLabel}>{t('usage.heatmap.week')}</span>
+            <span className={`${styles.sideValue} ${styles.mono}`}>{formatTokens(week.tokens)}</span>
+            <span className={styles.sideHint}>{t('usage.calls', { n: week.calls })}</span>
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+})
+
+// ---------------------------------------------------------------------------
+// Account quota rings.
+// ---------------------------------------------------------------------------
+
+function QuotaRing(props: { percent?: number; label: string; sub?: string; planName?: string }): ReactNode {
+  const percent = typeof props.percent === 'number' ? props.percent : 0
   const tone = percent >= 90 ? styles.toneBad : percent >= 70 ? styles.toneWarn : styles.toneAccent
   return (
     <div className={styles.gauge}>
-      <span className={styles.gaugeBox}>
-        <svg className={styles.gaugeSvg} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
-          <circle className={styles.gaugeTrack} cx={size / 2} cy={size / 2} r={radius} />
-          <circle
-            className={`${styles.gaugeFill} ${tone}`}
-            cx={size / 2}
-            cy={size / 2}
-            r={radius}
-            strokeDasharray={`${(percent / 100) * circumference} ${circumference}`}
-            transform={`rotate(-90 ${size / 2} ${size / 2})`}
-          />
-        </svg>
-        <span className={styles.gaugeValue}>{Math.round(percent)}%</span>
-      </span>
+      <Ring percent={percent} size={88} stroke={7} tone={tone} />
       <span className={styles.gaugeLabel}>{props.label}</span>
       {props.sub !== undefined ? <span className={styles.gaugeSub}>{props.sub}</span> : null}
     </div>
   )
 }
 
-/** Account quota as three rings for the model the composer currently uses. */
-function QuotaCard(props: { provider?: ProviderSnapshotView; model?: string; onSeeAll: () => void }): ReactNode {
+const QuotaCard = memo(function QuotaCard(props: { provider?: ProviderSnapshotView; model?: string; onSeeAll: () => void }): ReactNode {
   const { provider, model, onSeeAll } = props
-  const windows = provider?.plan === undefined ? [] : orderedPlanWindows(provider.plan)
+  const windows = useMemo(
+    () => (provider?.plan === undefined ? [] : orderedPlanWindows(provider.plan)),
+    [provider],
+  )
+  const identity = provider === undefined
+    ? undefined
+    : `${provider.displayName}${model !== undefined && model !== '' ? ` · ${model}` : ''}`
   return (
-    <div className={`${styles.card} ${styles.quotaCard}`} data-dsh-part="quota-card">
+    <section className={`${styles.card} ${styles.quotaCard}`} data-dsh-part="quota-card">
       <div className={styles.cardHead}>
-        <span className={styles.cardHeadGroup}>
+        <div className={styles.cardHeadGroup}>
           <span className={styles.cardTitle}>{t('usage.plan.quota')}</span>
           <span className={styles.scopeChip}>{t('usage.scope.account')}</span>
-        </span>
+        </div>
         <button type="button" className={styles.linkBtn} onClick={onSeeAll}>{t('usage.plan.seeAll')}</button>
       </div>
-      {provider !== undefined ? (
-        <span className={styles.quotaIdentity}>
-          {provider.displayName}
-          {model !== undefined && model !== '' ? ` · ${model}` : ''}
+      {provider !== undefined && identity !== undefined && (
+        <div className={styles.quotaIdentity}>
+          <span className={styles.providerName}>{identity}</span>
           <span className={styles.sourceChip}>{t(planSourceLabelKey(provider))}</span>
-        </span>
-      ) : null}
-      {windows.length === 0
-        ? <span className={styles.muted}>{t('usage.plan.noneConfigured')}</span>
-        : <div className={styles.gaugesRow}>
-            {windows.slice(0, 3).map((window) => (
-              <Gauge
-                key={window.key}
-                percent={window.percent}
-                label={window.name ?? t(`usage.plan.windows.${window.key}`)}
-                sub={window.resetsAt !== undefined ? formatPlanReset(window.resetsAt) : undefined}
-              />
-            ))}
-          </div>}
-    </div>
-  )
-}
-
-function HeatmapCard(props: { days: UsageDaySummary[] }): ReactNode {
-  const grid = buildHeatmapGrid(props.days)
-  const hasData = grid.cells.some((cell) => cell.tokens > 0)
-  return (
-    <div className={styles.card} data-dsh-part="heatmap-card">
-      <div className={styles.cardHead}>
-        <span className={styles.cardHeadGroup}>
-          <span className={styles.cardTitle}>{t('usage.heatmap')}</span>
-          <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
-        </span>
-        <span className={styles.muted}>{t('usage.heatmap.weeks')}</span>
-      </div>
-      {!hasData
-        ? <span className={styles.muted}>{t('usage.heatmap.empty')}</span>
-        : <>
-            <div className={styles.heatmapWrap}>
-              <div className={styles.heatmapMain}>
-                <div className={styles.heatmapMonths}>
-                  {grid.monthLabels.map((label, index) => (
-                    <span key={`m${index}`}>{label}</span>
-                  ))}
-                </div>
-                <div className={styles.heatmapGrid26}>
-                  {grid.cells.map((cell) => {
-                    const cost = cell.totals.cost > 0 ? ` · ${formatCost(cell.totals.cost)}` : ''
-                    return (
-                      <span
-                        key={cell.date}
-                        className={`${styles.heatmapCell26} ${styles[`heatmapL${cell.level}`]} ${cell.isToday ? styles.heatmapToday : ''}`}
-                        title={t('usage.heatmap.day', {
-                          date: cell.date,
-                          tokens: formatTokens(cell.tokens),
-                          calls: t('usage.calls', { n: cell.totals.calls }),
-                          cost,
-                        })}
-                      />
-                    )
-                  })}
-                </div>
-              </div>
-            </div>
-            <div className={styles.heatmapLegend}>
-              <span>{t('usage.heatmap.less')}</span>
-              <span className={`${styles.heatmapCell26} ${styles.heatmapL0}`} />
-              <span className={`${styles.heatmapCell26} ${styles.heatmapL1}`} />
-              <span className={`${styles.heatmapCell26} ${styles.heatmapL2}`} />
-              <span className={`${styles.heatmapCell26} ${styles.heatmapL3}`} />
-              <span className={`${styles.heatmapCell26} ${styles.heatmapL4}`} />
-              <span>{t('usage.heatmap.more')}</span>
-            </div>
-          </>}
-    </div>
-  )
-}
-
-function HistoryCard(props: { days: UsageDaySummary[] }): ReactNode {
-  const [open, setOpen] = useState(false)
-  const days = [...props.days].slice(-14).reverse()
-  return (
-    <div className={styles.card} data-dsh-part="history-card">
-      <div className={styles.cardHead}>
-        <span className={styles.cardHeadGroup}>
-          <span className={styles.cardTitle}>{t('usage.history')}</span>
-          <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
-        </span>
-        <button type="button" className={styles.linkBtn} onClick={() => setOpen((value) => !value)}>
-          {open ? t('usage.history.hide') : t('usage.history.show')}
-        </button>
-      </div>
-      {open && (days.length === 0
-        ? <span className={styles.muted}>{t('usage.history.empty')}</span>
-        : days.map((day) => (
-          <div key={day.date} className={styles.historyRow}>
-            <span className={styles.historyDate}>{day.date}</span>
-            <span className={styles.providerTokens}>
-              {formatTokens(totalOf(day.totals))}
-              {' · '}
-              {t('usage.calls', { n: day.totals.calls })}
-              {day.totals.cost > 0 ? ` · ${formatCost(day.totals.cost)}` : ''}
-            </span>
+          {provider.plan?.planName !== undefined ? <span className={styles.planTier}>{provider.plan.planName}</span> : null}
+        </div>
+      )}
+      {windows.length === 0 ? (
+        <div className={styles.emptyState} data-dsh-part="quota-empty">
+          <Ring percent={null} size={64} stroke={5} tone={styles.toneAccent} />
+          <div className={styles.emptyBody}>
+            <span className={styles.emptyTitle}>{t('usage.plan.noPlan')}</span>
+            <span className={styles.emptyHint}>{t('usage.plan.emptyHint')}</span>
+            <button type="button" className={styles.emptyAction} onClick={onSeeAll}>{t('usage.plan.seeAll')}</button>
           </div>
-        )))}
-    </div>
+        </div>
+      ) : (
+        <div className={styles.gaugesRow}>
+          {windows.slice(0, 3).map((window) => (
+            <QuotaRing
+              key={window.key}
+              percent={window.percent}
+              label={window.name ?? t(`usage.plan.windows.${window.key}`)}
+              sub={window.resetsAt !== undefined ? formatPlanReset(window.resetsAt) : undefined}
+            />
+          ))}
+        </div>
+      )}
+    </section>
   )
-}
+})
 
-/** How many model sub-bars render under one provider bar. */
-const CHART_MODEL_CAP = 3
+// ---------------------------------------------------------------------------
+// 30-day provider trend: ranked bars, one accent for the current route.
+// ---------------------------------------------------------------------------
 
-/**
- * The 近 30 天 card: horizontal bars per provider over the trend window,
- * each with its heaviest models as nested sub-bars. Window totals come from
- * the host's aggregated `usage.range` (an older host without it renders no
- * card instead of a wrong one).
- */
-function RangeCard(props: { range?: UsageOverviewView['usage']['range']; providers: ProviderSnapshotView[]; currentProvider?: string }): ReactNode {
+const RangeCard = memo(function RangeCard(props: {
+  range?: UsageOverviewView['usage']['range']
+  providers: ProviderSnapshotView[]
+  currentProvider?: string
+}): ReactNode {
   const { range, providers, currentProvider } = props
+  const derived = useMemo(() => {
+    const nameOf = new Map(providers.map((provider) => [provider.provider, provider.displayName]))
+    const grandTotal = range === undefined ? 0 : totalOf(range.totals)
+    return { nameOf, grandTotal }
+  }, [providers, range])
   if (range === undefined) return null
-  const grandTotal = range.totals.inputTokens + range.totals.outputTokens + range.totals.cacheReadTokens + range.totals.cacheWriteTokens
-  const maxProvider = Math.max(1, ...range.providers.map((row) => totalOf(row.totals)))
-  const nameOf = (id: string): string => providers.find((provider) => provider.provider === id)?.displayName ?? id
+  const { nameOf, grandTotal } = derived
   return (
-    <div className={styles.card} data-dsh-part="trend-card">
+    <section className={styles.card} data-dsh-part="trend-card">
       <div className={styles.cardHead}>
-        <span className={styles.cardHeadGroup}>
+        <div className={styles.cardHeadGroup}>
           <span className={styles.cardTitle}>{t('usage.trend')}</span>
           <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
-        </span>
+        </div>
         {grandTotal > 0 && (
-          <span className={styles.cardSummary}>
+          <span className={styles.cardMeta}>
             {t('usage.trend.summary', {
               tokens: formatTokens(grandTotal),
               calls: t('usage.calls', { n: range.totals.calls }),
@@ -871,49 +744,128 @@ function RangeCard(props: { range?: UsageOverviewView['usage']['range']; provide
           </span>
         )}
       </div>
-      {range.providers.length === 0 || grandTotal === 0
-        ? <span className={styles.muted}>{t('usage.noData')}</span>
-        : <div className={styles.chart} data-dsh-part="usage-chart">
-            {range.providers.map((row) => (
-              <ChartProviderRow key={row.provider} row={row} name={nameOf(row.provider)} max={maxProvider} current={currentProvider === row.provider} />
-            ))}
-            <span className={styles.trendAxis}>
-              <span>{range.from.slice(5)}</span>
-              <span>{range.to.slice(5)}</span>
-            </span>
-          </div>}
-    </div>
-  )
-}
-
-function ChartProviderRow(props: { row: UsageProviderSummary; name: string; max: number; current: boolean }): ReactNode {
-  const { row, name, max, current } = props
-  const total = totalOf(row.totals)
-  const maxModel = Math.max(1, ...row.models.slice(0, CHART_MODEL_CAP).map((model) => totalOf(model.totals)))
-  return (
-    <div className={styles.chartProvider}>
-      <span className={styles.chartHead}>
-        <span className={styles.providerName}>
-          {name}
-          {current && <span className={styles.currentBadge}>{t('usage.current')}</span>}
-        </span>
-        <span className={styles.chartTokens}>{formatTokens(total)} · {t('usage.calls', { n: row.totals.calls })}</span>
-      </span>
-      <span className={styles.chartBar}>
-        <span className={styles.chartFill} style={{ width: `${Math.max(2, Math.round((total / max) * 100))}%` }} />
-      </span>
-      {row.models.slice(0, CHART_MODEL_CAP).map((model) => {
-        const modelTotal = totalOf(model.totals)
-        return (
-          <span key={model.model} className={styles.chartModel} title={`${row.provider} · ${model.model}: ${formatTokens(modelTotal)}`}>
-            <span className={styles.chartModelName}>{model.model}</span>
-            <span className={styles.chartModelBar}>
-              <span className={styles.chartModelFill} style={{ width: `${Math.max(3, Math.round((modelTotal / maxModel) * 100))}%` }} />
-            </span>
-            <span className={styles.chartTokens}>{formatTokens(modelTotal)}</span>
+      {range.providers.length === 0 || grandTotal === 0 ? (
+        <span className={styles.muted}>{t('usage.noData')}</span>
+      ) : (
+        <div className={styles.chart} data-dsh-part="usage-chart">
+          {range.providers.map((row) => {
+            const total = totalOf(row.totals)
+            const share = grandTotal > 0 ? (total / grandTotal) * 100 : 0
+            const accent = currentProvider === row.provider
+            return (
+              <div key={row.provider} className={styles.chartRow} data-accent={accent ? 'yes' : 'no'}>
+                <div className={styles.chartHead}>
+                  <span className={styles.chartLead}>
+                    <i className={styles.providerDot} aria-hidden="true" />
+                    <span className={styles.chartName}>{nameOf.get(row.provider) ?? row.provider}</span>
+                    {accent && <span className={styles.currentBadge}>{t('usage.current')}</span>}
+                  </span>
+                  <span className={styles.chartMeta}>
+                    <span className={`${styles.chartShare} ${styles.mono}`}>{percentText(share)}</span>
+                    <span className={`${styles.dim} ${styles.mono}`}>
+                      {formatTokens(total)}
+                      {` · ${t('usage.calls', { n: row.totals.calls })}`}
+                    </span>
+                  </span>
+                </div>
+                <span className={styles.chartBar} aria-hidden="true">
+                  <span className={styles.chartFill} style={{ width: `${Math.max(1.5, share)}%` }} />
+                </span>
+                {row.models.slice(0, CHART_MODEL_CAP).map((model) => {
+                  const modelTotal = totalOf(model.totals)
+                  const modelShare = total > 0 ? (modelTotal / total) * 100 : 0
+                  return (
+                    <div key={model.model} className={styles.chartModel} title={`${row.provider} · ${model.model}: ${formatTokens(modelTotal)}`}>
+                      <span className={styles.chartModelName}>{model.model}</span>
+                      <span className={styles.chartModelBar} aria-hidden="true">
+                        <span className={styles.chartModelFill} style={{ width: `${Math.max(1.5, modelShare)}%` }} />
+                      </span>
+                      <span className={`${styles.chartModelValue} ${styles.mono}`}>{percentText(modelShare)}</span>
+                      <span className={`${styles.chartModelTokens} ${styles.mono}`}>{formatTokens(modelTotal)}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })}
+          <span className={styles.trendAxis}>
+            <span>{range.from.slice(5)}</span>
+            <span>{range.to.slice(5)}</span>
           </span>
-        )
-      })}
+        </div>
+      )}
+    </section>
+  )
+})
+
+// ---------------------------------------------------------------------------
+// Daily history: a slim collapsible row, not a full empty band.
+// ---------------------------------------------------------------------------
+
+const HistoryCard = memo(function HistoryCard(props: { days: UsageDaySummary[] }): ReactNode {
+  const [open, setOpen] = useState(false)
+  const rows = useMemo(() => [...props.days].slice(-14).reverse(), [props.days])
+  const max = useMemo(() => Math.max(1, ...rows.map((day) => totalOf(day.totals))), [rows])
+  return (
+    <section className={styles.card} data-dsh-part="history-card">
+      <div className={styles.cardHead}>
+        <div className={styles.cardHeadGroup}>
+          <span className={styles.cardTitle}>{t('usage.history')}</span>
+          <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
+        </div>
+        <button type="button" className={styles.linkBtn} aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+          {open ? t('usage.history.hide') : t('usage.history.show')}
+        </button>
+      </div>
+      {open && (rows.length === 0
+        ? <span className={styles.muted}>{t('usage.history.empty')}</span>
+        : (
+          <div className={styles.historyGrid}>
+            {rows.map((day) => {
+              const total = totalOf(day.totals)
+              return (
+                <div key={day.date} className={styles.historyRow}>
+                  <span className={`${styles.historyDate} ${styles.mono}`}>{day.date.slice(5)}</span>
+                  <span className={styles.historyBar} aria-hidden="true">
+                    <span style={{ width: `${Math.max(2, Math.round((total / max) * 100))}%` }} />
+                  </span>
+                  <span className={`${styles.historyTokens} ${styles.mono}`}>{formatTokens(total)}</span>
+                  <span className={styles.historyCalls}>{t('usage.calls', { n: day.totals.calls })}</span>
+                </div>
+              )
+            })}
+          </div>
+        ))}
+    </section>
+  )
+})
+
+// ---------------------------------------------------------------------------
+// Plan windows tab.
+// ---------------------------------------------------------------------------
+
+function PlanGroup(props: {
+  title: string
+  providers: ProviderSnapshotView[]
+  currentId?: string
+  showEmpty?: boolean
+  /** A group with several providers spans the plans grid and lays its cards out side by side. */
+  wide?: boolean
+}): ReactNode {
+  const { title, providers, currentId, showEmpty, wide } = props
+  if (providers.length === 0 && !showEmpty) return null
+  return (
+    <div className={styles.planGroup} data-wide={wide === true ? 'yes' : 'no'}>
+      <span className={styles.groupTitle}>
+        {providers.length > 1 ? t('usage.plan.groupCount', { title, n: providers.length }) : title}
+      </span>
+      {providers.length === 0
+        ? <span className={styles.groupEmpty}>{t('usage.plan.groupEmpty')}</span>
+        : (
+          <div className={styles.planCards}>
+            {providers.map((provider) => <PlanCard key={provider.provider} provider={provider} currentId={currentId} />)}
+          </div>
+        )}
     </div>
   )
 }
@@ -929,7 +881,7 @@ function PlanCard(props: { provider: ProviderSnapshotView; currentId?: string })
           {currentId === provider.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
           <span className={styles.sourceChip}>{t(planSourceLabelKey(provider))}</span>
           <span className={styles.scopeChip}>{t('usage.scope.account')}</span>
-          {provider.plan?.planName !== undefined ? ` · ${provider.plan.planName}` : ''}
+          {provider.plan?.planName !== undefined ? <span className={styles.planTier}>{provider.plan.planName}</span> : ''}
         </span>
       </div>
       {provider.error !== undefined && <span className={styles.errorLine}>{t('usage.provider.error', { error: friendlyProbeError(provider.error) ?? provider.error })}</span>}
@@ -943,7 +895,7 @@ function PlanCard(props: { provider: ProviderSnapshotView; currentId?: string })
               <div key={window.key} className={styles.windowRow} data-dsh-part="plan-window">
                 <span className={styles.windowLabel}>
                   <span>{window.name ?? t(`usage.plan.windows.${window.key}`)}</span>
-                  <span>{`${percent >= 10 ? Math.round(percent) : percent.toFixed(1)}%`}</span>
+                  <span className={`${styles.mono}`}>{percentText(percent)}</span>
                 </span>
                 <span className={styles.bar}>
                   <span className={toneClass(percent)} style={{ width: `${Math.min(100, Math.max(0, percent))}%`, display: 'block' }} />
@@ -955,6 +907,10 @@ function PlanCard(props: { provider: ProviderSnapshotView; currentId?: string })
     </div>
   )
 }
+
+// ---------------------------------------------------------------------------
+// Settings tab.
+// ---------------------------------------------------------------------------
 
 const CONFIG_DEFAULTS: Required<Pick<UsageSettings, 'enabled' | 'pollIntervalSec' | 'bubbleMode' | 'cpamcEnabled' | 'cpamcBaseURL' | 'cpamcAllowedHosts' | 'volcanoEnabled'>> = {
   enabled: true,
@@ -1049,137 +1005,139 @@ function SettingsRow(props: {
   return (
     <div className={styles.card} data-dsh-part="settings-row">
       <span className={styles.cardTitle}>{t('usage.config.title')}</span>
-      {disabled && <span className={styles.muted}>{t('usage.config.readonly')}</span>}
+      <div className={styles.settingsForm}>
+        {disabled && <span className={styles.muted}>{t('usage.config.readonly')}</span>}
 
-      <div className={styles.settingsSection}>
-        <span className={styles.subTitle}>{t('usage.config.basic')}</span>
-        <label className={styles.settingRow}>
-          <span>{t('usage.config.enabled')}</span>
-          <input
-            type="checkbox"
-            checked={draft.enabled}
-            disabled={disabled || saving}
-            onChange={(event) => { edit('enabled', event.target.checked) }}
+        <div className={styles.settingsSection}>
+          <span className={styles.subTitle}>{t('usage.config.basic')}</span>
+          <label className={styles.settingRow}>
+            <span>{t('usage.config.enabled')}</span>
+            <input
+              type="checkbox"
+              checked={draft.enabled}
+              disabled={disabled || saving}
+              onChange={(event) => { edit('enabled', event.target.checked) }}
+            />
+          </label>
+          <label className={styles.settingRow}>
+            <span>{t('usage.config.pollIntervalSec')}</span>
+            <input
+              type="number"
+              min={30}
+              max={3600}
+              value={draft.pollIntervalSec}
+              disabled={disabled || saving}
+              onChange={(event) => {
+                const parsed = Number(event.target.value)
+                if (Number.isFinite(parsed) && parsed >= 30 && parsed <= 3600) edit('pollIntervalSec', Math.round(parsed))
+              }}
+            />
+          </label>
+        </div>
+
+        <div className={styles.settingsSection}>
+          <span className={styles.subTitle}>{t('usage.config.display')}</span>
+          <label className={styles.settingRow}>
+            <span>{t('usage.config.bubbleMode')}</span>
+            <select
+              value={draft.bubbleMode}
+              disabled={disabled || saving}
+              onChange={(event) => {
+                const next = event.target.value
+                if (next === 'always' || next === 'change' || next === 'off') edit('bubbleMode', next)
+              }}
+            >
+              <option value="always">{t('usage.config.bubbleMode.always')}</option>
+              <option value="change">{t('usage.config.bubbleMode.change')}</option>
+              <option value="off">{t('usage.config.bubbleMode.off')}</option>
+            </select>
+          </label>
+        </div>
+
+        <div className={styles.settingsSection}>
+          <span className={styles.subTitle}>{t('usage.config.external')}</span>
+          <label className={styles.settingRow}>
+            <span>{t('usage.config.cpamc')}</span>
+            <input type="checkbox" checked={cpamcOn} disabled={disabled || saving} onChange={(event) => { edit('cpamcEnabled', event.target.checked) }} />
+          </label>
+          <label className={styles.settingRow}>
+            <span>{t('usage.config.cpamcUrl')}</span>
+            <input
+              type="text"
+              value={draft.cpamcBaseURL}
+              disabled={disabled || saving || !cpamcOn}
+              placeholder={t('usage.config.cpamcUrl.placeholder')}
+              onChange={(event) => { edit('cpamcBaseURL', event.target.value) }}
+            />
+          </label>
+          <label className={styles.settingRow}>
+            <span>{t('usage.config.cpamcAllowedHosts')}</span>
+            <input type="text" value={draft.cpamcAllowedHosts} disabled={disabled || saving || !cpamcOn} placeholder="cli.example.com" onChange={(event) => { edit('cpamcAllowedHosts', event.target.value) }} />
+          </label>
+          {cpamcOn && !isCpamcLoopbackUrl(draft.cpamcBaseURL, draft.cpamcAllowedHosts) && (
+            <span className={styles.settingWarn}>{t('usage.config.cpamcUrl.invalid')}</span>
+          )}
+          <SecretField
+            label={t('usage.config.cpamcToken')}
+            configured={credentials?.cpamc === true}
+            disabled={disabled || !cpamcOn}
+            onSave={(secret) => setCredential('cpamc', secret)}
+            onClear={() => clearCredential('cpamc')}
           />
-        </label>
-        <label className={styles.settingRow}>
-          <span>{t('usage.config.pollIntervalSec')}</span>
-          <input
-            type="number"
-            min={30}
-            max={3600}
-            value={draft.pollIntervalSec}
-            disabled={disabled || saving}
-            onChange={(event) => {
-              const parsed = Number(event.target.value)
-              if (Number.isFinite(parsed) && parsed >= 30 && parsed <= 3600) edit('pollIntervalSec', Math.round(parsed))
-            }}
+          {cpamc !== undefined && (
+            <span className={cpamc.error !== undefined ? styles.settingWarn : styles.settingHint}>
+              {cpamc.displayName}
+              {cpamc.error !== undefined
+                ? ` · ${friendlyProbeError(cpamc.error) ?? cpamc.error}`
+                : `${balanceText(cpamc) !== null ? ` · ${balanceText(cpamc)}` : ''}${
+                  cpamc.plan?.windows?.[0]?.percent !== undefined
+                    ? ` · ${t('usage.plan.windows.5h.short')} ${Math.round(cpamc.plan.windows[0].percent as number)}%`
+                    : ''
+                }`}
+            </span>
+          )}
+          <label className={styles.settingRow}>
+            <span>{t('usage.config.volcano')}</span>
+            <input type="checkbox" checked={volcanoOn} disabled={disabled || saving} onChange={(event) => { edit('volcanoEnabled', event.target.checked) }} />
+          </label>
+          <SecretField
+            label={t('usage.config.volcanoAk')}
+            configured={credentials?.volcanoAk === true}
+            disabled={disabled || !volcanoOn}
+            onSave={(secret) => setCredential('volcano.ak', secret)}
+            onClear={() => clearCredential('volcano.ak')}
           />
-        </label>
-      </div>
-
-      <div className={styles.settingsSection}>
-        <span className={styles.subTitle}>{t('usage.config.display')}</span>
-        <label className={styles.settingRow}>
-          <span>{t('usage.config.bubbleMode')}</span>
-          <select
-            value={draft.bubbleMode}
-            disabled={disabled || saving}
-            onChange={(event) => {
-              const next = event.target.value
-              if (next === 'always' || next === 'change' || next === 'off') edit('bubbleMode', next)
-            }}
-          >
-            <option value="always">{t('usage.config.bubbleMode.always')}</option>
-            <option value="change">{t('usage.config.bubbleMode.change')}</option>
-            <option value="off">{t('usage.config.bubbleMode.off')}</option>
-          </select>
-        </label>
-      </div>
-
-      <div className={styles.settingsSection}>
-        <span className={styles.subTitle}>{t('usage.config.external')}</span>
-        <label className={styles.settingRow}>
-          <span>{t('usage.config.cpamc')}</span>
-          <input type="checkbox" checked={cpamcOn} disabled={disabled || saving} onChange={(event) => { edit('cpamcEnabled', event.target.checked) }} />
-        </label>
-        <label className={styles.settingRow}>
-          <span>{t('usage.config.cpamcUrl')}</span>
-          <input
-            type="text"
-            value={draft.cpamcBaseURL}
-            disabled={disabled || saving || !cpamcOn}
-            placeholder={t('usage.config.cpamcUrl.placeholder')}
-            onChange={(event) => { edit('cpamcBaseURL', event.target.value) }}
+          <SecretField
+            label={t('usage.config.volcanoSk')}
+            configured={credentials?.volcanoSk === true}
+            disabled={disabled || !volcanoOn}
+            onSave={(secret) => setCredential('volcano.sk', secret)}
+            onClear={() => clearCredential('volcano.sk')}
           />
-        </label>
-        <label className={styles.settingRow}>
-          <span>{t('usage.config.cpamcAllowedHosts')}</span>
-          <input type="text" value={draft.cpamcAllowedHosts} disabled={disabled || saving || !cpamcOn} placeholder="cli.example.com" onChange={(event) => { edit('cpamcAllowedHosts', event.target.value) }} />
-        </label>
-        {cpamcOn && !isCpamcLoopbackUrl(draft.cpamcBaseURL, draft.cpamcAllowedHosts) && (
-          <span className={styles.settingWarn}>{t('usage.config.cpamcUrl.invalid')}</span>
-        )}
-        <SecretField
-          label={t('usage.config.cpamcToken')}
-          configured={credentials?.cpamc === true}
-          disabled={disabled || !cpamcOn}
-          onSave={(secret) => setCredential('cpamc', secret)}
-          onClear={() => clearCredential('cpamc')}
-        />
-        {cpamc !== undefined && (
-          <span className={cpamc.error !== undefined ? styles.settingWarn : styles.settingHint}>
-            {cpamc.displayName}
-            {cpamc.error !== undefined
-              ? ` · ${friendlyProbeError(cpamc.error) ?? cpamc.error}`
-              : `${balanceText(cpamc) !== null ? ` · ${balanceText(cpamc)}` : ''}${
-                cpamc.plan?.windows?.[0]?.percent !== undefined
-                  ? ` · ${t('usage.plan.windows.5h.short')} ${Math.round(cpamc.plan.windows[0].percent as number)}%`
-                  : ''
-              }`}
-          </span>
-        )}
-        <label className={styles.settingRow}>
-          <span>{t('usage.config.volcano')}</span>
-          <input type="checkbox" checked={volcanoOn} disabled={disabled || saving} onChange={(event) => { edit('volcanoEnabled', event.target.checked) }} />
-        </label>
-        <SecretField
-          label={t('usage.config.volcanoAk')}
-          configured={credentials?.volcanoAk === true}
-          disabled={disabled || !volcanoOn}
-          onSave={(secret) => setCredential('volcano.ak', secret)}
-          onClear={() => clearCredential('volcano.ak')}
-        />
-        <SecretField
-          label={t('usage.config.volcanoSk')}
-          configured={credentials?.volcanoSk === true}
-          disabled={disabled || !volcanoOn}
-          onSave={(secret) => setCredential('volcano.sk', secret)}
-          onClear={() => clearCredential('volcano.sk')}
-        />
-        {volcano !== undefined && (
-          <span className={volcano.error !== undefined ? styles.settingWarn : styles.settingHint}>
-            {volcano.displayName}
-            {volcano.error !== undefined
-              ? ` · ${volcano.error}`
-              : `${balanceText(volcano) !== null ? ` · ${balanceText(volcano)}` : ''}${
-                volcano.plan?.windows?.[0]?.percent !== undefined
-                  ? ` · ${t('usage.plan.windows.5h.short')} ${Math.round(volcano.plan.windows[0].percent as number)}%`
-                  : ''
-              }`}
-          </span>
-        )}
-        <span className={styles.muted}>{t('usage.config.externalHint')}</span>
-      </div>
+          {volcano !== undefined && (
+            <span className={volcano.error !== undefined ? styles.settingWarn : styles.settingHint}>
+              {volcano.displayName}
+              {volcano.error !== undefined
+                ? ` · ${volcano.error}`
+                : `${balanceText(volcano) !== null ? ` · ${balanceText(volcano)}` : ''}${
+                  volcano.plan?.windows?.[0]?.percent !== undefined
+                    ? ` · ${t('usage.plan.windows.5h.short')} ${Math.round(volcano.plan.windows[0].percent as number)}%`
+                    : ''
+                }`}
+            </span>
+          )}
+          <span className={styles.muted}>{t('usage.config.externalHint')}</span>
+        </div>
 
-      <div className={styles.configActions}>
-        {saveError !== undefined && <span className={styles.settingWarn}>{saveError}</span>}
-        <button type="button" className={styles.refreshBtn} disabled={disabled || saving || !dirty} onClick={discard}>
-          {t('usage.config.discard')}
-        </button>
-        <button type="button" className={styles.refreshBtn} disabled={disabled || saving || !dirty} onClick={save}>
-          {saving ? t('usage.config.saving') : t('usage.config.save')}
-        </button>
+        <div className={styles.configActions}>
+          {saveError !== undefined && <span className={styles.settingWarn}>{saveError}</span>}
+          <button type="button" className={styles.refreshBtn} disabled={disabled || saving || !dirty} onClick={discard}>
+            {t('usage.config.discard')}
+          </button>
+          <button type="button" className={styles.refreshBtn} disabled={disabled || saving || !dirty} onClick={save}>
+            {saving ? t('usage.config.saving') : t('usage.config.save')}
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -1249,6 +1207,285 @@ function SecretField(props: {
         </button>
       </div>
       {error !== undefined && <span className={styles.muted}>{error}</span>}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// The section.
+// ---------------------------------------------------------------------------
+
+function StateGlyph(props: { kind: 'loading' | 'error' | 'disabled' }): ReactNode {
+  if (props.kind === 'loading') return <span className={styles.spinner} aria-hidden="true" />
+  return (
+    <svg className={styles.stateIcon} viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {props.kind === 'error'
+        ? <><circle cx="12" cy="12" r="9" /><path d="M12 8v5" /><path d="M12 16.2v.1" /></>
+        : <><circle cx="12" cy="12" r="9" /><path d="M9.6 9.6a2.4 2.4 0 1 1 3.4 2.2c-.7.35-1 .9-1 1.7" /><path d="M12 16.6v.1" /></>}
+    </svg>
+  )
+}
+
+/** The section component; the slot merges the face into these props. */
+export function UsageSectionCard(props: UsageSectionProps): ReactNode {
+  const { store, poll, refresh, settings, setCredential, clearCredential, view } = props
+  // Plugins page asks for a one-liner under the card title, or the full page.
+  if (view === 'summary') return t('usage.intro')
+
+  const ui = useSyncExternalStore(store.subscribe, store.getSnapshot)
+  const settingsSnapshot = settings.getSnapshot()
+  const settingsValue = settingsSnapshot.value ?? {}
+  const [tab, setTab] = useState<'usage' | 'plans' | 'settings'>('usage')
+  const [refreshing, setRefreshing] = useState(false)
+  // The enable checkbox writes through the settings scope, so subscribing here
+  // keeps the flag below live: the poll starts and stops with it instead of
+  // waiting for an unrelated render.
+  const [, bumpSettings] = useState(0)
+  useEffect(() => settings.subscribe(() => bumpSettings((count) => count + 1)), [settings])
+  const enabled = settingsValue.enabled ?? true
+
+  // Poll while mounted, enabled and visible; the overview is cheap (no probes —
+  // the host's own cycle owns those) so 10 s keeps balances fresh-ish between
+  // manual refreshes.
+  useEffect(() => {
+    // A disabled plugin deregisters its host routes, so the poll must stop with
+    // it; the section re-enables by writing the flag back through the checkbox.
+    if (!enabled) return undefined
+    poll()
+    let timer: number | undefined
+    const start = (): void => {
+      if (timer === undefined && document.visibilityState === 'visible') timer = window.setInterval(poll, SECTION_POLL_MS)
+    }
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'visible') {
+        poll()
+        start()
+      } else if (timer !== undefined) {
+        window.clearInterval(timer)
+        timer = undefined
+      }
+    }
+    start()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      if (timer !== undefined) window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [poll, enabled])
+
+  const snapshot = ui.snapshot
+
+  const onRefresh = (): void => {
+    setRefreshing(true)
+    try {
+      refresh()
+    } finally {
+      // The POST resolves through the next poll tick; unlock shortly either way.
+      window.setTimeout(() => setRefreshing(false), 3000)
+    }
+  }
+
+  // Disabled, failed and still-loading states keep the settings row mounted:
+  // it owns the enable checkbox, so replacing the whole panel would leave the
+  // user no way back from the UI.
+  if (!enabled || ui.status === 'error' || snapshot === null) {
+    const state: 'disabled' | 'error' | 'loading' = !enabled ? 'disabled' : ui.status === 'error' ? 'error' : 'loading'
+    return (
+      <div className={styles.section} data-dsh-plugin="usage">
+        <div className={styles.stateCard} data-state={state} data-dsh-part="status-line">
+          <StateGlyph kind={state} />
+          <div className={styles.stateBody}>
+            <span className={styles.stateTitle}>
+              {state === 'disabled'
+                ? t('usage.disabled')
+                : state === 'error'
+                  ? t('usage.error', { error: ui.error ?? '' })
+                  : t('usage.loading')}
+            </span>
+            {state !== 'disabled' && <span className={styles.stateDetail}>{t('usage.intro')}</span>}
+          </div>
+          {state === 'error' && (
+            <button type="button" className={styles.refreshBtn} onClick={() => poll()}>
+              {t('usage.retry')}
+            </button>
+          )}
+        </div>
+        <div className={styles.tabs} role="tablist">
+          <button type="button" role="tab" aria-selected className={`${styles.tab} ${styles.tabActive}`}>
+            {t('usage.tab.settings')}
+          </button>
+        </div>
+        <SettingsRow
+          settings={settings}
+          snapshot={settingsSnapshot.status === 'ready' ? settingsSnapshot : undefined}
+          value={settingsValue}
+          setCredential={setCredential}
+          clearCredential={clearCredential}
+        />
+      </div>
+    )
+  }
+
+  const current = snapshot.current
+  const currentProvider = snapshot.providers.find((provider) => provider.provider === current.provider)
+  const matchedPlan = currentPlanProvider(snapshot)
+  // Peak-period line: only when the official DeepSeek family is in play this
+  // session (the current route, or spend recorded under one today).
+  const deepseekPeriod = deepseekPeriodAt(Date.now())
+  const deepseekVisible = (current.provider !== undefined && isDeepSeekProviderRoute(current.provider))
+    || snapshot.usage.today.providers.some((row) => isDeepSeekProviderRoute(row.provider))
+  const planProviders = planTabProviders(snapshot.providers)
+  const modelPlans = planProviders.filter((provider) => provider.source === undefined || provider.source === 'model')
+  const cpamcPlans = planProviders.filter((provider) => provider.source === 'cpamc')
+  const volcanoPlans = planProviders.filter((provider) => provider.source === 'volcano')
+
+  // ---- overview instruments -----------------------------------------
+  const days = snapshot.usage.days
+  const todayTotals = snapshot.usage.today.totals
+  const rangeTotals = snapshot.usage.range?.totals ?? todayTotals
+  const allTotals = snapshot.usage.all?.totals ?? rangeTotals
+  const todayTokens = totalOf(todayTotals)
+  const yesterdayTokens = days.length >= 2 ? totalOf(days[days.length - 2].totals) : undefined
+  const tokenDelta = yesterdayTokens !== undefined && yesterdayTokens > 0
+    ? ((todayTokens - yesterdayTokens) / yesterdayTokens) * 100
+    : null
+  const hitRate = cacheHitRate(todayTotals)
+  const billedToday = todayTotals.inputTokens + todayTotals.cacheReadTokens + todayTotals.cacheWriteTokens
+  const avgCost = todayTotals.calls > 0 && todayTotals.cost > 0 ? todayTotals.cost / todayTotals.calls : null
+  const ageMs = Date.now() - snapshot.updatedAt
+  const fresh = Number.isFinite(ageMs) && ageMs >= 0 && ageMs < FRESH_WINDOW_MS
+  const todayProviderIds = new Set(snapshot.usage.today.providers.map((row) => row.provider))
+  const identity = currentProvider === undefined
+    ? undefined
+    : `${currentProvider.displayName}${current.model !== undefined && current.model !== '' ? ` · ${current.model}` : ''}`
+
+  return (
+    <div className={styles.section} data-dsh-plugin="usage">
+      <header className={styles.pageHead} data-dsh-part="header">
+        <div className={styles.pageHeadMain}>
+          {/* The Plugins page owns the page title/icon/breadcrumb for this
+              item, so the section header starts with the route identity
+              instead of repeating the title. */}
+          <div className={styles.pageIdentity}>
+            <span className={styles.identityName}>{identity ?? t('usage.noData')}</span>
+            {currentProvider !== undefined && balanceText(currentProvider) !== null && (
+              <span className={`${styles.identityBalance} ${styles.mono}`}>{balanceText(currentProvider)}</span>
+            )}
+          </div>
+        </div>
+        <div className={styles.headActions}>
+          <span className={styles.freshness} data-fresh={fresh ? 'yes' : 'no'}>
+            <i className={styles.freshnessDot} aria-hidden="true" />
+            <span className={styles.mono}>{t('usage.updated', { time: formatTime(snapshot.updatedAt) })}</span>
+          </span>
+          <button type="button" className={styles.refreshBtn} onClick={onRefresh} disabled={refreshing} data-busy={refreshing ? 'yes' : 'no'}>
+            <RefreshIcon spinning={refreshing} />
+            <span>{refreshing ? t('usage.refreshing') : t('usage.refresh')}</span>
+          </button>
+        </div>
+      </header>
+
+      <div className={styles.toolbar}>
+        <div className={styles.tabs} role="tablist" data-dsh-part="tabs">
+          <button type="button" role="tab" aria-selected={tab === 'usage'} className={tab === 'usage' ? `${styles.tab} ${styles.tabActive}` : styles.tab} onClick={() => setTab('usage')}>
+            {t('usage.tab.usage')}
+          </button>
+          <button type="button" role="tab" aria-selected={tab === 'plans'} className={tab === 'plans' ? `${styles.tab} ${styles.tabActive}` : styles.tab} onClick={() => setTab('plans')}>
+            {t('usage.tab.plans')}
+          </button>
+          <button type="button" role="tab" aria-selected={tab === 'settings'} className={tab === 'settings' ? `${styles.tab} ${styles.tabActive}` : styles.tab} onClick={() => setTab('settings')}>
+            {t('usage.tab.settings')}
+          </button>
+        </div>
+        {/* Scope line: says what the visible tab measures, so the device-wide
+            ledger and the account-level quota are never read as session data. */}
+        <span className={styles.scopeNote} data-dsh-part="scope-note">
+          {t(`usage.scope.note.${tab}`)}
+        </span>
+      </div>
+
+      {tab === 'usage' && (
+        <div className={styles.cockpit} data-dsh-part="usage-cockpit">
+          <div className={`${styles.cell} ${styles.cell12}`}>
+            <HeroBand
+              todayTokens={todayTokens}
+              todayCalls={todayTotals.calls}
+              todayCost={todayTotals.cost}
+              tokenDelta={tokenDelta}
+              rangeTokens={totalOf(rangeTotals)}
+              rangeCalls={rangeTotals.calls}
+              allTokens={totalOf(allTotals)}
+              allCalls={allTotals.calls}
+              hitRate={hitRate}
+              cacheRead={todayTotals.cacheReadTokens}
+              billed={billedToday}
+              avgCost={avgCost}
+            />
+          </div>
+          <div className={`${styles.cell} ${styles.cell7}`}>
+            <HeatmapCard days={days} />
+          </div>
+          <div className={`${styles.cell} ${styles.cell5}`}>
+            <QuotaCard provider={matchedPlan} model={current.model} onSeeAll={() => setTab('plans')} />
+          </div>
+          <div className={`${styles.cell} ${styles.cell7}`}>
+            <RangeCard range={snapshot.usage.range} providers={snapshot.providers} currentProvider={current.provider} />
+          </div>
+          <div className={`${styles.cell} ${styles.cell5}`}>
+            <section className={styles.card} data-dsh-part="provider-card">
+              <div className={styles.cardHead}>
+                <div className={styles.cardHeadGroup}>
+                  <span className={styles.cardTitle}>{t('usage.today')}</span>
+                  <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
+                </div>
+                {deepseekVisible && (
+                  <span className={styles.peakPill} data-dsh-part="peak-status">
+                    {t(deepseekPeriod.peak ? 'usage.peak.on' : 'usage.peak.off', { time: formatClock(deepseekPeriod.boundaryMs) })}
+                  </span>
+                )}
+              </div>
+              <ProviderBreakdown
+                rows={snapshot.usage.today.providers}
+                providers={snapshot.providers}
+                current={current.provider}
+              />
+              <BalanceInline
+                providers={snapshot.providers}
+                current={current.provider}
+                excludeIds={todayProviderIds}
+              />
+              <TokenComposition totals={todayTotals} />
+            </section>
+          </div>
+          <div className={`${styles.cell} ${styles.cell12}`}>
+            <HistoryCard days={days} />
+          </div>
+        </div>
+      )}
+
+      {tab === 'plans' && (
+        planProviders.length === 0
+          ? <div className={styles.card}><span className={styles.muted}>{t('usage.plan.noneConfigured')}</span></div>
+          : (
+            <div className={styles.plans}>
+              <PlanGroup wide title={t('usage.plan.group.models')} providers={modelPlans} currentId={matchedPlan?.provider} showEmpty />
+              <PlanGroup title={t('usage.plan.group.cpamc')} providers={cpamcPlans} currentId={matchedPlan?.provider} showEmpty />
+              <PlanGroup title={t('usage.plan.group.volcano')} providers={volcanoPlans} currentId={matchedPlan?.provider} showEmpty />
+            </div>
+          )
+      )}
+
+      {tab === 'settings' && (
+        <SettingsRow
+          settings={settings}
+          snapshot={settingsSnapshot.status === 'ready' ? settingsSnapshot : undefined}
+          value={settingsValue}
+          providers={snapshot.providers}
+          credentials={snapshot.externalCredentials}
+          setCredential={setCredential}
+          clearCredential={clearCredential}
+        />
+      )}
     </div>
   )
 }

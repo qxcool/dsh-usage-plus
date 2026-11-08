@@ -46,6 +46,19 @@ const STRIP_POLL_MS = 30_000
 /** Collapse a burst of composer interactions into one trailing poll. */
 const STRIP_INTERACTION_DEBOUNCE_MS = 250
 
+/**
+ * Collapse a burst of poll triggers (strip mount, tab refocus, composer
+ * interaction) into one request. The overview poller is shared by the Plugins
+ * section and every composer strip, so without this window a route change
+ * would fan out into several identical conditional GETs.
+ */
+const POLL_DEDUPE_MS = 750
+
+/** Document visibility, guarded for non-DOM (SSR/test) execution. */
+function isDocumentVisible(): boolean {
+  return typeof document === 'undefined' || document.visibilityState === 'visible'
+}
+
 async function usageFetch<T>(path: string, method: 'GET' | 'POST', body?: unknown): Promise<T> {
   const response = await fetch(path, {
     method,
@@ -146,13 +159,49 @@ export function apply(ctx: ClientContext): void {
 
   const store: UsageStoreInstance = createUsageStore().create()
 
+  let disposed = false
+  /** Bumped on every started read; older in-flight results are dropped. */
   let pollSeq = 0
   /** Last ETag served for the overview; `undefined` forces a full read. */
   let overviewEtag: string | undefined
-  const poll = (): void => {
-    const seq = pollSeq + 1
-    pollSeq = seq
-    fetchOverview(overviewEtag).then((result) => {
+  /** The one in-flight fetch: concurrent pollers join it instead of fanning out. */
+  let inFlight: Promise<void> | undefined
+  /** Work requested while a fetch was in flight; one trailing refresh wins over a poll. */
+  let pending: 'poll' | 'refresh' | undefined
+  /** Start instant of the last fetch; a burst of triggers inside this window is one request. */
+  let lastFetchStartAt = 0
+
+  const setError = (seq: number, error: unknown): void => {
+    if (seq !== pollSeq) return
+    store.actions.setState('error', error instanceof Error ? error.message : String(error))
+  }
+
+  /** Release the in-flight slot and run the single queued request, if any. */
+  const settle = (): void => {
+    inFlight = undefined
+    if (disposed || pending === undefined) return
+    const next = pending
+    pending = undefined
+    if (next === 'refresh') startRefresh()
+    else if (isDocumentVisible()) startPoll(true)
+  }
+
+  /**
+   * Start one overview read unless a read is already running (then queue one
+   * trailing poll) or a burst just fired (then drop it). `force` bypasses the
+   * burst window for a trailing/queued poll.
+   */
+  function startPoll(force = false): void {
+    if (disposed) return
+    if (inFlight !== undefined) {
+      if (pending !== 'refresh') pending = 'poll'
+      return
+    }
+    const now = Date.now()
+    if (!force && now - lastFetchStartAt < POLL_DEDUPE_MS) return
+    lastFetchStartAt = now
+    const seq = ++pollSeq
+    inFlight = fetchOverview(overviewEtag).then((result) => {
       if (seq !== pollSeq) return
       if (result.notModified) {
         // Data is still current; only a stale error state needs clearing.
@@ -161,25 +210,36 @@ export function apply(ctx: ClientContext): void {
       }
       if (result.etag !== undefined) overviewEtag = result.etag
       store.actions.setSnapshot(result.snapshot)
-    }, (error: unknown) => {
-      if (seq !== pollSeq) return
-      store.actions.setState('error', error instanceof Error ? error.message : String(error))
-    })
+    }, (error: unknown) => setError(seq, error)).finally(settle)
   }
-  const refresh = (): void => {
-    const seq = pollSeq + 1
-    pollSeq = seq
-    usageApi.refresh().then((snapshot) => {
-      pollSeq = seq
+
+  /**
+   * Start one forced host refresh (`POST /refresh`) and apply its snapshot.
+   * A refresh requested during a read queues behind it so two request kinds
+   * never race on the same store.
+   */
+  function startRefresh(): void {
+    if (disposed) return
+    if (inFlight !== undefined) {
+      pending = 'refresh'
+      return
+    }
+    lastFetchStartAt = Date.now()
+    const seq = ++pollSeq
+    inFlight = usageApi.refresh().then((snapshot) => {
+      if (seq !== pollSeq) return
+      // The document may have changed; a pre-refresh ETag must not be trusted.
+      overviewEtag = undefined
       store.actions.setSnapshot(snapshot)
-    }, (error: unknown) => {
-      if (seq !== pollSeq) return
-      store.actions.setState('error', error instanceof Error ? error.message : String(error))
-    })
+    }, (error: unknown) => setError(seq, error)).finally(settle)
   }
+
+  const poll = (): void => startPoll()
+  const refresh = (): void => startRefresh()
 
   const applyOverview = (snapshot: UsageOverviewView): void => {
     pollSeq += 1
+    overviewEtag = undefined
     store.actions.setSnapshot(snapshot)
   }
 
@@ -192,7 +252,7 @@ export function apply(ctx: ClientContext): void {
   let stripTimer: number | undefined
   let interactionTimer: number | undefined
   const onVisible = (): void => {
-    if (document.visibilityState === 'visible') poll()
+    if (isDocumentVisible()) poll()
   }
   const onComposerInteract = (event: Event): void => {
     const target = event.target
@@ -203,22 +263,23 @@ export function apply(ctx: ClientContext): void {
     if (interactionTimer !== undefined) window.clearTimeout(interactionTimer)
     interactionTimer = window.setTimeout(() => {
       interactionTimer = undefined
-      if (document.visibilityState === 'visible') poll()
+      if (isDocumentVisible()) poll()
     }, STRIP_INTERACTION_DEBOUNCE_MS)
   }
   const startStripPolling = (): (() => void) => {
     stripRefs += 1
     if (stripRefs === 1) {
       stripTimer = window.setInterval(() => {
-        if (document.visibilityState === 'visible') poll()
+        if (isDocumentVisible()) poll()
       }, STRIP_POLL_MS)
       document.addEventListener('visibilitychange', onVisible)
       document.addEventListener('pointerup', onComposerInteract, true)
       document.addEventListener('change', onComposerInteract, true)
     }
     // Immediate refresh for the newly mounted strip (interval first fires
-    // after one cadence otherwise).
-    poll()
+    // after one cadence otherwise); the shared poller dedupes a burst of
+    // mounts and joins an already running read.
+    if (isDocumentVisible()) poll()
     return () => {
       stripRefs -= 1
       if (stripRefs === 0 && stripTimer !== undefined) {
@@ -234,6 +295,14 @@ export function apply(ctx: ClientContext): void {
       }
     }
   }
+
+  // Stop scheduling new reads when the client plugin unloads. Slot teardown
+  // releases the interval/listeners; this only closes the request slot so a
+  // late plugin load cannot inherit a queued poll.
+  ctx.effect(() => () => {
+    disposed = true
+    pending = undefined
+  }, 'dsh-usage-plus: polling')
 
   const setCredential = async (target: Parameters<UsageHttpApi['setCredential']>[0], value: string): Promise<void> => {
     applyOverview(await usageApi.setCredential(target, value))

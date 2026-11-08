@@ -5,7 +5,7 @@
  * @module @linxin666/dsh-usage/core/ledger
  */
 
-import { addTotals, emptyTotals, type UsageLedgerDocument, type UsageProviderSummary, type UsageTokenTotals } from './types.ts'
+import { addTotals, emptyTotals, type UsageDaySummary, type UsageLedgerDocument, type UsageProviderSummary, type UsageTokenTotals, type UsageWindowSummary } from './types.ts'
 
 /** Local-date key (`YYYY-MM-DD`) for an epoch ms timestamp. */
 export function localDateKey(ms: number): string {
@@ -101,6 +101,153 @@ export function summarizeDays(days: ReadonlyArray<Record<string, Record<string, 
   providers.sort((a, b) => totalTokens(b.totals) - totalTokens(a.totals))
   for (const row of providers) addTotals(totals, row.totals)
   return { totals, providers }
+}
+
+/** One provider row aggregated over a window, without its per-model detail. */
+export interface UsageProviderTotalsRow {
+  provider: string
+  totals: UsageTokenTotals
+}
+
+/**
+ * Aggregate whole per-day maps into per-provider totals and a grand total
+ * only. Same provider ordering as `summarizeDays` (heaviest by total tokens
+ * first, stable on first appearance), but no model rows are built or sorted:
+ * the overview's all-time window renders provider totals only, so the
+ * per-model breakdown would be dead weight that grows with retained history.
+ * Pure: reads its inputs, allocates fresh buckets.
+ */
+export function summarizeProviderTotals(days: ReadonlyArray<Record<string, Record<string, UsageTokenTotals>>>): {
+  totals: UsageTokenTotals
+  providers: UsageProviderTotalsRow[]
+} {
+  const merged = new Map<string, UsageTokenTotals>()
+  for (const day of days) {
+    for (const [provider, models] of Object.entries(day)) {
+      if (!isSafeBucketKey(provider) || typeof models !== 'object' || models === null) continue
+      const bucket = merged.get(provider) ?? emptyTotals()
+      for (const totals of Object.values(models)) {
+        if (typeof totals !== 'object' || totals === null) continue
+        addTotals(bucket, totals)
+      }
+      merged.set(provider, bucket)
+    }
+  }
+  const providers: UsageProviderTotalsRow[] = [...merged].map(([provider, totals]) => ({ provider, totals }))
+  providers.sort((a, b) => totalTokens(b.totals) - totalTokens(a.totals))
+  const totals = emptyTotals()
+  for (const row of providers) addTotals(totals, row.totals)
+  return { totals, providers }
+}
+
+/**
+ * One total per requested local day. The heatmap needs per-day token totals
+ * for up to 182 days; walking each day's provider/model buckets once here is
+ * far cheaper than running the full `summarizeDays` per day (which allocates
+ * and sorts model rows the heatmap never reads). Days missing from the ledger
+ * resolve to a fresh zero bucket, like `summarizeDays([{}])`.
+ */
+export function summarizeDayTotals(
+  doc: Readonly<UsageLedgerDocument>,
+  dayKeys: readonly string[],
+): Map<string, UsageTokenTotals> {
+  const totalsByDay = new Map<string, UsageTokenTotals>()
+  for (const dateKey of dayKeys) {
+    const bucket = emptyTotals()
+    const day = doc.days[dateKey]
+    if (day !== undefined) {
+      for (const [provider, models] of Object.entries(day)) {
+        if (!isSafeBucketKey(provider) || typeof models !== 'object' || models === null) continue
+        for (const modelTotals of Object.values(models)) {
+          if (typeof modelTotals !== 'object' || modelTotals === null) continue
+          addTotals(bucket, modelTotals)
+        }
+      }
+    }
+    totalsByDay.set(dateKey, bucket)
+  }
+  return totalsByDay
+}
+
+/** The window options one overview aggregation is built for. */
+export interface LedgerUsageOptions {
+  /** The current local day key (`YYYY-MM-DD`). */
+  todayKey: string
+  /** How many trailing days the heatmap receives (retention already applied by the caller). */
+  heatmapDays: number
+  /** How many trailing days the trend window aggregates. */
+  rangeDays: number
+}
+
+/**
+ * Everything the overview's `usage` section needs, aggregated from one ledger
+ * snapshot in one pass per window. Pure and deterministic; the host service
+ * caches the result per ledger revision so a warm browser poll does not walk
+ * the retained ledger again.
+ */
+export interface LedgerUsageSummary {
+  todayKey: string
+  /** All retained day keys, ascending. */
+  allKeys: string[]
+  /** The trailing heatmap window (`allKeys.slice(-heatmapDays)`). */
+  heatmapKeys: string[]
+  /** The trailing trend window (`allKeys.slice(-rangeDays)`). */
+  rangeKeys: string[]
+  /** Per-day totals for the heatmap, in heatmap order. */
+  days: UsageDaySummary[]
+  today: { date: string; totals: UsageTokenTotals; providers: UsageProviderSummary[] }
+  range: UsageWindowSummary
+  all: UsageWindowSummary
+  /** Every provider with usage in any window; the overview keeps these rows. */
+  usageProviders: Set<string>
+}
+
+/**
+ * Aggregate the overview usage windows from a ledger document. The all-time
+ * window skips the per-model breakdown (`models: []` rows) exactly like the
+ * previous inline assembly, but without building model rows first.
+ */
+export function summarizeLedgerUsage(
+  doc: Readonly<UsageLedgerDocument>,
+  options: LedgerUsageOptions,
+): LedgerUsageSummary {
+  const allKeys = ledgerDayKeys(doc)
+  const heatmapKeys = allKeys.slice(-options.heatmapDays)
+  const rangeKeys = allKeys.slice(-options.rangeDays)
+  const range = summarizeDays(rangeKeys.map((key) => doc.days[key] ?? {}))
+  const all = summarizeProviderTotals(allKeys.map((key) => doc.days[key] ?? {}))
+  const today = summarizeDays([doc.days[options.todayKey] ?? {}])
+  const dayTotals = summarizeDayTotals(doc, heatmapKeys)
+  const days: UsageDaySummary[] = heatmapKeys.map((date) => ({
+    date,
+    totals: dayTotals.get(date) ?? emptyTotals(),
+  }))
+  const usageProviders = new Set<string>()
+  for (const row of today.providers) usageProviders.add(row.provider)
+  for (const row of range.providers) usageProviders.add(row.provider)
+  for (const row of all.providers) usageProviders.add(row.provider)
+  return {
+    todayKey: options.todayKey,
+    allKeys,
+    heatmapKeys,
+    rangeKeys,
+    days,
+    today: { date: options.todayKey, totals: today.totals, providers: today.providers },
+    range: {
+      from: rangeKeys[0] ?? options.todayKey,
+      to: rangeKeys[rangeKeys.length - 1] ?? options.todayKey,
+      totals: range.totals,
+      providers: range.providers,
+    },
+    all: {
+      from: allKeys[0] ?? options.todayKey,
+      to: allKeys[allKeys.length - 1] ?? options.todayKey,
+      totals: all.totals,
+      // Only the totals render; the per-model breakdown is dead weight.
+      providers: all.providers.map(({ provider, totals }) => ({ provider, totals, models: [] })),
+    },
+    usageProviders,
+  }
 }
 
 /** All local-date keys in the ledger, ascending. */

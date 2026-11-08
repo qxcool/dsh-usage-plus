@@ -1,0 +1,120 @@
+/*
+ * Page chrome for the local preview harness.
+ *
+ * Only the shell lives here: the surfaces inside `.preview-frame` come from
+ * the real `src/client/usage.module.css`, which resolves its colours through
+ * DSH theme custom properties (`--dsw-*`). We define those here with values
+ * sampled from a real DSH dark capture so the preview reads like the app.
+ * The component CSS is untouched.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  min-height: 100vh;
+  background: var(--preview-app-bg);
+  color: var(--preview-text);
+  font-family: system-ui, "Segoe UI Variable Text", "Segoe UI", "Noto Sans SC",
+    "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --preview-app-bg: #0e0f11;
+  --preview-panel-bg: #17181a;
+  --preview-panel-border: #292b2f;
+  --preview-text: #e9eaec;
+
+  /* DSH aliases consumed by the plugin's CSS module. */
+  --dsw-alias-bg-elevated: #1e2023;
+  --dsw-alias-border-l3: #33353a;
+  --dsw-alias-brand-primary: #4f74ff;
+  --dsw-alias-state-success-primary: #22d363;
+  --dsw-alias-label-primary: #e9eaec;
+  --dsw-alias-label-secondary: #a4a7ac;
+  --dsw-alias-label-tertiary: #7d8188;
+  --dsw-alias-interactive-bg-hover: rgb(255 255 255 / 7%);
+  --dsw-specific-menu: #24262b;
+  --dsw-elevation-prominent: 0 12px 32px rgb(0 0 0 / 50%);
+  --ds-font-family-code: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --preview-app-bg: #eef0f3;
+  --preview-panel-bg: #ffffff;
+  --preview-panel-border: #e0e2e7;
+  --preview-text: #1b1d21;
+
+  --dsw-alias-bg-elevated: #f7f8fa;
+  --dsw-alias-border-l3: #d3d6dc;
+  --dsw-alias-brand-primary: #3b62f5;
+  --dsw-alias-state-success-primary: #12a15f;
+  --dsw-alias-label-primary: #1b1d21;
+  --dsw-alias-label-secondary: #5b6068;
+  --dsw-alias-label-tertiary: #82878f;
+  --dsw-alias-interactive-bg-hover: rgb(0 0 0 / 6%);
+  --dsw-specific-menu: #ffffff;
+  --dsw-elevation-prominent: 0 12px 32px rgb(15 20 30 / 16%);
+  --ds-font-family-code: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+#root {
+  display: flex;
+  justify-content: center;
+  padding: 24px;
+}
+
+/* The surface the plugins page renders its section onto. */
+.preview-frame {
+  /* Fill the viewport so a full-page capture is the panel, not a panel plus an
+     empty background band whose height depends on how much data rendered. */
+  min-height: calc(100vh - 48px);
+  padding: 18px 22px 22px;
+  border: 1px solid var(--preview-panel-border);
+  border-radius: 16px;
+  background: var(--preview-panel-bg);
+  color: var(--preview-text);
+}
+
+/* Composer dock stand-in: the strip sits in a row of official pills. */
+.strip-frame {
+  border: 1px solid var(--preview-panel-border);
+  border-radius: 16px;
+  background: var(--preview-panel-bg);
+  color: var(--preview-text);
+}
+
+.strip-frame .dock-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 14px;
+  padding: 6px 4px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.strip-frame .dock-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

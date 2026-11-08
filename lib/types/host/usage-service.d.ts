@@ -23,6 +23,11 @@ export interface UsageServiceOptions {
     volcanoAccessKeyEnv: string;
     volcanoSecretKeyEnv: string;
 }
+/** The wire payload of one overview read: the cached document plus its ETag. */
+export interface UsageOverviewPayload {
+    document: UsageOverviewView;
+    etag: string;
+}
 /** Format a balance for display: symbol prefix when known, code suffix otherwise. */
 export declare function formatMoney(currency: string, totalBalance: string): string;
 /**
@@ -120,6 +125,31 @@ export declare class UsageService {
     private readonly probeBackoff;
     /** Last snapshots document written; an unchanged document is not rewritten. */
     private lastPersistedSnapshots;
+    /**
+     * Bumped on every document-visible mutation: ledger fold, persisted merge,
+     * prune, settings/retention change, composer/current change, probe result,
+     * or a route/config/credential-flag change. The derived overview document
+     * is served from cache until this moves.
+     */
+    private revision;
+    /** Bumped only by ledger mutations; the usage windows aggregate from it. */
+    private ledgerRevision;
+    /** Derived overview document, rebuilt at most once per revision. */
+    private overviewCache;
+    /** Aggregated usage windows, rebuilt at most once per ledger revision. */
+    private usageCache;
+    /** Provider route list TTL cache (the llm registry is a config scan). */
+    private routesCache;
+    /** configEditor entry snapshots a document read depends on; TTL-cached. */
+    private readonly entryConfigCache;
+    /** External credential-status TTL cache: three vault reads per assembly otherwise. */
+    private credentialStatusCache;
+    /** Last credential flags observed before a cache invalidation; drives invalidation. */
+    private lastCredentialStatus;
+    /** Dedupes overlapping credential-status reads. */
+    private credentialStatusInFlight;
+    /** Invalidates in-flight credential-status reads that predate a credential write. */
+    private credentialStatusGeneration;
     constructor(ctx: Context, options: UsageServiceOptions);
     /** Start the listeners, load persisted state, and arm the first poll. */
     start(): void;
@@ -135,6 +165,33 @@ export declare class UsageService {
     refresh(): Promise<void>;
     /** Assemble the overview document the browser section renders. */
     overview(): Promise<UsageOverviewView>;
+    /**
+     * The overview document plus its strong ETag. A warm request (same data
+     * revision) answers from the derived cache: no ledger re-summarization, no
+     * provider rebuild, and no SHA-1 over the JSON — the GET route only needs
+     * the cached validator to answer 304. `updatedAt` moves with each read but
+     * stays out of the ETag, exactly like the uncached path.
+     */
+    overviewPayload(): Promise<UsageOverviewPayload>;
+    /**
+     * Build the wire document from an already-aggregated usage summary. Rows
+     * and the provider keep-set (the exact ids the trend/today cards look up)
+     * are computed once per revision. The returned `providers` array is freshly
+     * sorted, so it never aliases the cached route list.
+     */
+    private assembleOverview;
+    /**
+     * Aggregate the usage windows for the current ledger revision and local day.
+     * One pass over the retained ledger per revision; warm polls (and the pet
+     * bubble's today lookup) reuse it instead of re-summarizing 182 days.
+     */
+    private usageSummary;
+    /** Mark a document-visible mutation: the next overview read rebuilds. */
+    private bumpRevision;
+    /** Mark a ledger mutation: both the document and the usage windows rebuild. */
+    private bumpLedgerRevision;
+    /** Adopt a new current route, bumping the revision only when it changed. */
+    private setCurrent;
     /**
      * Write-only: store one external secret in the DSH credential vault under
      * the configured env-var name. Never returns the value.
@@ -152,12 +209,19 @@ export declare class UsageService {
         ok: false;
         error: string;
     }>;
-    /** Configured/missing flags only — never the secret values. */
+    /**
+     * Configured/missing flags only — never the secret values. Short-TTL cached:
+     * the document renders them and a 10s poll must not read the vault three
+     * times per request. A changed flag bumps the revision so the next overview
+     * rebuilds; credential writes and settings changes invalidate explicitly.
+     */
     externalCredentialStatus(): Promise<ExternalCredentialStatus>;
+    /** Drop the cached flags after a credential write or env-name change. */
+    private invalidateCredentialStatus;
+    /** The live (uncached) credential-status read: three vault describes. */
+    private readExternalCredentialStatus;
     private externalCredentialEnv;
     private isEnvConfigured;
-    /** One local day aggregated per provider. */
-    private daySummary;
     /** Today's ledger spend for one provider's adapter family (0 when unpriced). */
     private familyCostToday;
     /** Today's ledger totals for one provider route (the exact id, not the family). */
@@ -204,7 +268,13 @@ export declare class UsageService {
      * returning immediately, so a manual refresh always waits for real probes.
      */
     pollNow(): Promise<void>;
+    /**
+     * The live LLM provider routes, short-TTL cached: the registry call walks
+     * config, and every overview/poll/announce reads it. A registry change is
+     * document-visible (provider rows), so it bumps the revision.
+     */
     private listProviderRoutes;
+    private readProviderRoutes;
     private probeRoute;
     /** Advance or clear the retry backoff after one provider's probe run. */
     private recordProbeOutcome;
@@ -219,6 +289,18 @@ export declare class UsageService {
     private resolveCredential;
     private resolveEnv;
     private probeExternalSources;
+    /**
+     * Replace one external source's rows, bumping the revision only when the
+     * map actually changed (a disabled/idle source must not invalidate the
+     * cached overview on every poll).
+     */
+    private replaceExternalSnapshotsChecked;
+    /**
+     * A configEditor entry snapshot, short-TTL cached. Config is part of the
+     * document (the current route's baseURL), so a changed value bumps the
+     * revision; the TTL keeps the config scan off the warm poll path.
+     */
+    private cachedEntryConfig;
     /** The llm-pi-ai profile object for one provider route, when configured. */
     private piAiProfile;
     /** The DeepSeek official adapter's credential reference name. */

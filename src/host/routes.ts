@@ -3,7 +3,7 @@ import { appendFile, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { ExternalCredentialTarget } from '../core/types.ts'
-import { asJsonObject, jsonEtag, readJsonBody, writeJson } from './http.ts'
+import { asJsonObject, readJsonBody, writeJson } from './http.ts'
 import { isLoopbackRequest } from './loopback.ts'
 import type { UsageService } from './usage-service.ts'
 import { dshHome } from '../dsh-home.ts'
@@ -50,8 +50,10 @@ export function makeUsageOverviewRoute(service: UsageService): WebRoute {
         writeJson(res, 403, { ok: false, error: 'forbidden: loopback-only' })
         return
       }
-      const document = await service.overview()
-      const etag = jsonEtag(document)
+      // The service caches the document and its ETag per data revision: a warm
+      // poll costs a cache lookup, and an unchanged document can answer 304
+      // without re-serializing the JSON body.
+      const { document, etag } = await service.overviewPayload()
       const ifNoneMatch = req.headers['if-none-match']
       if (typeof ifNoneMatch === 'string' && requestEtagMatches(ifNoneMatch, etag)) {
         res.writeHead(304, { etag, 'cache-control': 'no-store' })

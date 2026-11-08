@@ -4,3 +4,7 @@ node_modules/
 lib/*.mjs
 lib/*.mts
 lib/client.d.cts
+
+# Local preview harness caches
+__pycache__/
+*.pyc
