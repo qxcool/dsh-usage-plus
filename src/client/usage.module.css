@@ -22,7 +22,11 @@
   --u-surface-3: color-mix(in srgb, currentColor 7%, transparent);
   --u-text-2: color-mix(in srgb, currentColor 80%, transparent);
   --u-text-3: color-mix(in srgb, currentColor 62%, transparent);
-  --u-accent: var(--dsw-alias-brand-primary, #4f6bff);
+  /* DSH's --dsw-alias-brand-primary is the text-on-surface contrast colour
+     (near-white in dark, near-black in light), never an accent. Data colour
+     comes from the dedicated brand "new-color" token, with the static DeepSeek
+     ramp as the fallback and a neutral blue last. */
+  --u-accent: var(--dsw-alias-brand-primary-new-colorprimary-new-color, var(--dsw-static-deepseek-450, #4f6bff));
   --u-good: var(--dsw-alias-state-success-primary, #2eb88a);
   --u-warn: var(--dsw-alias-state-warning-primary, #d9930f);
   --u-bad: var(--dsw-alias-state-danger-primary, #d93843);
@@ -1744,17 +1748,27 @@
   right: 0;
   bottom: calc(100% + 10px);
   box-sizing: border-box;
-  width: min(300px, calc(100vw - 32px));
+  width: min(320px, calc(100vw - 24px));
+  max-height: min(60vh, 440px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 16px;
   border: 1px solid var(--dsw-alias-border-l3, var(--u-line-2));
   border-radius: 14px;
   background: var(--dsw-specific-menu, var(--dsw-alias-bg-elevated, #1e1e1e));
   box-shadow: var(--dsw-elevation-prominent, 0 12px 32px rgb(0 0 0 / 32%));
   color: var(--dsw-alias-label-primary, inherit);
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 1.5;
   cursor: default;
   animation: u-pop-in 140ms var(--u-ease);
+}
+
+/* Programmatic focus (open) must not paint a ring; the panel is not a tab stop
+   and keyboard users reach the readings through the trigger's aria-label. */
+.quotaMeterPanel:focus,
+.quotaMeterPanel:focus-visible {
+  outline: none;
 }
 
 .quotaMeterHeader {
@@ -1778,8 +1792,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 500;
+  line-height: 1.35;
   color: var(--dsw-alias-label-primary, inherit);
 }
 
@@ -1790,6 +1805,12 @@
   min-width: 0;
   font-size: 11px;
   color: var(--dsw-alias-label-tertiary, var(--u-text-3));
+}
+
+/* The source chip is shared with the quota card; in the popover header it
+   reads as a meta chip at the same 11px size as the plan name. */
+.quotaMeterMeta .sourceChip {
+  font-size: 11px;
 }
 
 .quotaMeterBars {
@@ -1813,10 +1834,35 @@
   color: var(--dsw-alias-label-secondary, inherit);
 }
 
+.quotaMeterBarLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* The ring tracks the tightest window; this badge names the same row so the
+   arc and the reading can never be misattributed. */
+.quotaMeterTight {
+  flex: none;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0;
+  color: var(--u-accent);
+  background: color-mix(in srgb, var(--u-accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--u-accent) 32%, transparent);
+  border-radius: 4px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
 .quotaMeterBarPct {
   font-family: var(--u-mono);
   font-variant-numeric: tabular-nums;
   font-weight: 500;
+  text-align: right;
+  min-width: 48px;
   color: var(--dsw-alias-label-primary, inherit);
 }
 
@@ -1825,15 +1871,6 @@
   font-weight: 400;
   color: var(--dsw-alias-label-tertiary, var(--u-text-3));
   font-variant-numeric: tabular-nums;
-}
-
-.quotaMeterFoot {
-  margin-top: 14px;
-  padding-top: 10px;
-  border-top: 1px solid var(--dsw-alias-border-l3, var(--u-line));
-  font-size: 10.5px;
-  color: var(--dsw-alias-label-tertiary, var(--u-text-3));
-  line-height: 1.5;
 }
 
 /* The panel reuses the shared .bar/.barFill classes; only the track tint is

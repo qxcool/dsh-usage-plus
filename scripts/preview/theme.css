@@ -39,10 +39,15 @@ body {
   --preview-panel-border: #292b2f;
   --preview-text: #e9eaec;
 
-  /* DSH aliases consumed by the plugin's CSS module. */
+  /* DSH aliases consumed by the plugin's CSS module. Mirror the real build:
+     --dsw-alias-brand-primary is the text-on-surface contrast colour (near
+     white on dark), so data colour must come from the new-color token. If the
+     harness hardcodes blue here, accent-token bugs stay invisible. */
   --dsw-alias-bg-elevated: #1e2023;
   --dsw-alias-border-l3: #33353a;
-  --dsw-alias-brand-primary: #4f74ff;
+  --dsw-alias-brand-primary: #f9fafb;
+  --dsw-alias-brand-primary-new-colorprimary-new-color: #5686fe;
+  --dsw-static-deepseek-450: #5686fe;
   --dsw-alias-state-success-primary: #22d363;
   --dsw-alias-label-primary: #e9eaec;
   --dsw-alias-label-secondary: #a4a7ac;
@@ -62,7 +67,9 @@ body {
 
   --dsw-alias-bg-elevated: #f7f8fa;
   --dsw-alias-border-l3: #d3d6dc;
-  --dsw-alias-brand-primary: #3b62f5;
+  --dsw-alias-brand-primary: #0f1115;
+  --dsw-alias-brand-primary-new-colorprimary-new-color: #4176e6;
+  --dsw-static-deepseek-450: #4176e6;
   --dsw-alias-state-success-primary: #12a15f;
   --dsw-alias-label-primary: #1b1d21;
   --dsw-alias-label-secondary: #5b6068;

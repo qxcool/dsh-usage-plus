@@ -4,6 +4,8 @@
 
 Independent DSH usage and official Plan-quota plugin (Host + Web UI). It does not pin a DSH version: optional UI surfaces activate only when the running DSH exposes the required capabilities.
 
+[![dsh.pub registry status](https://dsh.pub/api/badges/qxcool/dsh-usage-plus.svg)](https://dsh.pub/en/plugins/dsh-usage-plus/)
+
 - Reuses credentials already configured for DSH model providers.
 - Shows real 5-hour, weekly, and monthly windows on `conversation.composer.dock` (alongside StatsPills / ContextMeter).
 - Labels every Plugins-page number with its scope (`全设备` / `账号级` / `本会话`) so device-wide totals never read as session totals.
@@ -18,7 +20,7 @@ Independent DSH usage and official Plan-quota plugin (Host + Web UI). It does no
 
 ### Composer plan strip (current model)
 
-![Composer footer for an OpenCode Go route: turn/step counters, total tokens with cache hit rate, and the compact "额度 5h 64% · 周 78% · 月 18%" plan pill](docs/screenshots/composer-plan-strip.png)
+![Composer footer for an OpenCode Go route: turn/step counters, total tokens with cache hit rate, and the compact "额度 5h 63.5% · 周 78.2% · 月 18.4%" plan pill](docs/screenshots/composer-plan-strip.png)
 
 When the active model matches an official plan source, the composer dock shows a compact pill with the real 5-hour / weekly / monthly readings; the ring marks the tightest window. Open it for per-window bars, reset times, and the source chip (for example Volcano). Nothing is rendered when the remote API exposes no official window.
 
@@ -33,10 +35,12 @@ The overview reads as one instrument panel: a hero figure for today, the 26-week
 Install into a DSH profile with the official plugin command (adds the dependency and appends the package to `dsh.profile.bundles` so `cordis.patch.yml` is applied):
 
 ```bash
-dsh plugin --profile desktop add ./
-# or from npm / Git:
-# dsh plugin --profile desktop add dsh-usage-plus
+dsh plugin --profile desktop add github:qxcool/dsh-usage-plus
+# or from a local checkout:
+# dsh plugin --profile desktop add ./
 ```
+
+The GitHub form installs the committed `lib/` artifacts in this repository. The npm package may lag behind the GitHub release, so prefer the GitHub form when you want the current version.
 
 The package ships its own bundle patch (`id: usage-plus`, `name: dsh-usage-plus`).
 If the older `@linxin666/dsh-usage` / `web-ui-usage` row is also present, disable it

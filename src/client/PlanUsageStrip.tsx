@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { UsageStoreInstance } from './usage-store.ts'
 import type { PlanWindowView } from '../core/types.ts'
 import { currentPlanProvider, orderedPlanWindows, planSourceLabelKey, type PlanRouteOverride } from '../core/plan-match.ts'
@@ -55,8 +55,25 @@ export { currentPlanProvider }
 const RADIUS = 5.5
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS
 
+/**
+ * One reading format everywhere in the strip (trigger, panel, tooltip):
+ * one decimal, so a row never mixes `8.0%` with `21%` and the compact pill
+ * always agrees with the detail view.
+ */
 function percentText(value: number): string {
-  return `${value >= 10 ? Math.round(value) : value.toFixed(1)}%`
+  return `${Math.min(100, Math.max(0, value)).toFixed(1)}%`
+}
+
+/** Absolute reset instant for the relative reset copy's tooltip. */
+function resetInstantTitle(iso?: string): string | undefined {
+  if (iso === undefined || iso === '') return undefined
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return undefined
+  try {
+    return at.toLocaleString()
+  } catch {
+    return undefined
+  }
 }
 
 function windowShort(window: PlanWindowView): string {
@@ -113,6 +130,10 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
   const ui = useSyncExternalStore(store.subscribe, store.getSnapshot)
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLSpanElement | null>(null)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const panelRef = useRef<HTMLDivElement | null>(null)
+  const wasOpen = useRef(false)
+  const panelId = useId()
 
   // Session-scope standard kit always injects useProjection; tests pass a stub.
   // Calling through a stable local keeps the hook name recognizable to the
@@ -144,6 +165,44 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
     return () => {
       document.removeEventListener('pointerdown', onPointerDown)
       document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
+  // Focus contract: the popover is a dialog panel, not a tab stop — focus it on
+  // open so Escape/scroll work, and hand focus back to the trigger on close.
+  useEffect(() => {
+    if (open) {
+      wasOpen.current = true
+      panelRef.current?.focus({ preventScroll: true })
+      return
+    }
+    if (!wasOpen.current) return
+    wasOpen.current = false
+    triggerRef.current?.focus({ preventScroll: true })
+  }, [open])
+
+  // Keep the right-anchored panel inside the window: the composer dock can put
+  // the trigger close to either edge, so nudge the panel back with a transform
+  // instead of letting a narrow window clip it.
+  useEffect(() => {
+    if (!open) return undefined
+    const clamp = (): void => {
+      const panel = panelRef.current
+      if (panel === null) return
+      panel.style.transform = ''
+      const rect = panel.getBoundingClientRect()
+      const margin = 12
+      let dx = 0
+      if (rect.left < margin) dx = margin - rect.left
+      const right = rect.right + dx
+      if (right > window.innerWidth - margin) dx -= right - (window.innerWidth - margin)
+      if (dx !== 0) panel.style.transform = `translateX(${Math.round(dx)}px)`
+    }
+    clamp()
+    window.addEventListener('resize', clamp)
+    return () => {
+      window.removeEventListener('resize', clamp)
+      if (panelRef.current !== null) panelRef.current.style.transform = ''
     }
   }, [open])
 
@@ -187,10 +246,12 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
   return (
     <span ref={rootRef} className={`${styles.quotaMeter} ${level}`} data-dsh-plugin="usage-plus" data-dsh-part="quota-meter" data-usage-plus-rev="4">
       <button
+        ref={triggerRef}
         type="button"
         className={styles.quotaMeterTrigger}
         aria-label={`${identity} · ${source} · ${t('usage.plan.quota')} · ${windowSummary}`}
         aria-haspopup="dialog"
+        aria-controls={panelId}
         aria-expanded={open}
         title={`${identity}\n${source} · ${t('usage.plan.quota')}\n${windows.map((window) => `${windowLabel(window)} ${percentText(window.percent as number)}`).join(' · ')}`}
         onClick={() => {
@@ -212,7 +273,14 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
         <span className={styles.quotaMeterReading}>{windowSummary}</span>
       </button>
       {open && (
-        <div className={styles.quotaMeterPanel} role="dialog" aria-label={identity}>
+        <div
+          ref={panelRef}
+          id={panelId}
+          className={styles.quotaMeterPanel}
+          role="dialog"
+          aria-label={identity}
+          tabIndex={-1}
+        >
           <div className={styles.quotaMeterHeader}>
             <div className={styles.quotaMeterIdentity}>
               <span className={styles.quotaMeterName}>{identity}</span>
@@ -225,21 +293,26 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
           <div className={styles.quotaMeterBars}>
             {windows.map((window) => {
               const value = window.percent as number
+              // The ring tracks the tightest (highest-usage) window: mark that
+              // same row in the detail view so the arc has a visible referent.
+              const tightest = primary.key === window.key
               return (
                 <div key={window.key} className={`${styles.quotaMeterBarRow} ${toneClass(value)}`}>
                   <div className={styles.quotaMeterBarHead}>
-                    <span>{windowLabel(window)}</span>
+                    <span className={styles.quotaMeterBarLabel}>
+                      {windowLabel(window)}
+                      {tightest ? <span className={styles.quotaMeterTight}>{t('usage.plan.tightest')}</span> : null}
+                    </span>
                     <span className={styles.quotaMeterBarPct}>{percentText(value)}</span>
                   </div>
                   <span className={styles.bar}>
                     <span className={barTone(value)} style={{ width: `${Math.min(100, Math.max(0, value))}%`, display: 'block' }} />
                   </span>
-                  <span className={styles.quotaMeterReset}>{formatPlanReset(window.resetsAt)}</span>
+                  <span className={styles.quotaMeterReset} title={resetInstantTitle(window.resetsAt)}>{formatPlanReset(window.resetsAt)}</span>
                 </div>
               )
             })}
           </div>
-          <div className={styles.quotaMeterFoot}>{t('usage.plan.quota.tightest')}</div>
         </div>
       )}
     </span>

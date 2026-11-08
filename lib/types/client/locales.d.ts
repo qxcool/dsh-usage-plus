@@ -99,6 +99,7 @@ export declare const zh: {
     'usage.plan.noPlan': string;
     'usage.plan.emptyHint': string;
     'usage.plan.quota.tightest': string;
+    'usage.plan.tightest': string;
     'usage.plan.noneConfigured': string;
     'usage.plan.groupEmpty': string;
     'usage.plan.groupCount': string;

@@ -88,9 +88,9 @@ describe('PlanUsageStrip per-session route', () => {
     expect(span?.getAttribute('data-usage-plus-rev')).toBe('4')
     expect(span?.querySelector('circle')).not.toBeNull()
     expect(host.textContent).toContain('额度')
-    expect(host.textContent).toContain('5h 41%')
-    expect(host.textContent).toContain('周 32%')
-    expect(host.textContent).toContain('月 35%')
+    expect(host.textContent).toContain('5h 41.0%')
+    expect(host.textContent).toContain('周 32.0%')
+    expect(host.textContent).toContain('月 35.0%')
     root.unmount()
   })
 
@@ -103,8 +103,8 @@ describe('PlanUsageStrip per-session route', () => {
       ...projectionOf({ next: { provider: 'minimax-cn', model: 'MiniMax-M3' } }),
     }))
     await flush()
-    expect(host.textContent).toContain('12%')
-    expect(host.textContent).not.toContain('41%')
+    expect(host.textContent).toContain('12.0%')
+    expect(host.textContent).not.toContain('41.0%')
     root.unmount()
   })
 
@@ -150,6 +150,64 @@ describe('PlanUsageStrip per-session route', () => {
     const { root, host } = mount(createElement(PlanUsageStrip, { store: store as never }))
     await flush()
     expect(host.querySelector('span[data-dsh-plugin="usage-plus"]')).toBeNull()
+    root.unmount()
+  })
+
+  it('links the popover, marks the tightest window and formats readings uniformly', async () => {
+    const resetsAt = new Date(Date.now() + 3_600_000).toISOString()
+    const snapshot = overview({
+      current: { provider: 'opencode-go', model: 'glm-5.3-flash', source: 'live' },
+      providers: [provider({
+        provider: 'opencode-go',
+        displayName: 'opencode-go',
+        planSupported: true,
+        plan: {
+          updatedAt: 1,
+          windows: [
+            { key: '5h', percent: 41, resetsAt },
+            { key: 'week', percent: 32, resetsAt },
+            { key: 'month', percent: 35, resetsAt },
+          ],
+        },
+      })],
+    })
+    const { root, host } = mount(createElement(PlanUsageStrip, { store: fakeStore(snapshot) as never }))
+    await flush()
+    const trigger = host.querySelector('button')
+    expect(trigger).not.toBeNull()
+    const controls = trigger?.getAttribute('aria-controls')
+    expect(controls).toBeTruthy()
+    expect(trigger?.getAttribute('aria-expanded')).toBe('false')
+
+    act(() => trigger?.click())
+    await flush()
+    const panel = host.querySelector('[role="dialog"]')
+    expect(panel).not.toBeNull()
+    expect(panel?.id).toBe(controls)
+    expect(panel?.getAttribute('tabindex')).toBe('-1')
+    expect(document.activeElement).toBe(panel)
+
+    const heads = [...(panel?.querySelectorAll(`.${styles.quotaMeterBarHead}`) ?? [])]
+    expect(heads).toHaveLength(3)
+    // One consistent one-decimal format across the whole panel.
+    expect(heads.every((head) => /\d+\.\d%/.test(head.textContent ?? ''))).toBe(true)
+
+    // The "tightest" badge sits on the highest-usage window (5h 41%).
+    const tight = panel?.querySelector(`.${styles.quotaMeterTight}`)
+    expect(tight).not.toBeNull()
+    expect(tight?.textContent).toBe('最紧')
+    expect(heads[0]?.contains(tight as Node)).toBe(true)
+
+    // Relative reset copy keeps the absolute instant as a tooltip.
+    const reset = panel?.querySelector(`.${styles.quotaMeterReset}`)
+    expect(reset?.getAttribute('title')).toBeTruthy()
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+    await flush()
+    expect(host.querySelector('[role="dialog"]')).toBeNull()
+    expect(document.activeElement).toBe(trigger)
     root.unmount()
   })
 

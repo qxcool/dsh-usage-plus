@@ -4,6 +4,8 @@
 
 独立的 DSH 用量与官方 Plan 额度插件（Host + Web UI）。不锁定 DSH 版本；可选界面仅在运行中的 DSH 提供相应能力时启用。
 
+[![dsh.pub 收录状态](https://dsh.pub/api/badges/qxcool/dsh-usage-plus.svg)](https://dsh.pub/zh/plugins/dsh-usage-plus/)
+
 ## 特性
 
 - 自动复用 DSH 已配置模型的凭据，查询 Kimi Coding、GLM Coding Plan、OpenCode Go、MiniMax Coding Plan 与 Codex/ChatGPT 订阅额度。
@@ -22,7 +24,7 @@
 
 ### 输入框额度条（当前模型）
 
-![输入框底部状态行（OpenCode Go 路由）：轮次/步数、总 token 与缓存命中率，以及紧凑的「额度 5h 64% · 周 78% · 月 18%」额度胶囊](docs/screenshots/composer-plan-strip.png)
+![输入框底部状态行（OpenCode Go 路由）：轮次/步数、总 token 与缓存命中率，以及紧凑的「额度 5h 63.5% · 周 78.2% · 月 18.4%」额度胶囊](docs/screenshots/composer-plan-strip.png)
 
 当前模型命中套餐后，在 composer dock 状态条显示官方 5 小时 / 周 / 月额度的紧凑胶囊，环形标记最紧窗口；点开可看逐窗口进度条、重置时间与来源徽标（如「火山」）。无官方窗口时不渲染。
 
@@ -37,10 +39,12 @@
 按官方方式把本包加入 profile 的 bundle 层（会写入依赖并追加到 `dsh.profile.bundles`，从而应用包内 `cordis.patch.yml`）：
 
 ```bash
-dsh plugin --profile desktop add ./
-# 或从 npm / Git：
-# dsh plugin --profile desktop add dsh-usage-plus
+dsh plugin --profile desktop add github:qxcool/dsh-usage-plus
+# 或从本地 checkout：
+# dsh plugin --profile desktop add ./
 ```
+
+GitHub 形式安装的是本仓库已提交的 `lib/` 构建产物；npm 包可能落后于 GitHub 版本，需要最新版时优先用 GitHub 形式。
 
 包内已自带 patch（`id: usage-plus`，`name: dsh-usage-plus`）。若 profile 里仍有旧的 `@linxin666/dsh-usage` / `web-ui-usage`，请在 profile 的 `cordis.patch.yml` 中将其 `disabled: true`，避免 UI 重复。
 
