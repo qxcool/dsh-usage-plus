@@ -178,6 +178,18 @@ export const zh = {
   'usage.config.cpamcUrl.placeholder': 'http://127.0.0.1:8317',
   'usage.config.cpamcUrl.invalid': '须为本机回环地址，或在 cpamcAllowedHosts 白名单内的主机（仅 origin，无路径），例如 http://127.0.0.1:8317。请勿填写聊天 API 网关。',
   'usage.config.cpamcToken': 'CPAMC Management Token',
+  'usage.config.cpamcUrlHint': '只填 origin：本机 http://127.0.0.1:8317；远程 https://你的域名（不含 / 路径，也不要粘贴聊天 API 地址）。',
+  'usage.config.cpamcHostsHint': '仅远程 CPAMC 需要：域名逗号分隔，不含协议和端口，例如 api.example.com。',
+  'usage.config.cpamcTokenHint': 'CPAMC 服务端配置里的 management key（写入 DSH 凭据库，或设环境变量 CPAMC_MANAGEMENT_KEY）。',
+  'usage.config.cpamcUnreachable': '无法连接 CPAMC：检查服务是否启动、管理地址是否只填 origin；远程部署时把域名加入允许 host。',
+  'usage.config.cpamcUnauthorized': 'CPAMC 拒绝了请求：Management Token 不正确，或服务端未开启 management key。',
+  'usage.config.cpamcNoAccounts': 'CPAMC 已连通，但没有可读取配额的 codex / kimi / claude 账号。',
+  'usage.config.test': '测试连接',
+  'usage.config.testing': '测试中…',
+  'usage.config.testOk': '连接成功：{accounts} 个账号 · {ms} ms',
+  'usage.config.testOkPlain': '连接成功 · {ms} ms',
+  'usage.config.testFailed': '连接失败：{error}',
+  'usage.config.testNeedsRestart': '测试接口不可用：请重启 DSH 加载最新 Host 后重试。',
   'usage.config.cpamcAllowedHosts': 'CPAMC 允许的 host（逗号分隔）',
   'usage.config.volcano': '启用火山方舟独立额度源',
   'usage.config.volcanoAk': '火山 Access Key (AK)',
@@ -188,7 +200,7 @@ export const zh = {
   'usage.config.secret.replace': '输入新密钥以覆盖',
   'usage.config.secret.save': '保存',
   'usage.config.secret.clear': '清除',
-  'usage.config.externalHint': '密钥写入 DSH 凭据库（不明文落盘）。也可预先设置环境变量 CPAMC_MANAGEMENT_KEY、VOLC_ACCESSKEY、VOLC_SECRETKEY。CPAMC 仅允许本机 loopback 地址。',
+  'usage.config.externalHint': '密钥写入 DSH 凭据库（不明文落盘）。CPAMC 只读取其 /v0/management 管理接口；远程 CPAMC 需把域名加入允许 host。',
   'usage.config.readonly': '当前配置为只读，请在宿主配置文件中修改。',
   'usage.config.save': '保存',
   'usage.config.saving': '保存中…',
@@ -369,6 +381,18 @@ export const en: Record<UsageKey, string> = {
   'usage.config.cpamcUrl.placeholder': 'http://127.0.0.1:8317',
   'usage.config.cpamcUrl.invalid': 'Must be a loopback origin or a host listed in cpamcAllowedHosts (no path), e.g. http://127.0.0.1:8317. Do not paste a chat API gateway URL.',
   'usage.config.cpamcToken': 'CPAMC management token',
+  'usage.config.cpamcUrlHint': 'Origin only: http://127.0.0.1:8317 locally, or https://your-host remotely (no path; do not paste a chat API gateway URL).',
+  'usage.config.cpamcHostsHint': 'Remote CPAMC only: comma-separated hostnames without scheme or port, e.g. api.example.com.',
+  'usage.config.cpamcTokenHint': 'The management key from CPAMC server config (stored in the DSH vault, or set CPAMC_MANAGEMENT_KEY).',
+  'usage.config.cpamcUnreachable': 'Cannot reach CPAMC: check the service is running and the URL is an origin; for remote CPAMC add its hostname to the allowed hosts.',
+  'usage.config.cpamcUnauthorized': 'CPAMC rejected the request: the management token is wrong, or management key is disabled on the server.',
+  'usage.config.cpamcNoAccounts': 'CPAMC is reachable but has no codex / kimi / claude account with a readable quota endpoint.',
+  'usage.config.test': 'Test connection',
+  'usage.config.testing': 'Testing…',
+  'usage.config.testOk': 'Connected: {accounts} account(s) · {ms} ms',
+  'usage.config.testOkPlain': 'Connected · {ms} ms',
+  'usage.config.testFailed': 'Connection failed: {error}',
+  'usage.config.testNeedsRestart': 'Test endpoint unavailable: restart DSH to load the latest Host, then retry.',
   'usage.config.cpamcAllowedHosts': 'CPAMC allowed hosts (comma-separated)',
   'usage.config.volcano': 'Enable the Volcano Ark quota source',
   'usage.config.volcanoAk': 'Volcano Access Key (AK)',
@@ -379,7 +403,7 @@ export const en: Record<UsageKey, string> = {
   'usage.config.secret.replace': 'Enter a new secret to replace',
   'usage.config.secret.save': 'Save',
   'usage.config.secret.clear': 'Clear',
-  'usage.config.externalHint': 'Secrets are stored in the DSH credential vault (never written into config). You can also pre-set CPAMC_MANAGEMENT_KEY, VOLC_ACCESSKEY, and VOLC_SECRETKEY. CPAMC accepts loopback URLs only.',
+  'usage.config.externalHint': 'Secrets are stored in the DSH credential vault (never written into config). CPAMC is read through its /v0/management routes only; remote CPAMC needs its hostname in the allowed hosts.',
   'usage.config.readonly': 'Settings are read-only. Edit the host config file instead.',
   'usage.config.save': 'Save',
   'usage.config.saving': 'Saving…',
@@ -446,6 +470,9 @@ export function isCpamcLoopbackUrl(raw: string, allowedHosts?: string): boolean 
 export function friendlyProbeError(error: string | undefined): string | undefined {
   if (error === undefined || error === '') return undefined
   if (/loopback/i.test(error)) return t('usage.config.cpamcUrl.invalid')
+  if (/econnrefused|enotfound|eai_again|fetch failed|timed out|timeout|abort/i.test(error)) return t('usage.config.cpamcUnreachable')
+  if (/\b(401|403)\b/.test(error)) return t('usage.config.cpamcUnauthorized')
+  if (/no quota accounts/i.test(error)) return t('usage.config.cpamcNoAccounts')
   return error
 }
 

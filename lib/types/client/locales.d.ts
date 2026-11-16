@@ -176,6 +176,18 @@ export declare const zh: {
     'usage.config.cpamcUrl.placeholder': string;
     'usage.config.cpamcUrl.invalid': string;
     'usage.config.cpamcToken': string;
+    'usage.config.cpamcUrlHint': string;
+    'usage.config.cpamcHostsHint': string;
+    'usage.config.cpamcTokenHint': string;
+    'usage.config.cpamcUnreachable': string;
+    'usage.config.cpamcUnauthorized': string;
+    'usage.config.cpamcNoAccounts': string;
+    'usage.config.test': string;
+    'usage.config.testing': string;
+    'usage.config.testOk': string;
+    'usage.config.testOkPlain': string;
+    'usage.config.testFailed': string;
+    'usage.config.testNeedsRestart': string;
     'usage.config.cpamcAllowedHosts': string;
     'usage.config.volcano': string;
     'usage.config.volcanoAk': string;

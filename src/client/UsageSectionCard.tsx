@@ -65,6 +65,17 @@ export interface UsageConfigForm {
   ): Promise<boolean>
 }
 
+/** Result of the Settings "test connection" call (secret-free). */
+interface UsageSourceTestResult {
+  target: 'cpamc' | 'volcano'
+  ok: boolean
+  latencyMs: number
+  accounts?: number
+  windows?: Array<{ key: string; percent?: number; resetsAt?: string }>
+  error?: string
+  hint?: string
+}
+
 /** The registration-side face the bundle configuration page injects. */
 export interface UsageSectionFace {
   /** The section-local store (overview snapshot + lifecycle). */
@@ -1312,6 +1323,7 @@ function SettingsRow(props: {
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>()
+  const [sourceTest, setSourceTest] = useState<{ target: 'cpamc' | 'volcano'; busy: boolean; result?: UsageSourceTestResult; error?: string } | undefined>(undefined)
 
   useEffect(() => {
     if (dirty) return
@@ -1369,6 +1381,49 @@ function SettingsRow(props: {
   const volcano = providers.find((provider) => provider.source === 'volcano')
   const cpamcOn = draft.cpamcEnabled
   const volcanoOn = draft.volcanoEnabled
+
+  const testSource = (target: 'cpamc' | 'volcano'): void => {
+    if (sourceTest?.busy === true) return
+    setSourceTest({ target, busy: true })
+    void fetch('/api/dsh-usage-plus/test', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target }),
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => undefined) as UsageSourceTestResult | undefined
+        if (!response.ok) {
+          throw new Error(response.status === 401 || response.status === 404
+            ? t('usage.config.testNeedsRestart')
+            : payload?.error ?? `HTTP ${response.status}`)
+        }
+        if (payload === undefined) throw new Error('empty response')
+        return payload
+      })
+      .then((result) => { setSourceTest({ target, busy: false, result }) })
+      .catch((error: unknown) => {
+        setSourceTest({ target, busy: false, error: error instanceof Error ? error.message : String(error) })
+      })
+  }
+
+  const testWindowText = (window: { key: string; percent?: number }): string => {
+    const label = window.key === '5h'
+      ? t('usage.plan.windows.5h.short')
+      : t(`usage.plan.windows.${window.key}`)
+    return `${label} ${window.percent === undefined ? '—' : `${Math.round(window.percent)}%`}`
+  }
+  const testText = (result: UsageSourceTestResult | undefined): string => {
+    if (result === undefined || !result.ok) {
+      return t('usage.config.testFailed', { error: result?.error ?? 'unknown error' })
+    }
+    const head = result.accounts === undefined
+      ? t('usage.config.testOkPlain', { ms: result.latencyMs })
+      : t('usage.config.testOk', { accounts: result.accounts, ms: result.latencyMs })
+    const windows = result.windows === undefined || result.windows.length === 0
+      ? ''
+      : ` · ${result.windows.map(testWindowText).join(' · ')}`
+    return head + windows
+  }
   return (
     <div className={styles.card} data-dsh-part="settings-row">
       <span className={styles.cardTitle}>{t('usage.config.title')}</span>
@@ -1514,10 +1569,12 @@ function SettingsRow(props: {
               onChange={(event) => { edit('cpamcBaseURL', event.target.value) }}
             />
           </label>
+          <span className={styles.settingHint}>{t('usage.config.cpamcUrlHint')}</span>
           <label className={styles.settingRow}>
             <span>{t('usage.config.cpamcAllowedHosts')}</span>
             <input type="text" value={draft.cpamcAllowedHosts} disabled={disabled || saving || !cpamcOn} placeholder="cli.example.com" onChange={(event) => { edit('cpamcAllowedHosts', event.target.value) }} />
           </label>
+          <span className={styles.settingHint}>{t('usage.config.cpamcHostsHint')}</span>
           {cpamcOn && !isCpamcLoopbackUrl(draft.cpamcBaseURL, draft.cpamcAllowedHosts) && (
             <span className={styles.settingWarn}>{t('usage.config.cpamcUrl.invalid')}</span>
           )}
@@ -1528,6 +1585,25 @@ function SettingsRow(props: {
             onSave={(secret) => setCredential('cpamc', secret)}
             onClear={() => clearCredential('cpamc')}
           />
+          <span className={styles.settingHint}>{t('usage.config.cpamcTokenHint')}</span>
+          <div className={styles.sourceTest} data-dsh-part="cpamc-test">
+            <button
+              type="button"
+              className={styles.refreshBtn}
+              disabled={disabled || saving || sourceTest?.busy === true}
+              onClick={() => testSource('cpamc')}
+            >
+              {sourceTest?.busy === true && sourceTest.target === 'cpamc' ? t('usage.config.testing') : t('usage.config.test')}
+            </button>
+            {sourceTest?.target === 'cpamc' && sourceTest.busy === false && (
+              <span className={sourceTest.error !== undefined || sourceTest.result?.ok === false ? styles.sourceTestFail : styles.sourceTestOk}>
+                {testText(sourceTest.result ?? (sourceTest.error === undefined ? undefined : { target: 'cpamc', ok: false, latencyMs: 0, error: sourceTest.error }))}
+              </span>
+            )}
+          </div>
+          {sourceTest?.target === 'cpamc' && sourceTest.busy === false && sourceTest.result?.hint !== undefined && (
+            <span className={styles.settingHint} data-dsh-part="cpamc-test-hint">{sourceTest.result.hint}</span>
+          )}
           {cpamc !== undefined && (
             <span className={cpamc.error !== undefined ? styles.settingWarn : styles.settingHint}>
               {cpamc.displayName}

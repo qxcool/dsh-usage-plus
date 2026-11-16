@@ -80,6 +80,39 @@ in the profile patch to avoid duplicate UI.
 
 Optional credential names are `CPAMC_MANAGEMENT_KEY`, `VOLC_ACCESSKEY`, and `VOLC_SECRETKEY`. Enable the matching source under **Plugins → Installed plugins → dsh-usage-plus → Settings**, then **Save**. Leaving the page discards an unsaved draft (official `plugins.bundle.config` contract).
 
+## CPAMC setup
+
+CPAMC (CLI Proxy API management console) is an optional external source: it exposes account-level quota for the **codex / kimi / claude** auth files already pooled in CPAMC. The plugin reads only two management routes (`GET /v0/management/auth-files` and `POST /v0/management/api-call`) and never writes.
+
+1. **Run CPAMC** where the DSH host can reach it:
+   - local: `http://127.0.0.1:8317` (the CPAMC default port);
+   - remote: an HTTPS origin such as `https://api.example.com` (no path).
+2. **Enable its management API/key** in the CPAMC server config (the key the console sends as `x-management-key`).
+3. Fill **Settings → 外部额度源 → CPAMC**:
+   - **启用 CPAMC 独立额度源** — switch it on;
+   - **CPAMC 管理地址** — origin only (`http://127.0.0.1:8317` or `https://api.example.com`). A URL with a path (/v0, /v1) or a chat-completions gateway is rejected;
+   - **CPAMC 允许的 host** — remote only: comma-separated hostnames without scheme or port, e.g. `api.example.com`. Loopback never needs it;
+   - **CPAMC Management Token** — the management key. It is written to the DSH credential vault (or pre-set `CPAMC_MANAGEMENT_KEY`), never returned to the browser.
+4. **Save**, then press **测试连接**. The button calls the same read-only management routes and reports latency, the number of readable accounts and the first plan windows — or a concrete failure hint.
+5. Verify from a shell when needed:
+   ```bash
+   curl -fsS -H "x-management-key: $CPAMC_MANAGEMENT_KEY" \
+     http://127.0.0.1:8317/v0/management/auth-files
+   # remote:
+   curl -fsS -H "x-management-key: $CPAMC_MANAGEMENT_KEY" \
+     https://api.example.com/v0/management/auth-files
+   ```
+
+| Test result | Meaning / fix |
+|---|---|
+| `fetch failed (ECONNREFUSED)` | Nothing is listening on that origin. Start CPAMC locally, or set the management URL to the remote origin and add its hostname to 允许的 host. |
+| `CPAMC HTTP 401/403` | The management token is wrong or the server has management key disabled. |
+| `CPAMC redirect refused` | The origin redirects (often http→https or a reverse proxy). Use the final HTTPS origin directly. |
+| `URL must be a loopback origin …` | The management URL has a path, scheme typo, or a host not in 允许的 host. |
+| `no quota accounts returned` | CPAMC is reachable but has no codex / kimi / claude auth file with a readable quota endpoint. |
+
+Only account-level plan windows are read; CPAMC does not provide a balance and other provider accounts are ignored.
+
 ## Model Experience
 
 - Quota strip follows the **session** `modelSelection` projection (composer picker / `/model`). It does not fall through to another session’s or the global plan while this session already has a route.

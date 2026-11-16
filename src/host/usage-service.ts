@@ -146,6 +146,24 @@ export interface UsageOverviewPayload {
   etag: string
 }
 
+/** External sources the Settings page can test on demand. */
+export type ExternalTestTarget = 'cpamc' | 'volcano'
+
+/** Result of one external-source connection test (no secrets cross the wire). */
+export interface UsageExternalTestResult {
+  target: ExternalTestTarget
+  ok: boolean
+  latencyMs: number
+  /** Accounts readable through CPAMC (one row per codex/kimi/claude auth file). */
+  accounts?: number
+  /** First few plan windows found by the test, for a concrete success message. */
+  windows?: Array<{ key: string; percent?: number; resetsAt?: string }>
+  /** Transport or validation error, already free of secret values. */
+  error?: string
+  /** Actionable configuration hint derived from the failure. */
+  hint?: string
+}
+
 /** Currency symbols the bubble and section render inline; other codes render as `12.00 EUR`. */
 const CURRENCY_SYMBOLS: Readonly<Record<string, string>> = { CNY: '¥', USD: '$', EUR: '€', GBP: '£' }
 
@@ -627,6 +645,98 @@ export class UsageService {
   /** Force one poll now (manual refresh route); joins an in-flight cycle. */
   async refresh(): Promise<void> {
     await this.pollNow()
+  }
+
+  /**
+   * Probe one external source now and report a structured, secret-free result
+   * for the Settings "test connection" button. Never throws: transport errors
+   * and configuration mistakes both come back as `ok: false` plus a hint.
+   */
+  async testExternalSource(target: ExternalTestTarget): Promise<UsageExternalTestResult> {
+    const started = Date.now()
+    try {
+      if (target === 'cpamc') {
+        const rows = await probeCpamc({
+          enabled: this.options.cpamcEnabled,
+          baseURL: this.options.cpamcBaseURL,
+          managementKey: await this.resolveEnv(this.options.cpamcManagementKeyEnv),
+          allowedHosts: this.options.cpamcAllowedHosts,
+        })
+        const latencyMs = Date.now() - started
+        if (rows.length === 0) {
+          return { target, ok: false, latencyMs, error: 'CPAMC 未启用', hint: '先在下方勾选“启用 CPAMC 独立额度源”并保存，再测试。' }
+        }
+        const first = rows[0]
+        const error = first?.planError ?? first?.error
+        if (error !== undefined) {
+          return { target, ok: false, latencyMs, error, hint: this.cpamcTestHint(error) }
+        }
+        return { target, ok: true, latencyMs, accounts: rows.length, windows: first?.plan?.windows.slice(0, 3) ?? [] }
+      }
+      const rows = await probeVolcano({
+        enabled: this.options.volcanoEnabled,
+        accessKeyId: await this.resolveEnv(this.options.volcanoAccessKeyEnv),
+        secretAccessKey: await this.resolveEnv(this.options.volcanoSecretKeyEnv),
+      })
+      const latencyMs = Date.now() - started
+      if (rows.length === 0) {
+        return { target, ok: false, latencyMs, error: '火山方舟未启用或未配置 AK/SK', hint: '启用火山方舟额度源并保存 AK/SK 后再测试。' }
+      }
+      const first = rows[0]
+      const error = first?.planError ?? first?.error
+      if (error !== undefined) {
+        return { target, ok: false, latencyMs, error, hint: this.volcanoTestHint(error) }
+      }
+      return { target, ok: true, latencyMs, windows: first?.plan?.windows.slice(0, 3) ?? [] }
+    } catch (error) {
+      return {
+        target,
+        ok: false,
+        latencyMs: Date.now() - started,
+        error: error instanceof Error ? error.message : String(error),
+        hint: '检查外部额度源的地址、凭据与网络连通性。',
+      }
+    }
+  }
+
+  /** Actionable CPAMC hint for one probe failure message. */
+  private cpamcTestHint(error: string): string {
+    const text = error.toLowerCase()
+    if (text.includes('missing management token')) {
+      return '填写 CPAMC Management Token（CPAMC 配置里的 management key），或设置环境变量 CPAMC_MANAGEMENT_KEY。'
+    }
+    if (text.includes('url must be')) {
+      return '管理地址只填 origin（协议 + 主机 + 端口，不含 / 路径）；远程主机还必须加入“CPAMC 允许的 host”。'
+    }
+    if (text.includes('401') || text.includes('403')) {
+      return 'Management Token 不正确，或 CPAMC 没有开启 management key。'
+    }
+    if (text.includes('no quota accounts')) {
+      return 'CPAMC 已连通，但其中没有可读取配额接口的 codex / kimi / claude 账号（auth files）。'
+    }
+    if (text.includes('econnrefused') || text.includes('enotfound') || text.includes('eai_again')
+      || text.includes('timed out') || text.includes('fetch failed') || text.includes('cert')) {
+      const allowed = String(this.options.cpamcAllowedHosts ?? '')
+        .split(',')
+        .map((host) => host.trim())
+        .filter((host) => host !== '')
+      const loopback = /^https?:\/\/(localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?\/?$/i.test(this.options.cpamcBaseURL)
+      const suggestion = loopback && allowed.length > 0
+        ? `当前管理地址是回环地址但本机端口未监听；若 CPAMC 部署在 ${allowed[0]}，请把管理地址改为 https://${allowed[0]}。`
+        : ''
+      return `无法连接 CPAMC：检查服务是否启动、管理地址是否只填 origin。${suggestion}`
+    }
+    return '检查 CPAMC 管理地址、允许 host 与 management token。'
+  }
+
+  /** Actionable Volcano hint for one probe failure message. */
+  private volcanoTestHint(error: string): string {
+    const text = error.toLowerCase()
+    if (text.includes('401') || text.includes('403')) return 'AK/SK 不正确，或该密钥没有方舟控制面读取权限。'
+    if (text.includes('econnrefused') || text.includes('enotfound') || text.includes('timed out') || text.includes('fetch failed')) {
+      return '无法连接火山方舟 OpenAPI，检查本机网络与代理设置。'
+    }
+    return '检查 VOLC_ACCESSKEY / VOLC_SECRETKEY 是否完整、是否开通 Coding Plan。'
   }
 
   /**

@@ -26,6 +26,12 @@ export declare function makeUsageOverviewRoute(service: UsageService): WebRoute;
  */
 export declare function makeUsageExportRoute(service: UsageService): WebRoute;
 /**
+ * Loopback-fenced external-source connection test used by the Settings
+ * "test connection" button. Returns only probe facts and hints; no secret
+ * value ever crosses the wire.
+ */
+export declare function makeUsageTestRoute(service: UsageService): WebRoute;
+/**
  * Loopback-fenced manual refresh: forces one probe cycle now and answers
  * with the fresh overview.
  */

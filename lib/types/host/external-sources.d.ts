@@ -11,6 +11,12 @@ export interface VolcanoOptions {
     accessKeyId?: string;
     secretAccessKey?: string;
 }
+/**
+ * Human message for a failed `fetch`, including the underlying network code
+ * (ECONNREFUSED / ENOTFOUND / timeout / TLS). Node's bare "fetch failed" hides
+ * the cause, which is exactly what a CPAMC setup mistake needs to show.
+ */
+export declare function describeExternalFetchError(error: unknown): string;
 /** Query supported accounts through CPAMC's fixed, read-only management routes. */
 export declare function probeCpamc(options: CpamcOptions): Promise<ProviderSnapshotState[]>;
 /** Query Volcano Ark's official control-plane Plan endpoint using AK/SK HMAC. */

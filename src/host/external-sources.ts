@@ -23,6 +23,21 @@ export interface VolcanoOptions {
 
 const timeout = (): AbortSignal => AbortSignal.timeout(15_000)
 
+/**
+ * Human message for a failed `fetch`, including the underlying network code
+ * (ECONNREFUSED / ENOTFOUND / timeout / TLS). Node's bare "fetch failed" hides
+ * the cause, which is exactly what a CPAMC setup mistake needs to show.
+ */
+export function describeExternalFetchError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error)
+  if (error.name === 'TimeoutError' || error.name === 'AbortError') return 'request timed out'
+  const cause = (error as { cause?: unknown }).cause
+  const causeObject = typeof cause === 'object' && cause !== null ? cause as Record<string, unknown> : undefined
+  const code = typeof causeObject?.code === 'string' ? causeObject.code : undefined
+  const detail = code !== undefined ? ` (${code})` : ''
+  return `${error.message}${detail}`
+}
+
 function clamp(value: unknown): number | undefined {
   const number = Number(value)
   return Number.isFinite(number) ? Math.max(0, Math.min(100, number)) : undefined
@@ -159,7 +174,7 @@ export async function probeCpamc(options: CpamcOptions): Promise<ProviderSnapsho
     if (output.length === 0) return statusRow('no quota accounts returned by CPAMC')
     return output
   } catch (error) {
-    return statusRow(error instanceof Error ? error.message : String(error))
+    return statusRow(describeExternalFetchError(error))
   }
 }
 
@@ -276,7 +291,7 @@ export async function probeVolcano(options: VolcanoOptions): Promise<ProviderSna
       if (windows.length === 0) { lastError = 'unrecognized response shape'; continue }
       return [{ provider: 'volcano:ark-plan', displayName: '火山方舟 Coding Plan', credential: 'env', supported: true, planSupported: true, source: 'volcano', plan: { windows, updatedAt: Date.now() }, updatedAt: Date.now() }]
     } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error)
+      lastError = describeExternalFetchError(error)
     }
   }
   return [{ provider: 'volcano:ark-plan', displayName: '火山方舟 Coding Plan', credential: 'env', supported: true, planSupported: true, source: 'volcano', planError: lastError, updatedAt: Date.now() }]

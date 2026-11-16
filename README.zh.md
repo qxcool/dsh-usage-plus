@@ -81,13 +81,38 @@ CPAMC 与火山方舟仍作为独立外部数据源在设置页配置。仅 OAut
 
 ## 外部数据源
 
-普通模型 Provider 不需要重复配置密钥。CPAMC 与火山方舟需要在 DSH 凭据库或宿主环境变量中保存：
+普通模型 Provider 不需要重复配置密钥。CPAMC 与火山方舟是可选独立数据源，凭据可写入 DSH 凭据库或宿主环境变量（`CPAMC_MANAGEMENT_KEY`、`VOLC_ACCESSKEY`、`VOLC_SECRETKEY`）。
 
-- `CPAMC_MANAGEMENT_KEY`
-- `VOLC_ACCESSKEY`
-- `VOLC_SECRETKEY`
+### CPAMC 配置
 
-然后在「插件 → 已安装插件 → dsh-usage-plus → 设置」中启用相应独立数据源并点击**保存**。离开页面会丢弃未保存草稿（官方 `plugins.bundle.config` 约定）。CPAMC 默认地址为 `http://127.0.0.1:8317`。
+CPAMC（CLI Proxy API 管理端）用于读取 CPAMC 中已汇集的 **codex / kimi / claude** 账号额度。插件只读两个管理接口（`GET /v0/management/auth-files`、`POST /v0/management/api-call`），不会写入。
+
+1. 在 DSH 宿主可访问的位置运行 CPAMC：本机为 `http://127.0.0.1:8317`；远程为 HTTPS origin，例如 `https://api.example.com`（不能带路径）。
+2. 在 CPAMC 服务端开启 management key（控制台请求头 `x-management-key` 用的那个 key）。
+3. 在「插件 → 已安装插件 → dsh-usage-plus → 设置 → 外部额度源」填写：
+   - **启用 CPAMC 独立额度源**：打开；
+   - **CPAMC 管理地址**：只填 origin（`http://127.0.0.1:8317` 或 `https://api.example.com`）；带 `/v0`、`/v1` 路径或聊天 API 网关地址会被拒绝；
+   - **CPAMC 允许的 host**：仅远程需要，逗号分隔域名、不含协议和端口，例如 `api.example.com`；
+   - **CPAMC Management Token**：management key，写入 DSH 凭据库（或预先设置 `CPAMC_MANAGEMENT_KEY`），不会回传浏览器。
+4. 点击**保存**，再点新增的**测试连接**按钮：它会调用同样的只读管理接口，返回延迟、可读账号数与前几个额度窗口，失败时给出具体修复提示。
+5. 也可用命令行验证：
+   ```bash
+   curl -fsS -H "x-management-key: $CPAMC_MANAGEMENT_KEY" \
+     http://127.0.0.1:8317/v0/management/auth-files
+   # 远程：
+   curl -fsS -H "x-management-key: $CPAMC_MANAGEMENT_KEY" \
+     https://api.example.com/v0/management/auth-files
+   ```
+
+| 测试结果 | 含义 / 处理 |
+|---|---|
+| `fetch failed (ECONNREFUSED)` | 该 origin 没有服务监听。启动本机 CPAMC，或把管理地址改成远程 origin 并把域名加入允许 host。 |
+| `CPAMC HTTP 401/403` | Management Token 错误，或 CPAMC 服务端未开启 management key。 |
+| `CPAMC redirect refused` | origin 发生重定向（常见 http→https 或反代）。直接填写最终 HTTPS origin。 |
+| `URL must be a loopback origin …` | 管理地址含路径 / 协议拼写错误 / 主机不在允许 host 列表。 |
+| `no quota accounts returned` | CPAMC 连通，但没有带可读额度接口的 codex / kimi / claude 账号。 |
+
+只读取账号级套餐窗口；CPAMC 不提供余额，其它类型账号会被忽略。
 
 ## 模型体验（Model Experience）
 

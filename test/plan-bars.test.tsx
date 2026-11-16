@@ -552,6 +552,81 @@ describe('alert settings and data health', () => {
     expect(paths).not.toContain('alertCooldownMinutes')
   })
 
+  it('tests the CPAMC connection through the loopback test route', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        target: 'cpamc',
+        ok: true,
+        latencyMs: 23,
+        accounts: 2,
+        windows: [{ key: 'week', percent: 78 }],
+      }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const settingsValue = {
+      enabled: true,
+      pollIntervalSec: 60,
+      bubbleMode: 'always',
+      alertsEnabled: true,
+      dailyCostLimitCny: 0,
+      planAlertPercent: 0,
+      balanceAlertCny: 0,
+      alertCooldownMinutes: 60,
+      cpamcEnabled: true,
+      cpamcBaseURL: 'http://127.0.0.1:8317',
+      cpamcAllowedHosts: '',
+      volcanoEnabled: false,
+    }
+    const { host, root: mounted } = mount(overview(), { settingsValue })
+    root = mounted
+    await flush()
+    pressTab(host, '设置')
+
+    const button = host.querySelector<HTMLButtonElement>('[data-dsh-part="cpamc-test"] button')
+    expect(button?.textContent).toBe('测试连接')
+    await act(async () => {
+      button?.click()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('/api/dsh-usage-plus/test')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(String(init.body))).toEqual({ target: 'cpamc' })
+    expect(host.textContent).toContain('连接成功：2 个账号')
+    expect(host.textContent).toContain('78%')
+  })
+
+  it('shows the CPAMC hint when the test fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        target: 'cpamc',
+        ok: false,
+        latencyMs: 4,
+        error: 'fetch failed (ECONNREFUSED)',
+        hint: '若 CPAMC 部署在 api.example.com，请把管理地址改为 https://api.example.com。',
+      }),
+    })))
+    const { host, root: mounted } = mount(overview(), { settingsValue: { cpamcEnabled: true, cpamcBaseURL: 'http://127.0.0.1:8317' } })
+    root = mounted
+    await flush()
+    pressTab(host, '设置')
+
+    const button = host.querySelector<HTMLButtonElement>('[data-dsh-part="cpamc-test"] button')
+    await act(async () => {
+      button?.click()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+
+    expect(host.textContent).toContain('连接失败：fetch failed (ECONNREFUSED)')
+    expect(host.querySelector('[data-dsh-part="cpamc-test-hint"]')?.textContent).toContain('api.example.com')
+  })
+
   it('renders coverage, ledger size, backfill, probes and corrupt files in the health card', async () => {
     const snapshot = overview()
     snapshot.health = healthy()

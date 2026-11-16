@@ -557,6 +557,24 @@
   color: var(--u-bad);
 }
 
+/* External-source test: a quiet inline action with its result beside it. */
+.sourceTest {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sourceTestOk {
+  font-size: 11.5px;
+  color: var(--u-good);
+}
+
+.sourceTestFail {
+  font-size: 11.5px;
+  color: var(--u-bad);
+}
+
 /* Data health: dense reference rows inside the shared card chassis. */
 .healthCard {
   gap: 12px;

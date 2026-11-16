@@ -48,6 +48,26 @@ export interface UsageOverviewPayload {
     document: UsageOverviewView;
     etag: string;
 }
+/** External sources the Settings page can test on demand. */
+export type ExternalTestTarget = 'cpamc' | 'volcano';
+/** Result of one external-source connection test (no secrets cross the wire). */
+export interface UsageExternalTestResult {
+    target: ExternalTestTarget;
+    ok: boolean;
+    latencyMs: number;
+    /** Accounts readable through CPAMC (one row per codex/kimi/claude auth file). */
+    accounts?: number;
+    /** First few plan windows found by the test, for a concrete success message. */
+    windows?: Array<{
+        key: string;
+        percent?: number;
+        resetsAt?: string;
+    }>;
+    /** Transport or validation error, already free of secret values. */
+    error?: string;
+    /** Actionable configuration hint derived from the failure. */
+    hint?: string;
+}
 /** Format a balance for display: symbol prefix when known, code suffix otherwise. */
 export declare function formatMoney(currency: string, totalBalance: string): string;
 /**
@@ -232,6 +252,16 @@ export declare class UsageService {
     applyOptions(options: UsageServiceOptions): void;
     /** Force one poll now (manual refresh route); joins an in-flight cycle. */
     refresh(): Promise<void>;
+    /**
+     * Probe one external source now and report a structured, secret-free result
+     * for the Settings "test connection" button. Never throws: transport errors
+     * and configuration mistakes both come back as `ok: false` plus a hint.
+     */
+    testExternalSource(target: ExternalTestTarget): Promise<UsageExternalTestResult>;
+    /** Actionable CPAMC hint for one probe failure message. */
+    private cpamcTestHint;
+    /** Actionable Volcano hint for one probe failure message. */
+    private volcanoTestHint;
     /**
      * Assemble the overview document the browser section renders.
      * @param days - trend window (one of `ALLOWED_RANGE_DAYS`); default 30.

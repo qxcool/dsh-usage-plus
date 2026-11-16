@@ -125,6 +125,36 @@ export function makeUsageExportRoute(service: UsageService): WebRoute {
 }
 
 /**
+ * Loopback-fenced external-source connection test used by the Settings
+ * "test connection" button. Returns only probe facts and hints; no secret
+ * value ever crosses the wire.
+ */
+export function makeUsageTestRoute(service: UsageService): WebRoute {
+  return {
+    kind: 'exact',
+    path: USAGE_API_PREFIX + '/test',
+    handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+      if (!isLoopbackRequest(req)) {
+        writeJson(res, 403, { ok: false, error: 'forbidden: loopback-only' })
+        return
+      }
+      if (req.method !== 'POST') {
+        writeJson(res, 405, { ok: false, error: 'method not allowed' })
+        return
+      }
+      const body = asJsonObject(await readJsonBody(req, { objectOnly: true, maxBytes: 4 * 1024 }))
+      const target = body?.target === 'cpamc' || body?.target === 'volcano' ? body.target : undefined
+      if (body === undefined || target === undefined) {
+        writeJson(res, 400, { ok: false, error: 'invalid target' })
+        return
+      }
+      const result = await service.testExternalSource(target)
+      writeJson(res, 200, result, { 'cache-control': 'no-store' })
+    },
+  }
+}
+
+/**
  * Loopback-fenced manual refresh: forces one probe cycle now and answers
  * with the fresh overview.
  */
