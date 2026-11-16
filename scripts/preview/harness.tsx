@@ -65,6 +65,8 @@ const costEstimate = usdParam === 'unpriced' || usdParam === 'none' ? usdParam :
 const customPlansParam = params.get('customPlans')
 const customPlans = customPlansParam === 'none' || customPlansParam === 'errors' ? customPlansParam : (variant === 'rich' ? 'ready' : undefined)
 const autoSelectDay = params.get('day') === 'auto'
+/** Open the settings display select so its themed listbox can be reviewed. */
+const openSelect = params.get('select') === 'open'
 /** `updatedAt` is wall-clock (freshness dot); everything else hangs off FIXED_NOW. */
 const updatedAgoMs = params.get('updated') === 'stale' ? 10 * 60_000 : 8_000
 const openOnLoad = params.get('open') === '1'
@@ -254,13 +256,20 @@ function selectTab(name: string): void {
 function SectionPreview() {
   useEffect(() => {
     selectTab(tab)
-    if (!autoSelectDay) {
+    if (!autoSelectDay && !openSelect) {
       document.documentElement.dataset.previewReady = '1'
       return
     }
     // Click the busiest retained cell once the heatmap paints, then let the
     // drill-down fetch settle before the screenshot is taken.
     window.setTimeout(() => {
+      if (openSelect) {
+        document.querySelector<HTMLButtonElement>('[data-dsh-part="setting-select"] [role="combobox"]')?.click()
+        window.setTimeout(() => {
+          document.documentElement.dataset.previewReady = '1'
+        }, 250)
+        return
+      }
       const cells = [...document.querySelectorAll<HTMLButtonElement>('[data-dsh-part="heatmap-cell"]:not([data-future])')]
       const busiest = cells.reduce<HTMLButtonElement | null>((best, cell) =>
         best === null || Number(cell.dataset.level) > Number(best.dataset.level) ? cell : best, null)

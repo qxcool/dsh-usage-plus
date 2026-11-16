@@ -725,6 +725,64 @@ describe('alert settings and data health', () => {
     expect(byPath.get('alertCooldownMinutes')).toBe(30)
   })
 
+  it('uses a themed listbox for the display select instead of the native menu', async () => {
+    const calls: Array<ReadonlyArray<{ op: string; path: readonly string[]; value?: unknown }>> = []
+    const { host, root: mounted } = mount(overview(), {
+      settingsValue: {
+        enabled: true,
+        pollIntervalSec: 60,
+        bubbleMode: 'always',
+        alertsEnabled: true,
+        dailyCostLimitCny: 0,
+        planAlertPercent: 0,
+        balanceAlertCny: 0,
+        alertCooldownMinutes: 60,
+        cpamcEnabled: false,
+        cpamcBaseURL: 'http://127.0.0.1:8317',
+        cpamcAllowedHosts: '',
+        volcanoEnabled: false,
+        platformUsageEnabled: true,
+        costEstimateEnabled: true,
+        customPlans: '',
+      },
+      onMutate: (ops) => calls.push(ops),
+    })
+    root = mounted
+    await flush()
+    pressTab(host, '设置')
+
+    // The native popup renders as a light OS menu on some platforms, so the
+    // settings form must not use <select> at all.
+    expect(host.querySelector('[data-dsh-part="settings-row"] select')).toBeNull()
+    const trigger = host.querySelector<HTMLButtonElement>('[data-dsh-part="setting-select"] [role="combobox"]')
+    expect(trigger?.getAttribute('aria-haspopup')).toBe('listbox')
+    expect(trigger?.getAttribute('aria-expanded')).toBe('false')
+    expect(trigger?.textContent).toContain('常驻显示')
+
+    act(() => trigger?.click())
+    await flush()
+    expect(trigger?.getAttribute('aria-expanded')).toBe('true')
+    const options = [...host.querySelectorAll<HTMLElement>('[role="option"]')]
+    expect(options.map((option) => option.textContent?.replace('✓', ''))).toEqual(['常驻显示', '仅变化时', '关闭'])
+    expect(options[0]?.getAttribute('aria-selected')).toBe('true')
+
+    const off = options.find((option) => option.textContent?.includes('关闭'))
+    act(() => off?.click())
+    await flush()
+    expect(host.querySelector('[role="listbox"]')).toBeNull()
+    expect(trigger?.textContent).toContain('关闭')
+
+    const save = [...host.querySelectorAll<HTMLButtonElement>('[data-dsh-part="settings-row"] button')]
+      .filter((button) => button.textContent === '保存' && !button.disabled)
+      .pop()
+    await act(async () => {
+      save?.click()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    const byPath = new Map((calls[0] ?? []).map((op) => [op.path.join('.'), op.value]))
+    expect(byPath.get('bubbleMode')).toBe('off')
+  })
+
   it('saves only legacy fields and explains the version skew on an older Host', async () => {
     const calls: Array<ReadonlyArray<{ op: string; path: readonly string[]; value?: unknown }>> = []
     const snapshot = overview()

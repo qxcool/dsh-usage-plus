@@ -11,7 +11,7 @@
  * @module dsh-usage-plus/client/UsageSectionCard
  */
 
-import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
+import { memo, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import type { UsageStoreInstance } from './usage-store.ts'
 import { formatPlanReset, friendlyCustomPlanError, friendlyProbeError, isCpamcLoopbackUrl, t } from './locales.ts'
 import { PlanUsageStrip } from './PlanUsageStrip.tsx'
@@ -1835,21 +1835,22 @@ function SettingsRow(props: {
 
         <div className={styles.settingsSection}>
           <span className={styles.subTitle}>{t('usage.config.display')}</span>
-          <label className={styles.settingRow}>
+          <div className={styles.settingRow}>
             <span>{t('usage.config.bubbleMode')}</span>
-            <select
+            <SelectMenu
+              label={t('usage.config.bubbleMode')}
               value={draft.bubbleMode}
               disabled={disabled || saving}
-              onChange={(event) => {
-                const next = event.target.value
+              options={[
+                { value: 'always', label: t('usage.config.bubbleMode.always') },
+                { value: 'change', label: t('usage.config.bubbleMode.change') },
+                { value: 'off', label: t('usage.config.bubbleMode.off') },
+              ]}
+              onChange={(next) => {
                 if (next === 'always' || next === 'change' || next === 'off') edit('bubbleMode', next)
               }}
-            >
-              <option value="always">{t('usage.config.bubbleMode.always')}</option>
-              <option value="change">{t('usage.config.bubbleMode.change')}</option>
-              <option value="off">{t('usage.config.bubbleMode.off')}</option>
-            </select>
-          </label>
+            />
+          </div>
         </div>
 
         <div className={styles.settingsSection} data-dsh-part="alert-settings" data-host-compat={alertsSupported ? 'current' : 'old'}>
@@ -2137,8 +2138,134 @@ function SettingsRow(props: {
   )
 }
 
-function SecretField(props: {
+/**
+ * A small select with a plugin-owned popup instead of the native `<select>`
+ * menu. The native menu ignores our surface tokens on some platforms (it opens
+ * as a light OS popup inside the dark card), so the settings form renders its
+ * own listbox that inherits the DSH menu surface in either theme.
+ */
+function SelectMenu(props: {
   label: string
+  value: string
+  options: ReadonlyArray<{ value: string; label: string }>
+  disabled?: boolean
+  onChange: (value: string) => void
+}): ReactNode {
+  const { label, value, options, disabled = false, onChange } = props
+  const menuId = useId()
+  const rootRef = useRef<HTMLSpanElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const [open, setOpen] = useState(false)
+  const [active, setActive] = useState(() => Math.max(0, options.findIndex((option) => option.value === value)))
+  const selected = options.find((option) => option.value === value)
+
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (event: PointerEvent): void => {
+      if (event.target instanceof Node && rootRef.current?.contains(event.target) === true) return
+      setOpen(false)
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        setOpen(false)
+        triggerRef.current?.focus({ preventScroll: true })
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
+  const openMenu = (): void => {
+    if (disabled) return
+    setActive(Math.max(0, options.findIndex((option) => option.value === value)))
+    setOpen(true)
+  }
+  const choose = (next: string): void => {
+    onChange(next)
+    setOpen(false)
+    triggerRef.current?.focus({ preventScroll: true })
+  }
+  const onTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>): void => {
+    if (disabled) return
+    if (!open) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        openMenu()
+      }
+      return
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      const step = event.key === 'ArrowDown' ? 1 : -1
+      setActive((current) => (current + step + options.length) % options.length)
+      return
+    }
+    if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault()
+      setActive(event.key === 'Home' ? 0 : options.length - 1)
+      return
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      const option = options[active]
+      if (option !== undefined) choose(option.value)
+      return
+    }
+    if (event.key === 'Tab') setOpen(false)
+  }
+
+  return (
+    <span ref={rootRef} className={styles.selectWrap} data-dsh-part="setting-select">
+      <button
+        ref={triggerRef}
+        type="button"
+        className={styles.selectTrigger}
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        aria-label={label}
+        disabled={disabled}
+        onClick={() => { if (open) setOpen(false); else openMenu() }}
+        onKeyDown={onTriggerKeyDown}
+      >
+        <span className={styles.selectValue}>{selected?.label ?? value}</span>
+        <svg className={styles.selectChevron} width="10" height="6" viewBox="0 0 10 6" aria-hidden="true">
+          <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {open && (
+        <div className={styles.selectMenu} role="listbox" id={menuId} aria-label={label}>
+          {options.map((option, index) => (
+            <button
+              key={option.value}
+              type="button"
+              role="option"
+              id={`${menuId}-${index}`}
+              aria-selected={option.value === value}
+              className={`${styles.selectOption} ${index === active ? styles.selectOptionActive : ''}`}
+              onPointerEnter={() => setActive(index)}
+              onClick={() => choose(option.value)}
+            >
+              <span>{option.label}</span>
+              {option.value === value && (
+                <svg className={styles.selectCheck} width="11" height="9" viewBox="0 0 11 9" aria-hidden="true">
+                  <path d="M1 4.5l3 3L10 1" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </span>
+  )
+}
+
+function SecretField(props: {  label: string
   configured: boolean
   disabled: boolean
   onSave: (value: string) => Promise<void>
