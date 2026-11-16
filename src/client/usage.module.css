@@ -184,41 +184,39 @@
 }
 
 .scopeNote {
-  font-size: 11.5px;
+  margin-top: -8px;
+  font-size: 11px;
   line-height: 1.5;
   color: var(--u-text-3);
-  max-width: 54ch;
+  max-width: 72ch;
 }
 
-/* Overview window picker: a quiet segmented control above the cockpit, with
-   the Host's real covered range on the right when retention is shorter. */
+/* Overview window picker: quiet text buttons in the toolbar, with the Host's
+   real covered range after them when retention is shorter. */
 .rangeBar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   flex-wrap: wrap;
-  gap: 8px 16px;
+  gap: 4px 10px;
+  margin-left: auto;
 }
 
 .rangeSeg {
   display: inline-flex;
   gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--u-line);
-  border-radius: 8px;
-  background: var(--u-surface-2);
 }
 
 .rangeBtn {
   appearance: none;
-  height: 26px;
-  padding: 0 10px;
+  height: 24px;
+  padding: 0 8px;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--u-text-3);
   font: inherit;
-  font-size: 11.5px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
   white-space: nowrap;
@@ -235,37 +233,46 @@
 }
 
 .rangeBtnActive {
-  background: var(--u-surface-3);
+  background: var(--u-surface-2);
   color: inherit;
-  box-shadow: inset 0 0 0 1px var(--u-line-2);
+  box-shadow: inset 0 0 0 1px var(--u-line);
 }
 
 .rangeCovered {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--u-text-3);
   font-variant-numeric: tabular-nums;
 }
 
-/* Threshold alerts: a quiet inline stack, amber for warning, red for critical.
-   Nothing renders when the Host reports no active alert. */
+/* Threshold alerts: one quiet summary line with the most severe alert; the
+   full list expands in place. Severity is a 6px dot and the text tone, not a
+   tinted surface, so alerts never compete with the instruments below. */
 .alertStack {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.alertItem {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  min-width: 0;
-  padding: 8px 12px;
-  border: 1px solid color-mix(in srgb, var(--alert-tone) 34%, transparent);
+  border: 1px solid var(--u-line);
   border-radius: 10px;
-  background: color-mix(in srgb, var(--alert-tone) 10%, transparent);
+  background: var(--u-surface-1);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.alertSummary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.alertSummary::-webkit-details-marker {
+  display: none;
+}
+
+.alertSummary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--u-accent) 55%, transparent);
+  border-radius: 10px;
 }
 
 .alertWarning {
@@ -276,24 +283,64 @@
   --alert-tone: var(--u-bad);
 }
 
-.alertGlyph {
+.alertDot {
   flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--alert-tone) 20%, transparent);
-  color: var(--alert-tone);
+  background: var(--alert-tone);
+}
+
+.alertDotRow {
+  width: 5px;
+  height: 5px;
+  margin-top: 6px;
+}
+
+.alertSummaryText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--u-text-2);
+}
+
+.alertSummaryCount {
+  margin-left: auto;
+  flex: none;
   font-size: 11px;
-  font-weight: 600;
-  line-height: 1;
+  color: var(--u-text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.alertChevron {
+  flex: none;
+  color: var(--u-text-3);
+  transition: transform 140ms var(--u-ease);
+}
+
+.alertStack[open] .alertChevron {
+  transform: rotate(180deg);
+}
+
+.alertList {
+  border-top: 1px solid var(--u-line);
+  padding: 2px 0;
+}
+
+.alertItem {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 12px;
+  font-size: 11.5px;
 }
 
 .alertText {
   min-width: 0;
   overflow-wrap: anywhere;
+  color: var(--u-text-2);
 }
 
 .alertChips {
@@ -618,13 +665,11 @@
 }
 
 .deltaValue {
+  font-family: var(--u-mono);
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   font-weight: 500;
   color: var(--u-text-2);
-  background: var(--u-surface-2);
-  border: 1px solid var(--u-line);
-  border-radius: 6px;
-  padding: 1px 6px;
 }
 
 .deltaLabel {
@@ -833,9 +878,9 @@
 }
 
 .heatmapCell[data-level='0'] { background: color-mix(in srgb, currentColor 7%, transparent); }
-.heatmapCell[data-level='1'] { background: color-mix(in srgb, var(--u-accent) 26%, transparent); }
-.heatmapCell[data-level='2'] { background: color-mix(in srgb, var(--u-accent) 46%, transparent); }
-.heatmapCell[data-level='3'] { background: color-mix(in srgb, var(--u-accent) 68%, transparent); }
+.heatmapCell[data-level='1'] { background: color-mix(in srgb, var(--u-accent) 32%, transparent); }
+.heatmapCell[data-level='2'] { background: color-mix(in srgb, var(--u-accent) 52%, transparent); }
+.heatmapCell[data-level='3'] { background: color-mix(in srgb, var(--u-accent) 72%, transparent); }
 .heatmapCell[data-level='4'] { background: var(--u-accent); }
 
 /* A ring outside the cell: today is usually a hot cell, an inset ring would
@@ -1147,6 +1192,7 @@
   color: var(--u-text-3);
   min-width: 30px;
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .providerTrack {
@@ -1162,7 +1208,7 @@
   height: 100%;
   border-radius: 2px;
   background: color-mix(in srgb, currentColor 34%, transparent);
-  transition: width 300ms var(--u-ease);
+  transition: background-color 160ms ease;
 }
 
 .providerBlock[data-accent='yes'] .providerFill {
@@ -1209,6 +1255,7 @@
   color: var(--u-text-3);
   min-width: 28px;
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---- balances --------------------------------------------------- */
@@ -1312,9 +1359,9 @@
 
 .segCache { background: var(--u-accent); }
 .segInput { background: color-mix(in srgb, var(--u-accent) 55%, transparent); }
-.segWrite { background: color-mix(in srgb, currentColor 28%, transparent); }
-.segOutput { background: color-mix(in srgb, currentColor 60%, transparent); }
-.segReasoning { background: var(--u-warn); }
+.segWrite { background: color-mix(in srgb, var(--u-accent) 32%, transparent); }
+.segOutput { background: color-mix(in srgb, currentColor 52%, transparent); }
+.segReasoning { background: color-mix(in srgb, currentColor 30%, transparent); }
 
 .legend {
   display: flex;
@@ -1400,6 +1447,7 @@
   font-size: 12px;
   font-weight: 500;
   color: var(--u-text-2);
+  font-variant-numeric: tabular-nums;
 }
 
 .chartBar {
@@ -1415,7 +1463,7 @@
   height: 100%;
   border-radius: 3px;
   background: color-mix(in srgb, currentColor 34%, transparent);
-  transition: width 300ms var(--u-ease);
+  transition: background-color 160ms ease;
 }
 
 .chartRow[data-accent='yes'] .chartFill {
@@ -1452,18 +1500,20 @@
   height: 100%;
   border-radius: 2px;
   background: color-mix(in srgb, currentColor 26%, transparent);
-  transition: width 300ms var(--u-ease);
+  transition: background-color 160ms ease;
 }
 
 .chartModelValue {
   min-width: 34px;
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .chartModelTokens {
   min-width: 46px;
   text-align: right;
   color: var(--u-text-2);
+  font-variant-numeric: tabular-nums;
 }
 
 .trendAxis {
@@ -1528,6 +1578,7 @@
 .historyCalls {
   text-align: right;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1620,7 +1671,7 @@
   height: 100%;
   border-radius: 3px;
   background: var(--u-accent);
-  transition: width 300ms var(--u-ease);
+  transition: background-color 160ms ease;
 }
 
 .barWarn { background: var(--u-warn); }
@@ -2281,6 +2332,15 @@
 
   .heatmapMonths {
     font-size: 9px;
+  }
+}
+
+/* Very narrow windows (a 390px phone): the 26-week grid must fit the card
+   instead of overflowing it, so shrink the cells rather than scroll. */
+@media (max-width: 420px) {
+  .section {
+    --hm-cell: 8px;
+    --hm-gap: 1px;
   }
 }
 

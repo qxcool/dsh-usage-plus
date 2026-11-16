@@ -52,7 +52,7 @@ When the active model matches an official plan source, the composer dock shows a
 
 ### Plugins → Installed plugins → dsh-usage-plus · Overview
 
-![Usage overview (device-wide): a three-row threshold alert banner (daily cost, plan window, low balance) above a today hero figure with vs-yesterday comparator, 30-day / all-time / calls / average-cost stats, cache-hit ring, the 26-week Mon–Sun heatmap with weekday gutter, column-anchored month labels and active-day / peak facts, account-level quota rings, the provider trend over a selectable 7/30/90/182-day window, today's provider breakdown with token mix, and a collapsible per-day history](docs/screenshots/settings-overview.png)
+![Usage overview (device-wide): a single-line threshold alert summary (daily spend, expandable for the rest) above a today hero figure with vs-yesterday comparator, 30-day / all-time / calls / average-cost stats, cache-hit ring, the 26-week Mon–Sun heatmap with weekday gutter, column-anchored month labels and active-day / peak facts, account-level quota rings, the provider trend over a selectable 7/30/90/182-day window, today's provider breakdown with token mix, and a collapsible per-day history](docs/screenshots/settings-overview.png)
 
 The overview reads as one instrument panel: a hero figure for today, the 26-week heatmap as the main chart, account-level quota rings, and a provider ranking over a selectable 7 / 30 / 90 / 182-day window. Every figure is labelled with its scope (`全设备` / `账号级`); the balance line only lists real balances. Plan quotas, external sources and the aggregate CSV / JSON export live on the other tabs of the same plugin page.
 
@@ -99,8 +99,9 @@ Optional credential names are `CPAMC_MANAGEMENT_KEY`, `VOLC_ACCESSKEY`, and `VOL
 ## Performance
 
 - **One shared poll loop.** The Plugins page and every composer strip share one in-flight overview read; burst triggers collapse into a trailing request, a manual refresh queues behind a read, and a hidden document pauses polling.
-- **Cached host overview.** The host rebuilds the overview at most once per data revision. Warm reads answer `304 Not Modified` from a cached ETag without re-aggregating the retained ledger (measured warm overhead ≈0.02 ms vs ≈5 ms before on a 182-day / 2-provider × 3-model ledger; cold assembly is unchanged).
+- **Cached host overview.** The host rebuilds the overview at most once per data revision; health filesystem facts ride a 2s TTL. Warm reads answer `304 Not Modified` from a cached ETag without re-aggregating the retained ledger.
 - **One-pass aggregation.** The 26-week heatmap is built from one precomputed per-day table, and the all-time window skips the per-model rows the page never renders.
+- **Quiet, cheap UI updates.** Bars change without animating layout (width transitions removed), the alert stack collapses to one summary line, and repeated per-card scope chips are replaced by one scope line, so a 10s poll repaints less chrome.
 
 ## Development
 

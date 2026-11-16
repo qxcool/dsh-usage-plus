@@ -148,6 +148,7 @@ export declare const zh: {
     'usage.alerts.plan': string;
     'usage.alerts.balance': string;
     'usage.alerts.stripDot': string;
+    'usage.alerts.more': string;
     'usage.health.title': string;
     'usage.health.missing': string;
     'usage.health.coverageLabel': string;

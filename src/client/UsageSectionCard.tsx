@@ -575,7 +575,6 @@ const HeatmapCard = memo(function HeatmapCard(props: { days: UsageDaySummary[] }
       <div className={styles.cardHead}>
         <div className={styles.cardHeadGroup}>
           <span className={styles.cardTitle}>{t('usage.heatmap')}</span>
-          <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
         </div>
         <span className={styles.cardMeta}>{t('usage.heatmap.weeks')}</span>
       </div>
@@ -753,7 +752,6 @@ const RangeCard = memo(function RangeCard(props: {
       <div className={styles.cardHead}>
         <div className={styles.cardHeadGroup}>
           <span className={styles.cardTitle}>{t('usage.range.window', { n: props.rangeDays })}</span>
-          <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
         </div>
         {grandTotal > 0 && (
           <span className={styles.cardMeta}>
@@ -831,7 +829,6 @@ const HistoryCard = memo(function HistoryCard(props: { days: UsageDaySummary[] }
       <div className={styles.cardHead}>
         <div className={styles.cardHeadGroup}>
           <span className={styles.cardTitle}>{t('usage.history')}</span>
-          <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
         </div>
         <button type="button" className={styles.linkBtn} aria-expanded={open} onClick={() => setOpen((value) => !value)}>
           {open ? t('usage.history.hide') : t('usage.history.show')}
@@ -1014,33 +1011,50 @@ function alertText(alert: UsageAlert, nameOf: ReadonlyMap<string, string>): stri
 }
 
 /**
- * Compact stack of the Host's active threshold alerts. Renders nothing when
- * there is no alert, so the Overview never reserves dead space.
+ * Quiet threshold-alert strip: one summary line with the most severe alert,
+ * expandable to the full list. Renders nothing when there is no alert, so the
+ * Overview never reserves dead space and the chrome stays quiet.
  */
 function AlertStack(props: { alerts: UsageAlert[]; providers: ProviderSnapshotView[] }): ReactNode {
   const { alerts, providers } = props
   if (alerts.length === 0) return null
   const nameOf = new Map(providers.map((provider) => [provider.provider, provider.displayName]))
+  const severityRank = (alert: UsageAlert): number => (alert.severity === 'critical' ? 2 : 1)
+  const top = alerts.reduce((lead, alert) => (severityRank(alert) > severityRank(lead) ? alert : lead), alerts[0])
+  const more = alerts.length - 1
   return (
-    <div className={styles.alertStack} data-dsh-part="alert-stack" data-alert-count={alerts.length} role="status" aria-live="polite">
-      {alerts.map((alert) => (
-        <div
-          key={`${alert.kind}:${alert.provider ?? ''}:${alert.window ?? ''}:${alert.since}`}
-          className={`${styles.alertItem} ${alert.severity === 'critical' ? styles.alertCritical : styles.alertWarning}`}
-          data-dsh-part="alert"
-          data-alert-kind={alert.kind}
-          data-alert-severity={alert.severity}
-          data-alert-provider={alert.provider ?? ''}
-        >
-          <span className={styles.alertGlyph} aria-hidden="true">!</span>
-          <span className={styles.alertText}>{alertText(alert, nameOf)}</span>
-          <span className={styles.alertChips}>
-            {alert.provider !== undefined && <span className={styles.scopeChip}>{nameOf.get(alert.provider) ?? alert.provider}</span>}
-            <span className={styles.scopeChip}>{alert.kind === 'daily-cost' ? t('usage.scope.device') : t('usage.scope.account')}</span>
-          </span>
-        </div>
-      ))}
-    </div>
+    <details className={styles.alertStack} data-dsh-part="alert-stack" data-alert-count={alerts.length} role="status" aria-live="polite">
+      <summary className={styles.alertSummary}>
+        <span
+          className={`${styles.alertDot} ${top.severity === 'critical' ? styles.alertCritical : styles.alertWarning}`}
+          aria-hidden="true"
+        />
+        <span className={styles.alertSummaryText}>{alertText(top, nameOf)}</span>
+        {more > 0 && <span className={styles.alertSummaryCount}>{t('usage.alerts.more', { count: more })}</span>}
+        <svg className={styles.alertChevron} viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </summary>
+      <div className={styles.alertList}>
+        {alerts.map((alert) => (
+          <div
+            key={`${alert.kind}:${alert.provider ?? ''}:${alert.window ?? ''}:${alert.since}`}
+            className={`${styles.alertItem} ${alert.severity === 'critical' ? styles.alertCritical : styles.alertWarning}`}
+            data-dsh-part="alert"
+            data-alert-kind={alert.kind}
+            data-alert-severity={alert.severity}
+            data-alert-provider={alert.provider ?? ''}
+          >
+            <span className={`${styles.alertDot} ${styles.alertDotRow}`} aria-hidden="true" />
+            <span className={styles.alertText}>{alertText(alert, nameOf)}</span>
+            <span className={styles.alertChips}>
+              {alert.provider !== undefined && <span className={styles.scopeChip}>{nameOf.get(alert.provider) ?? alert.provider}</span>}
+              <span className={styles.scopeChip}>{alert.kind === 'daily-cost' ? t('usage.scope.device') : t('usage.scope.account')}</span>
+            </span>
+          </div>
+        ))}
+      </div>
+    </details>
   )
 }
 
@@ -1112,7 +1126,6 @@ function HealthCard(props: { health?: UsageHealth; providers: ProviderSnapshotVi
         <div className={styles.healthRow} data-dsh-part="health-ledger">
           <span className={styles.healthLabel}>{t('usage.health.ledgerLabel')}</span>
           <span className={`${styles.healthValue} ${styles.mono}`}>{formatBytes(storage.bytes)}</span>
-          <span className={styles.healthHint}>{storage.label}</span>
         </div>
         <div className={styles.healthRow} data-dsh-part="health-backfill">
           <span className={styles.healthLabel}>{t('usage.health.backfillLabel')}</span>
@@ -1813,20 +1826,23 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
             {t('usage.tab.settings')}
           </button>
         </div>
-        {/* Scope line: says what the visible tab measures, so the device-wide
-            ledger and the account-level quota are never read as session data. */}
-        <span className={styles.scopeNote} data-dsh-part="scope-note">
-          {t(`usage.scope.note.${tab}`)}
-        </span>
-      </div>
-
-      {tab === 'usage' && (
-        <>
+        {tab === 'usage' && (
           <RangeBar
             days={ui.rangeDays}
             covered={coveredRange(snapshot.usage.range, ui.rangeDays)}
             onSelect={setRangeDays}
           />
+        )}
+      </div>
+
+      {/* Scope line: says what the visible tab measures, so the device-wide
+          ledger and the account-level quota are never read as session data. */}
+      <span className={styles.scopeNote} data-dsh-part="scope-note">
+        {t(`usage.scope.note.${tab}`)}
+      </span>
+
+      {tab === 'usage' && (
+        <>
           {/* Threshold alerts sit between the range picker and the hero: they
               are about the current facts, not the selected window. */}
           <AlertStack alerts={snapshot.alerts ?? []} providers={snapshot.providers} />
@@ -1862,7 +1878,6 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
                 <div className={styles.cardHead}>
                   <div className={styles.cardHeadGroup}>
                     <span className={styles.cardTitle}>{t('usage.today')}</span>
-                    <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
                   </div>
                   {deepseekVisible && (
                     <span className={styles.peakPill} data-dsh-part="peak-status">
