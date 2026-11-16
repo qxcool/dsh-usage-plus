@@ -383,4 +383,19 @@ describe('cpamc / reset helpers', () => {
     expect(isCpamcLoopbackUrl('http://127.0.0.1:8317/v1')).toBe(false)
     expect(friendlyProbeError('CPAMC URL must be a loopback origin')).toContain('127.0.0.1')
   })
+
+  it('explains custom-plan failures without reusing the CPAMC copy', async () => {
+    const { friendlyCustomPlanError } = await import('../src/client/locales.ts')
+    // A 401 must not tell the user to fix a CPAMC management token.
+    const auth = friendlyCustomPlanError('custom plan rejected the request (401/403)')
+    expect(auth).toBeDefined()
+    expect(auth).not.toContain('CPAMC')
+    expect(auth).toContain('tokenEnv')
+    expect(friendlyCustomPlanError('custom plan token env MY_TOKEN is not set')).toContain('tokenEnv')
+    expect(friendlyCustomPlanError('custom plan host "evil.example" is not loopback and not listed in allowedHosts')).toContain('allowedHosts')
+    expect(friendlyCustomPlanError('custom plan HTTP 500')).toContain('500')
+    expect(friendlyCustomPlanError('custom plan redirect refused')).toContain('重定向')
+    expect(friendlyCustomPlanError('custom plan response contained no usable quota windows')).toContain('windows')
+    expect(friendlyCustomPlanError(undefined)).toBeUndefined()
+  })
 })

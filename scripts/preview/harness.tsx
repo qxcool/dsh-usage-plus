@@ -62,6 +62,8 @@ const platformParam = params.get('platform')
 const platform = platformParam === 'error' || platformParam === 'unavailable' || platformParam === 'none' ? platformParam : undefined
 const usdParam = params.get('usd')
 const costEstimate = usdParam === 'unpriced' || usdParam === 'none' ? usdParam : undefined
+const customPlansParam = params.get('customPlans')
+const customPlans = customPlansParam === 'none' || customPlansParam === 'errors' ? customPlansParam : (variant === 'rich' ? 'ready' : undefined)
 const autoSelectDay = params.get('day') === 'auto'
 /** `updatedAt` is wall-clock (freshness dot); everything else hangs off FIXED_NOW. */
 const updatedAgoMs = params.get('updated') === 'stale' ? 10 * 60_000 : 8_000
@@ -198,11 +200,22 @@ function createFakeSettings() {
       enabled: true,
       pollIntervalSec: 60,
       bubbleMode: 'always',
+      alertsEnabled: true,
+      dailyCostLimitCny: 0,
+      planAlertPercent: 0,
+      balanceAlertCny: 0,
+      alertCooldownMinutes: 60,
       cpamcEnabled: true,
       cpamcBaseURL: 'http://127.0.0.1:8317',
       cpamcManagementKeyEnv: 'CPAMC_TOKEN',
       cpamcAllowedHosts: 'localhost',
       volcanoEnabled: false,
+      platformUsageEnabled: true,
+      costEstimateEnabled: true,
+      customPlans: JSON.stringify([
+        { id: 'my-plan', name: '内部额度网关', url: 'https://quota.example.com/usage', allowedHosts: ['quota.example.com'], tokenEnv: 'MY_PLAN_TOKEN' },
+        { id: 'lite-plan', name: 'Lite Plan', url: 'http://127.0.0.1:9100/usage' },
+      ], null, 2),
     },
     writable: true,
     revision: 3,
@@ -215,7 +228,7 @@ function createFakeSettings() {
   }
 }
 
-const fixture = buildOverview({ now: FIXED_NOW, variant, updatedAgoMs, alerts, health, platform, costEstimate })
+const fixture = buildOverview({ now: FIXED_NOW, variant, updatedAgoMs, alerts, health, platform, costEstimate, customPlans })
 fixtureRef = fixture
 const store = createFakeStore(windowFor(fixture, initialRange))
 const settings = createFakeSettings()

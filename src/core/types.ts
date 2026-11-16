@@ -195,6 +195,8 @@ export interface UsageHealth {  storage: {
     cutoff: number
     sessions: number
     events: number
+    /** Inherited fork-prefix usage events skipped, so forks are not double counted. */
+    forkEvents?: number
     truncated?: boolean
   } | null
   probes: {
@@ -255,6 +257,15 @@ export interface UsageDayDetail {
   providers: UsageProviderSummary[]
 }
 
+/** One rejected custom-plan config field, surfaced in Settings. */
+export interface UsageCustomPlanError {
+  /** Entry index in the user's JSON array, or -1 for the document itself. */
+  index: number
+  id?: string
+  field: string
+  message: string
+}
+
 /** The overview the browser section renders. */
 export interface UsageOverviewView {
   updatedAt: number
@@ -267,6 +278,8 @@ export interface UsageOverviewView {
   platform?: UsagePlatformView
   /** USD reference estimate for the selected window; optional. */
   costEstimate?: UsageCostEstimate
+  /** Rejected custom-plan fields, when the settings JSON could not be parsed. */
+  customPlanErrors?: UsageCustomPlanError[]
   /** The provider the pet bubble and the header highlight; `source` says how it was picked. */
   current: {
     provider?: string

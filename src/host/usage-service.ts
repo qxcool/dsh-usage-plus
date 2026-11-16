@@ -16,13 +16,14 @@ import type { TokenUsage } from '@deepseek-ai/dsh-llm'
 import { dshHome } from '../dsh-home.ts'
 import { adapterFor, dedupeProviderAliasRoutes, isDeepSeekProviderRoute, probeHalfAllowed, providerErrorMessage } from '../core/adapters.ts'
 import { estimateUsd, fetchPriceBook, isPriceBookFresh, loadPriceBook, savePriceBook, type PriceBook } from '../core/pricing-book.ts'
+import { CUSTOM_PLAN_LIMITS, customPlanSnapshot, describeCustomPlanError, parseCustomPlans, probeCustomPlan, type CustomPlanConfigError } from './custom-plans.ts'
 import { fetchPlatformUsage } from './platform-usage.ts'
 import type { BalanceParse, PlanParse } from '../core/adapters.ts'
 import { deepseekModelSpend, deepseekPeriodAt } from '../core/pricing.ts'
 import { createLedgerDocument, deserializeLedger, foldUsage, ledgerDayKeys, localDateKey, pruneLedger, summarizeLedgerUsage, totalTokens } from '../core/ledger.ts'
 import type { LedgerUsageSummary } from '../core/ledger.ts'
 import { currentPlanProvider } from '../core/plan-match.ts'
-import type { BalanceView, CredentialKind, ExternalCredentialStatus, ExternalCredentialTarget, PlanView, ProviderSnapshotState, ProviderSnapshotView, UsageAlert, UsageCostEstimate, UsageDayDetail, UsageHealth, UsageLedgerDocument, UsageOverviewView, UsagePlatformView, UsageProviderSummary, UsageTokenTotals } from '../core/types.ts'
+import type { BalanceView, CredentialKind, ExternalCredentialStatus, ExternalCredentialTarget, PlanView, ProviderSnapshotState, ProviderSnapshotView, UsageAlert, UsageCostEstimate, UsageCustomPlanError, UsageDayDetail, UsageHealth, UsageLedgerDocument, UsageOverviewView, UsagePlatformView, UsageProviderSummary, UsageTokenTotals } from '../core/types.ts'
 import { addTotals, emptyTotals } from '../core/types.ts'
 import { alertKey, evaluateAlerts } from './alerts.ts'
 import { probeCpamc, probeVolcano } from './external-sources.ts'
@@ -77,6 +78,8 @@ export interface UsageServiceOptions {
   platformUsageEnabled?: boolean
   /** Estimate USD cost from the models.dev price book. */
   costEstimateEnabled?: boolean
+  /** Raw JSON array of generic custom plan sources; empty disables the feature. */
+  customPlans?: string
   /** Test seam: pre-built price book (avoids the network). */
   priceBook?: PriceBook
   /** Test seam: replace the models.dev catalog fetch. */
@@ -161,7 +164,7 @@ export interface UsageOverviewPayload {
 }
 
 /** External sources the Settings page can test on demand. */
-export type ExternalTestTarget = 'cpamc' | 'volcano'
+export type ExternalTestTarget = 'cpamc' | 'volcano' | 'custom'
 
 /** Result of one external-source connection test (no secrets cross the wire). */
 export interface UsageExternalTestResult {
@@ -424,7 +427,7 @@ export function readEntryConfig(ctx: Context, id: string): Record<string, unknow
  */
 export function replaceExternalSnapshots(
   snapshots: Map<string, ProviderSnapshotState>,
-  source: 'cpamc' | 'volcano',
+  source: 'cpamc' | 'volcano' | 'custom',
   rows: readonly ProviderSnapshotState[],
 ): void {
   const prefix = `${source}:`
@@ -579,6 +582,8 @@ export class UsageService {
   private lastCredentialStatus: ExternalCredentialStatus | undefined
   /** Dedupes overlapping credential-status reads. */
   private credentialStatusInFlight: Promise<ExternalCredentialStatus> | undefined
+  /** Parsed custom-plan config, keyed by the raw settings string. */
+  private customPlansCache: { text: string; entries: ReturnType<typeof parseCustomPlans>['entries']; errors: CustomPlanConfigError[] } | undefined
   /** Invalidates in-flight credential-status reads that predate a credential write. */
   private credentialStatusGeneration = 0
   /** Short-TTL data-health cache: health costs filesystem reads, not per-poll work. */
@@ -683,9 +688,37 @@ export class UsageService {
    * for the Settings "test connection" button. Never throws: transport errors
    * and configuration mistakes both come back as `ok: false` plus a hint.
    */
-  async testExternalSource(target: ExternalTestTarget): Promise<UsageExternalTestResult> {
+  async testExternalSource(target: ExternalTestTarget, planId?: string): Promise<UsageExternalTestResult> {
     const started = Date.now()
     try {
+      if (target === 'custom') {
+        const config = this.customPlanConfig()
+        const entries = planId === undefined ? config.entries : config.entries.filter((entry) => entry.id === planId)
+        if (entries.length === 0) {
+          return {
+            target,
+            ok: false,
+            latencyMs: Date.now() - started,
+            error: config.errors.length > 0 ? '自定义额度源配置无效' : '未配置自定义额度源',
+            hint: config.errors.length > 0
+              ? config.errors.map((entry) => `#${entry.index + 1} ${entry.field}: ${entry.message}`).join('；')
+              : '在「自定义额度源」填入 JSON 数组并保存后再测试。',
+          }
+        }
+        const entry = entries[0]
+        const result = await probeCustomPlan(entry, { env: (name) => this.readEnvValue(name), timeoutMs: CUSTOM_PLAN_LIMITS.timeoutMs })
+        const latencyMs = Date.now() - started
+        if (!result.ok) {
+          return {
+            target,
+            ok: false,
+            latencyMs,
+            error: describeCustomPlanError(result.error),
+            hint: this.customPlanTestHint(describeCustomPlanError(result.error), entry.id),
+          }
+        }
+        return { target, ok: true, latencyMs, accounts: 1, windows: result.windows.slice(0, 3) }
+      }
       if (target === 'cpamc') {
         const rows = await probeCpamc({
           enabled: this.options.cpamcEnabled,
@@ -758,6 +791,18 @@ export class UsageService {
       return `无法连接 CPAMC：检查服务是否启动、管理地址是否只填 origin。${suggestion}`
     }
     return '检查 CPAMC 管理地址、允许 host 与 management token。'
+  }
+
+  /** Actionable hint for one custom-plan probe failure. */
+  private customPlanTestHint(error: string, id: string): string {
+    const text = error.toLowerCase()
+    if (text.includes('missing token')) return `设置环境变量 ${this.options.customPlans?.includes(id) ? 'tokenEnv 指向的' : ''}凭据后再测试：自定义额度源的密钥只从宿主环境变量读取。`
+    if (text.includes('redirect')) return '该地址发生了重定向（常见 http→https 或反代）。直接把 url 改成最终地址。'
+    if (text.includes('401') || text.includes('403')) return '端点拒绝了请求：tokenEnv 指向的环境变量不正确，或该端点需要额外 header（用 headers 里的 ${env:NAME} 引用）。'
+    if (text.includes('not allowed')) return '该主机不在允许列表：http 只允许回环，远程地址必须是 https 且把域名加入 allowedHosts。'
+    if (text.includes('no windows')) return '端点返回了 JSON 但没有可识别的窗口：支持 {usage:{rolling,weekly,monthly}} 或 {windows:[{label,percent,...}]} 两种形状。'
+    if (text.includes('timed out')) return '请求超时（8s）：检查网络/代理，或该端点响应过慢。'
+    return '检查 url、allowedHosts、tokenEnv 与 headers，并确认端点返回 JSON 额度数据。'
   }
 
   /** Actionable Volcano hint for one probe failure message. */
@@ -1034,6 +1079,7 @@ export class UsageService {
     const costEstimate = this.options.costEstimateEnabled === true && this.priceBook !== undefined
       ? estimateUsd(usage.range, this.priceBook)
       : undefined
+    const customPlanErrors = this.customPlanConfig().errors
     return {
       updatedAt: Date.now(),
       providers,
@@ -1041,6 +1087,7 @@ export class UsageService {
       health,
       ...(platform !== undefined ? { platform } : {}),
       ...(costEstimate !== undefined ? { costEstimate } : {}),
+      ...(customPlanErrors.length > 0 ? { customPlanErrors } : {}),
       current: {
         ...this.current,
         ...(typeof baseURL === 'string' && baseURL.trim() !== '' ? { baseURL: baseURL.trim() } : {}),
@@ -1159,6 +1206,7 @@ export class UsageService {
               cutoff: state.cutoff,
               sessions: state.sessions,
               events: state.events,
+              ...(typeof state.forkEvents === 'number' && state.forkEvents > 0 ? { forkEvents: state.forkEvents } : {}),
               ...(state.truncated === true ? { truncated: true } : {}),
             },
       }
@@ -1614,9 +1662,12 @@ export class UsageService {
         cutoff: startedAt,
         sessions: result.sessions,
         events: result.events,
+        ...(result.forkEvents !== undefined && result.forkEvents > 0 ? { forkEvents: result.forkEvents } : {}),
         ...(result.truncated ? { truncated: true } : {}),
       })
-      console.info(`[dsh-usage-plus] session backfill: ${result.sessions} session(s), ${result.events} usage event(s)${result.truncated ? ' (truncated by caps)' : ''}`)
+      console.info(`[dsh-usage-plus] session backfill: ${result.sessions} session(s), ${result.events} usage event(s)${
+        result.forkEvents !== undefined && result.forkEvents > 0 ? `, ${result.forkEvents} inherited fork event(s) skipped` : ''
+      }${result.truncated ? ' (truncated by caps)' : ''}`)
     } catch (error) {
       console.warn('[dsh-usage-plus] session backfill failed:', error instanceof Error ? error.message : String(error))
     }
@@ -1977,6 +2028,11 @@ export class UsageService {
       const hit = await credentials?.resolve(credentialRef(name))
       if (typeof hit?.value === 'string' && hit.value.trim() !== '') return hit.value.trim()
     } catch {}
+    return this.readEnvValue(name)
+  }
+
+  /** Synchronous environment read for the custom-plan probe's `${env:NAME}` headers. */
+  private readEnvValue(name: string): string | undefined {
     const value = process.env[name]
     return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
   }
@@ -1990,6 +2046,60 @@ export class UsageService {
       const rows = await probeVolcano({ enabled: this.options.volcanoEnabled, accessKeyId: await this.resolveEnv(this.options.volcanoAccessKeyEnv), secretAccessKey: await this.resolveEnv(this.options.volcanoSecretKeyEnv) })
       this.replaceExternalSnapshotsChecked('volcano', rows)
     } catch {}
+    await this.probeCustomPlans()
+  }
+
+  /**
+   * Probe every configured custom plan and replace its `custom:` snapshots.
+   * Each plan is independent: a failing or slow entry records its own `planError`
+   * and never affects the others or the poll cycle. Removed entries drop their
+   * snapshots here so the page cannot show a plan that no longer exists.
+   */
+  private async probeCustomPlans(): Promise<void> {
+    const config = this.customPlanConfig()
+    const rows: ProviderSnapshotState[] = []
+    for (const entry of config.entries) {
+      if (this.disposed) return
+      try {
+        const result = await probeCustomPlan(entry, { env: (name) => this.readEnvValue(name), timeoutMs: CUSTOM_PLAN_LIMITS.timeoutMs })
+        if (result.ok) {
+          rows.push(customPlanSnapshot(entry, result.windows, result.updatedAt))
+        } else {
+          rows.push({
+            provider: `custom:${entry.id}`,
+            source: 'custom',
+            displayName: entry.name,
+            credential: 'env',
+            supported: true,
+            planSupported: true,
+            planError: describeCustomPlanError(result.error),
+          })
+        }
+      } catch {
+        // describeCustomPlanError already covers probe failures; an unexpected
+        // throw must still not escape one plan and abort the rest.
+        rows.push({
+          provider: `custom:${entry.id}`,
+          source: 'custom',
+          displayName: entry.name,
+          credential: 'env',
+          supported: true,
+          planSupported: true,
+          planError: 'custom plan probe failed',
+        })
+      }
+    }
+    this.replaceExternalSnapshotsChecked('custom', rows)
+  }
+
+  /** Parsed custom-plan config, re-parsed only when the settings string changes. */
+  private customPlanConfig(): { entries: ReturnType<typeof parseCustomPlans>['entries']; errors: CustomPlanConfigError[] } {
+    const text = this.options.customPlans ?? ''
+    const cached = this.customPlansCache
+    if (cached !== undefined && cached.text === text) return cached
+    const parsed = parseCustomPlans(text)
+    this.customPlansCache = { text, entries: parsed.entries, errors: parsed.errors }
+    return this.customPlansCache
   }
 
   /**
@@ -1999,7 +2109,7 @@ export class UsageService {
    * the snapshots file every poll; the probe read timestamps are ignored for
    * this comparison.
    */
-  private replaceExternalSnapshotsChecked(source: 'cpamc' | 'volcano', rows: readonly ProviderSnapshotState[]): void {
+  private replaceExternalSnapshotsChecked(source: 'cpamc' | 'volcano' | 'custom', rows: readonly ProviderSnapshotState[]): void {
     const prefix = `${source}:`
     const existing: ProviderSnapshotState[] = []
     for (const [id, snapshot] of this.snapshots) {

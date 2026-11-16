@@ -198,6 +198,7 @@ export declare const zh: {
     'usage.health.backfillNone': string;
     'usage.health.backfill': string;
     'usage.health.backfillTruncated': string;
+    'usage.health.backfillForks': string;
     'usage.health.probesLabel': string;
     'usage.health.probesNone': string;
     'usage.health.probes': string;
@@ -237,6 +238,21 @@ export declare const zh: {
     'usage.config.secret.save': string;
     'usage.config.secret.clear': string;
     'usage.config.externalHint': string;
+    'usage.config.customPlans': string;
+    'usage.config.customPlans.placeholder': string;
+    'usage.config.customPlansHint': string;
+    'usage.config.customPlansPending': string;
+    'usage.config.customPlanErrMissingToken': string;
+    'usage.config.customPlanErrRedirect': string;
+    'usage.config.customPlanErrAuth': string;
+    'usage.config.customPlanErrHost': string;
+    'usage.config.customPlanErrShape': string;
+    'usage.config.customPlanErrTimeout': string;
+    'usage.config.customPlanErrJson': string;
+    'usage.config.customPlanErrHttp': string;
+    'usage.config.customPlanErrNetwork': string;
+    'usage.config.customPlanErrGeneric': string;
+    'usage.config.testCustomOk': string;
     'usage.config.readonly': string;
     'usage.config.save': string;
     'usage.config.saving': string;
@@ -262,6 +278,8 @@ export declare function formatPlanReset(iso?: string): string;
 export declare function isCpamcLoopbackUrl(raw: string, allowedHosts?: string): boolean;
 /** Map host probe errors to actionable UI copy when we recognize them. */
 export declare function friendlyProbeError(error: string | undefined): string | undefined;
+/** Friendly, secret-free copy for a custom-plan probe failure message. */
+export declare function friendlyCustomPlanError(error: string | undefined): string | undefined;
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface LocaleNamespaceMap {
         /** dsh-usage UI copy. */

@@ -49,6 +49,8 @@ export interface Config {
   platformUsageEnabled?: boolean
   /** Estimate non-DeepSeek/global cost from the models.dev price book (USD reference). */
   costEstimateEnabled?: boolean
+  /** JSON array of generic custom plan sources (`[{id,name,url,...}]`); empty disables. */
+  customPlans?: string
   cpamcEnabled?: boolean
   cpamcBaseURL?: string
   cpamcManagementKeyEnv?: string
@@ -77,6 +79,7 @@ export const Config = z.object({
   alertCooldownMinutes: z.number().min(1).max(1440).default(60).volatile(),
   platformUsageEnabled: z.boolean().default(true).volatile(),
   costEstimateEnabled: z.boolean().default(true).volatile(),
+  customPlans: z.string().default('').volatile(),
   cpamcEnabled: z.boolean().default(false).volatile(),
   cpamcBaseURL: z.string().default('http://127.0.0.1:8317').volatile(),
   cpamcManagementKeyEnv: z.string().default('CPAMC_MANAGEMENT_KEY').volatile(),
@@ -95,6 +98,7 @@ export interface ResolvedConfig extends UsageServiceOptions {
   alertCooldownMinutes: number
   platformUsageEnabled: boolean
   costEstimateEnabled: boolean
+  customPlans: string
 }
 
 /** Shared cosmokit volatile-reference brand (Cordis re-exports the type only). */
@@ -133,6 +137,7 @@ export function resolveConfig(input?: Record<string, unknown> | Config): Resolve
     alertCooldownMinutes: typeof config.alertCooldownMinutes === 'number' ? config.alertCooldownMinutes : 60,
     platformUsageEnabled: config.platformUsageEnabled ?? true,
     costEstimateEnabled: config.costEstimateEnabled ?? true,
+    customPlans: typeof config.customPlans === 'string' ? config.customPlans : '',
     cpamcEnabled: config.cpamcEnabled ?? false,
     cpamcBaseURL: config.cpamcBaseURL ?? 'http://127.0.0.1:8317',
     cpamcManagementKeyEnv: config.cpamcManagementKeyEnv ?? 'CPAMC_MANAGEMENT_KEY',

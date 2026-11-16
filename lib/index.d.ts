@@ -77,6 +77,8 @@ interface UsageServiceOptions {
   platformUsageEnabled?: boolean;
   /** Estimate USD cost from the models.dev price book. */
   costEstimateEnabled?: boolean;
+  /** Raw JSON array of generic custom plan sources; empty disables the feature. */
+  customPlans?: string;
   /** Test seam: pre-built price book (avoids the network). */
   priceBook?: PriceBook;
   /** Test seam: replace the models.dev catalog fetch. */
@@ -138,6 +140,8 @@ interface Config {
   platformUsageEnabled?: boolean;
   /** Estimate non-DeepSeek/global cost from the models.dev price book (USD reference). */
   costEstimateEnabled?: boolean;
+  /** JSON array of generic custom plan sources (`[{id,name,url,...}]`); empty disables. */
+  customPlans?: string;
   cpamcEnabled?: boolean;
   cpamcBaseURL?: string;
   cpamcManagementKeyEnv?: string;
@@ -165,6 +169,7 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
   alertCooldownMinutes: z<number, number, "volatile-defined">;
   platformUsageEnabled: z<boolean, boolean, "volatile-defined">;
   costEstimateEnabled: z<boolean, boolean, "volatile-defined">;
+  customPlans: z<string, string, "volatile-defined">;
   cpamcEnabled: z<boolean, boolean, "volatile-defined">;
   cpamcBaseURL: z<string, string, "volatile-defined">;
   cpamcManagementKeyEnv: z<string, string, "volatile-defined">;
@@ -184,6 +189,7 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
   alertCooldownMinutes: z<number, number, "volatile-defined">;
   platformUsageEnabled: z<boolean, boolean, "volatile-defined">;
   costEstimateEnabled: z<boolean, boolean, "volatile-defined">;
+  customPlans: z<string, string, "volatile-defined">;
   cpamcEnabled: z<boolean, boolean, "volatile-defined">;
   cpamcBaseURL: z<string, string, "volatile-defined">;
   cpamcManagementKeyEnv: z<string, string, "volatile-defined">;
@@ -201,6 +207,7 @@ interface ResolvedConfig extends UsageServiceOptions {
   alertCooldownMinutes: number;
   platformUsageEnabled: boolean;
   costEstimateEnabled: boolean;
+  customPlans: string;
 }
 /**
  * Snapshot loader Config (volatile refs or plain values) into a plain partial.

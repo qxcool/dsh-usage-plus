@@ -39,6 +39,8 @@ export interface UsageSettings {
     platformUsageEnabled?: boolean;
     /** v0.6.0: estimate USD from the models.dev price book. */
     costEstimateEnabled?: boolean;
+    /** v0.6.1: JSON array of generic custom plan sources. */
+    customPlans?: string;
 }
 /**
  * Subset of `ctx.configForms.get(entryId)` used by this page.

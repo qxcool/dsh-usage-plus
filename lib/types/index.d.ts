@@ -41,6 +41,8 @@ export interface Config {
     platformUsageEnabled?: boolean;
     /** Estimate non-DeepSeek/global cost from the models.dev price book (USD reference). */
     costEstimateEnabled?: boolean;
+    /** JSON array of generic custom plan sources (`[{id,name,url,...}]`); empty disables. */
+    customPlans?: string;
     cpamcEnabled?: boolean;
     cpamcBaseURL?: string;
     cpamcManagementKeyEnv?: string;
@@ -68,6 +70,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     alertCooldownMinutes: z<number, number, "volatile-defined">;
     platformUsageEnabled: z<boolean, boolean, "volatile-defined">;
     costEstimateEnabled: z<boolean, boolean, "volatile-defined">;
+    customPlans: z<string, string, "volatile-defined">;
     cpamcEnabled: z<boolean, boolean, "volatile-defined">;
     cpamcBaseURL: z<string, string, "volatile-defined">;
     cpamcManagementKeyEnv: z<string, string, "volatile-defined">;
@@ -87,6 +90,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     alertCooldownMinutes: z<number, number, "volatile-defined">;
     platformUsageEnabled: z<boolean, boolean, "volatile-defined">;
     costEstimateEnabled: z<boolean, boolean, "volatile-defined">;
+    customPlans: z<string, string, "volatile-defined">;
     cpamcEnabled: z<boolean, boolean, "volatile-defined">;
     cpamcBaseURL: z<string, string, "volatile-defined">;
     cpamcManagementKeyEnv: z<string, string, "volatile-defined">;
@@ -104,6 +108,7 @@ export interface ResolvedConfig extends UsageServiceOptions {
     alertCooldownMinutes: number;
     platformUsageEnabled: boolean;
     costEstimateEnabled: boolean;
+    customPlans: string;
 }
 /**
  * Snapshot loader Config (volatile refs or plain values) into a plain partial.

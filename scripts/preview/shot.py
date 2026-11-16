@@ -43,6 +43,7 @@ SHOTS: dict[str, tuple[dict[str, str], str]] = {
     "day-detail": ({"part": "section", "theme": "dark", "tab": "usage", "day": "auto"}, "full"),
     "platform-error": ({"part": "section", "theme": "dark", "tab": "usage", "platform": "error"}, "full"),
     "usd-unpriced": ({"part": "section", "theme": "dark", "tab": "usage", "usd": "unpriced"}, "full"),
+    "custom-plan-errors": ({"part": "section", "theme": "dark", "tab": "settings", "customPlans": "errors"}, "full"),
     "range-90": ({"part": "section", "theme": "dark", "tab": "usage", "range": "90"}, "full"),
     "range-retained": ({"part": "section", "theme": "dark", "tab": "usage", "range": "182", "retain": "45"}, "full"),
     "sparse": ({"part": "section", "theme": "dark", "tab": "usage", "variant": "sparse"}, "full"),

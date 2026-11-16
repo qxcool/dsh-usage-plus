@@ -31,6 +31,8 @@ export interface UsageServiceOptions {
     platformUsageEnabled?: boolean;
     /** Estimate USD cost from the models.dev price book. */
     costEstimateEnabled?: boolean;
+    /** Raw JSON array of generic custom plan sources; empty disables the feature. */
+    customPlans?: string;
     /** Test seam: pre-built price book (avoids the network). */
     priceBook?: PriceBook;
     /** Test seam: replace the models.dev catalog fetch. */
@@ -60,7 +62,7 @@ export interface UsageOverviewPayload {
     etag: string;
 }
 /** External sources the Settings page can test on demand. */
-export type ExternalTestTarget = 'cpamc' | 'volcano';
+export type ExternalTestTarget = 'cpamc' | 'volcano' | 'custom';
 /** Result of one external-source connection test (no secrets cross the wire). */
 export interface UsageExternalTestResult {
     target: ExternalTestTarget;
@@ -159,7 +161,7 @@ export declare function readEntryConfig(ctx: Context, id: string): Record<string
  * `/overview` poll: a transient fetch failure retains the last known rows;
  * an intentional disabled/status result still atomically replaces them.
  */
-export declare function replaceExternalSnapshots(snapshots: Map<string, ProviderSnapshotState>, source: 'cpamc' | 'volcano', rows: readonly ProviderSnapshotState[]): void;
+export declare function replaceExternalSnapshots(snapshots: Map<string, ProviderSnapshotState>, source: 'cpamc' | 'volcano' | 'custom', rows: readonly ProviderSnapshotState[]): void;
 /**
  * Whether two snapshot states carry the same *facts*. Volatile probe read
  * timestamps (`updatedAt` on the row, balance, and plan) are ignored: a
@@ -231,6 +233,8 @@ export declare class UsageService {
     private lastCredentialStatus;
     /** Dedupes overlapping credential-status reads. */
     private credentialStatusInFlight;
+    /** Parsed custom-plan config, keyed by the raw settings string. */
+    private customPlansCache;
     /** Invalidates in-flight credential-status reads that predate a credential write. */
     private credentialStatusGeneration;
     /** Short-TTL data-health cache: health costs filesystem reads, not per-poll work. */
@@ -278,9 +282,11 @@ export declare class UsageService {
      * for the Settings "test connection" button. Never throws: transport errors
      * and configuration mistakes both come back as `ok: false` plus a hint.
      */
-    testExternalSource(target: ExternalTestTarget): Promise<UsageExternalTestResult>;
+    testExternalSource(target: ExternalTestTarget, planId?: string): Promise<UsageExternalTestResult>;
     /** Actionable CPAMC hint for one probe failure message. */
     private cpamcTestHint;
+    /** Actionable hint for one custom-plan probe failure. */
+    private customPlanTestHint;
     /** Actionable Volcano hint for one probe failure message. */
     private volcanoTestHint;
     dayDetail(date: string): UsageDayDetail;
@@ -489,7 +495,18 @@ export declare class UsageService {
      */
     private resolveCredential;
     private resolveEnv;
+    /** Synchronous environment read for the custom-plan probe's `${env:NAME}` headers. */
+    private readEnvValue;
     private probeExternalSources;
+    /**
+     * Probe every configured custom plan and replace its `custom:` snapshots.
+     * Each plan is independent: a failing or slow entry records its own `planError`
+     * and never affects the others or the poll cycle. Removed entries drop their
+     * snapshots here so the page cannot show a plan that no longer exists.
+     */
+    private probeCustomPlans;
+    /** Parsed custom-plan config, re-parsed only when the settings string changes. */
+    private customPlanConfig;
     /**
      * Replace one external source's rows, bumping the revision only when the
      * facts actually changed. A disabled/idle source and an unchanged quota

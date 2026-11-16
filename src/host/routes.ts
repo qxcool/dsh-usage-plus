@@ -179,12 +179,17 @@ export function makeUsageTestRoute(service: UsageService): WebRoute {
         return
       }
       const body = asJsonObject(await readJsonBody(req, { objectOnly: true, maxBytes: 4 * 1024 }))
-      const target = body?.target === 'cpamc' || body?.target === 'volcano' ? body.target : undefined
+      const target = body?.target === 'cpamc' || body?.target === 'volcano' || body?.target === 'custom' ? body.target : undefined
+      const planId = target === 'custom' && typeof body?.id === 'string' && /^[a-z0-9][a-z0-9-]{0,31}$/.test(body.id) ? body.id : undefined
       if (body === undefined || target === undefined) {
         writeJson(res, 400, { ok: false, error: 'invalid target' })
         return
       }
-      const result = await service.testExternalSource(target)
+      if (target === 'custom' && body?.id !== undefined && planId === undefined) {
+        writeJson(res, 400, { ok: false, error: 'invalid plan id' })
+        return
+      }
+      const result = await service.testExternalSource(target, planId)
       writeJson(res, 200, result, { 'cache-control': 'no-store' })
     },
   }

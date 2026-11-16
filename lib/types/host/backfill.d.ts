@@ -8,6 +8,12 @@
  * `request/header` / `request/context` events, and the DeepSeek spend estimate
  * is stamped at the event's own timestamp.
  *
+ * A fork copies its parent's event prefix as seed events, so folding that prefix
+ * a second time would double count turns the parent pass already counted. Seeded
+ * sessions therefore skip their inherited prefix: the exact
+ * `inheritedEventCount` from `readSession()` when available, otherwise (fake or
+ * older deployments) events stamped before the fork's `header.createdAt`.
+ *
  * The pass is bounded (session and event caps, yields between sessions) and
  * never throws; the caller merges the returned temporary ledger, flushes, and
  * records the completion state itself.
@@ -46,6 +52,12 @@ export interface BackfillState {
     sessions: number;
     /** `assistant/message` events folded into the ledger. */
     events: number;
+    /**
+     * Optional count of inherited fork usage events skipped because the parent
+     * session already contributed them. Absent in states written before fork
+     * tracking or when no seed prefix existed, so the version stays unchanged.
+     */
+    forkEvents?: number;
     /** True when a session/event cap ended the pass early (partial history). */
     truncated?: boolean;
 }
@@ -73,6 +85,12 @@ export interface BackfillResult {
     sessions: number;
     /** `assistant/message` events folded into `ledger`. */
     events: number;
+    /**
+     * Optional count of inherited fork `assistant/message` usage events skipped
+     * so the parent's already-folded turns are not counted twice. Absent when
+     * the pass skipped no foldable seed events.
+     */
+    forkEvents?: number;
     /** Raw events inspected (diagnostic; capped separately from `events`). */
     processed: number;
     /** Local-date key `YYYY-MM-DD`; events older than it are ignored. */

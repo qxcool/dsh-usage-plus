@@ -13,14 +13,14 @@
 
 import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import type { UsageStoreInstance } from './usage-store.ts'
-import { formatPlanReset, friendlyProbeError, isCpamcLoopbackUrl, t } from './locales.ts'
+import { formatPlanReset, friendlyCustomPlanError, friendlyProbeError, isCpamcLoopbackUrl, t } from './locales.ts'
 import { PlanUsageStrip } from './PlanUsageStrip.tsx'
 import styles from './usage.module.css'
 import { isDeepSeekProviderRoute } from '../core/adapters.ts'
 import { buildHeatmapGrid, HEATMAP_WEEKS, type HeatmapCell } from '../core/heatmap.ts'
 import { currentPlanProvider, orderedPlanWindows, planSourceLabelKey, planTabProviders } from '../core/plan-match.ts'
 import { deepseekPeriodAt } from '../core/pricing.ts'
-import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotView, UsageAlert, UsageCostEstimate, UsageDayDetail, UsageDaySummary, UsageHealth, UsageOverviewView, UsagePlatformView, UsageProviderSummary, UsageTokenTotals } from '../core/types.ts'
+import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotView, UsageAlert, UsageCostEstimate, UsageCustomPlanError, UsageDayDetail, UsageDaySummary, UsageHealth, UsageOverviewView, UsagePlatformView, UsageProviderSummary, UsageTokenTotals } from '../core/types.ts'
 import { dayRequestPath, exportRequestPath, USAGE_RANGE_DAYS, type UsageRangeDays } from './usage-api.ts'
 import { cacheHitText, formatCost, formatCny, formatExact, formatTokens, formatUsd } from './format.ts'
 
@@ -50,6 +50,8 @@ export interface UsageSettings {
   platformUsageEnabled?: boolean
   /** v0.6.0: estimate USD from the models.dev price book. */
   costEstimateEnabled?: boolean
+  /** v0.6.1: JSON array of generic custom plan sources. */
+  customPlans?: string
 }
 
 /**
@@ -74,7 +76,9 @@ export interface UsageConfigForm {
 
 /** Result of the Settings "test connection" call (secret-free). */
 interface UsageSourceTestResult {
-  target: 'cpamc' | 'volcano'
+  target: 'cpamc' | 'volcano' | 'custom'
+  /** Custom-plan id this result belongs to. */
+  id?: string
   ok: boolean
   latencyMs: number
   accounts?: number
@@ -1436,6 +1440,11 @@ function HealthCard(props: { health?: UsageHealth; providers: ProviderSnapshotVi
               </span>
             )}
           {backfill?.truncated === true && <span className={styles.healthWarn}>{t('usage.health.backfillTruncated')}</span>}
+          {typeof backfill?.forkEvents === 'number' && backfill.forkEvents > 0 && (
+            <span className={styles.muted} data-dsh-part="health-backfill-forks">
+              {t('usage.health.backfillForks', { n: backfill.forkEvents })}
+            </span>
+          )}
         </div>
         <div className={styles.healthRow} data-dsh-part="health-probes">
           <span className={styles.healthLabel}>{t('usage.health.probesLabel')}</span>
@@ -1597,7 +1606,7 @@ const ALERT_DEFAULTS = {
 
 type AlertSettings = typeof ALERT_DEFAULTS
 
-const CONFIG_DEFAULTS: Required<Pick<UsageSettings, 'enabled' | 'pollIntervalSec' | 'bubbleMode' | 'alertsEnabled' | 'dailyCostLimitCny' | 'planAlertPercent' | 'balanceAlertCny' | 'alertCooldownMinutes' | 'cpamcEnabled' | 'cpamcBaseURL' | 'cpamcAllowedHosts' | 'volcanoEnabled' | 'platformUsageEnabled' | 'costEstimateEnabled'>> = {
+const CONFIG_DEFAULTS: Required<Pick<UsageSettings, 'enabled' | 'pollIntervalSec' | 'bubbleMode' | 'alertsEnabled' | 'dailyCostLimitCny' | 'planAlertPercent' | 'balanceAlertCny' | 'alertCooldownMinutes' | 'cpamcEnabled' | 'cpamcBaseURL' | 'cpamcAllowedHosts' | 'volcanoEnabled' | 'platformUsageEnabled' | 'costEstimateEnabled' | 'customPlans'>> = {
   enabled: true,
   pollIntervalSec: 60,
   bubbleMode: 'always',
@@ -1608,6 +1617,7 @@ const CONFIG_DEFAULTS: Required<Pick<UsageSettings, 'enabled' | 'pollIntervalSec
   volcanoEnabled: false,
   platformUsageEnabled: true,
   costEstimateEnabled: true,
+  customPlans: '',
 }
 
 /** Clamp one numeric alert field the way the Host schema does. */
@@ -1635,6 +1645,7 @@ function normalizeSettings(value: UsageSettings | undefined): typeof CONFIG_DEFA
     volcanoEnabled: value?.volcanoEnabled ?? CONFIG_DEFAULTS.volcanoEnabled,
     platformUsageEnabled: value?.platformUsageEnabled ?? CONFIG_DEFAULTS.platformUsageEnabled,
     costEstimateEnabled: value?.costEstimateEnabled ?? CONFIG_DEFAULTS.costEstimateEnabled,
+    customPlans: typeof value?.customPlans === 'string' ? value.customPlans : CONFIG_DEFAULTS.customPlans,
   }
 }
 
@@ -1653,6 +1664,10 @@ function SettingsRow(props: {
   alertsSupported?: boolean
   /** Whether the running Host's schema knows platform/cost-estimate fields (v0.6.0+). */
   platformSupported?: boolean
+  /** Whether the running Host's schema knows the custom-plan field (v0.6.1+). */
+  customPlansSupported?: boolean
+  /** Rejected custom-plan config fields reported by the Host. */
+  customPlanErrors?: UsageCustomPlanError[]
   providers?: ProviderSnapshotView[]
   credentials?: ExternalCredentialStatus
   setCredential: UsageSectionProps['setCredential']
@@ -1661,12 +1676,14 @@ function SettingsRow(props: {
   const { settings, snapshot, value, providers = [], credentials, setCredential, clearCredential } = props
   const alertsSupported = props.alertsSupported ?? true
   const platformSupported = props.platformSupported ?? false
+  const customPlansSupported = props.customPlansSupported ?? false
+  const customPlanErrors = props.customPlanErrors ?? []
   const disabled = snapshot !== undefined && !snapshot.writable
   const [draft, setDraft] = useState(() => normalizeSettings(value))
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>()
-  const [sourceTest, setSourceTest] = useState<{ target: 'cpamc' | 'volcano'; busy: boolean; result?: UsageSourceTestResult; error?: string } | undefined>(undefined)
+  const [sourceTest, setSourceTest] = useState<{ target: 'cpamc' | 'volcano' | 'custom'; id?: string; busy: boolean; result?: UsageSourceTestResult; error?: string } | undefined>(undefined)
 
   useEffect(() => {
     if (dirty) return
@@ -1712,6 +1729,9 @@ function SettingsRow(props: {
             { op: 'set', path: ['costEstimateEnabled'], value: draft.costEstimateEnabled },
           ] as const)
         : []),
+      ...(customPlansSupported
+        ? ([{ op: 'set', path: ['customPlans'], value: draft.customPlans }] as const)
+        : []),
     ]
     void settings.mutate(ops, snapshot?.revision).then((ok) => {
       setSaving(false)
@@ -1728,16 +1748,19 @@ function SettingsRow(props: {
 
   const cpamc = providers.find((provider) => provider.source === 'cpamc')
   const volcano = providers.find((provider) => provider.source === 'volcano')
+  const customPlans = providers
+    .filter((provider) => provider.source === 'custom')
+    .map((provider) => ({ ...provider, id: provider.provider.startsWith('custom:') ? provider.provider.slice(7) : provider.provider }))
   const cpamcOn = draft.cpamcEnabled
   const volcanoOn = draft.volcanoEnabled
 
-  const testSource = (target: 'cpamc' | 'volcano'): void => {
+  const testSource = (target: 'cpamc' | 'volcano' | 'custom', id?: string): void => {
     if (sourceTest?.busy === true) return
-    setSourceTest({ target, busy: true })
+    setSourceTest({ target, id, busy: true })
     void fetch('/api/dsh-usage-plus/test', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ target }),
+      body: JSON.stringify(id === undefined ? { target } : { target, id }),
     })
       .then(async (response) => {
         const payload = await response.json().catch(() => undefined) as UsageSourceTestResult | undefined
@@ -1749,9 +1772,9 @@ function SettingsRow(props: {
         if (payload === undefined) throw new Error('empty response')
         return payload
       })
-      .then((result) => { setSourceTest({ target, busy: false, result }) })
+      .then((result) => { setSourceTest({ target, id, busy: false, result }) })
       .catch((error: unknown) => {
-        setSourceTest({ target, busy: false, error: error instanceof Error ? error.message : String(error) })
+        setSourceTest({ target, id, busy: false, error: error instanceof Error ? error.message : String(error) })
       })
   }
 
@@ -1763,9 +1786,13 @@ function SettingsRow(props: {
   }
   const testText = (result: UsageSourceTestResult | undefined): string => {
     if (result === undefined || !result.ok) {
-      return t('usage.config.testFailed', { error: result?.error ?? 'unknown error' })
+      const error = result?.error
+      const shown = result?.target === 'custom' ? friendlyCustomPlanError(error) : undefined
+      return t('usage.config.testFailed', { error: shown ?? error ?? 'unknown error' })
     }
-    const head = result.accounts === undefined
+    const head = result.target === 'custom'
+      ? t('usage.config.testCustomOk', { windows: result.windows?.length ?? 0, ms: result.latencyMs })
+      : result.accounts === undefined
       ? t('usage.config.testOkPlain', { ms: result.latencyMs })
       : t('usage.config.testOk', { accounts: result.accounts, ms: result.latencyMs })
     const windows = result.windows === undefined || result.windows.length === 0
@@ -2009,6 +2036,90 @@ function SettingsRow(props: {
                 }`}
             </span>
           )}
+          {customPlansSupported && (
+            <>
+              <div className={styles.settingStack}>
+                <span className={styles.settingLabel}>{t('usage.config.customPlans')}</span>
+                <textarea
+                  className={styles.customPlansInput}
+                  value={draft.customPlans}
+                  disabled={disabled || saving}
+                  spellCheck={false}
+                  rows={Math.min(16, Math.max(4, draft.customPlans.split('\n').length + 1))}
+                  placeholder={t('usage.config.customPlans.placeholder')}
+                  onChange={(event) => { edit('customPlans', event.target.value) }}
+                  onBlur={() => {
+                    // Pretty-print only a valid document, and only on blur so
+                    // typing is never rewritten under the cursor.
+                    const text = draft.customPlans.trim()
+                    if (text === '' || !text.startsWith('[')) return
+                    try {
+                      const formatted = JSON.stringify(JSON.parse(text), null, 2)
+                      if (formatted !== draft.customPlans.trim()) edit('customPlans', formatted)
+                    } catch {
+                      // Invalid JSON stays exactly as the user typed it.
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    // A JSON editor must keep Enter/Tab local instead of
+                    // submitting or moving focus away from the field.
+                    if (event.key === 'Enter' || event.key === 'Tab') event.stopPropagation()
+                  }}
+                />
+              </div>
+              <span className={styles.settingHint}>{t('usage.config.customPlansHint')}</span>
+              {customPlanErrors.length > 0 && (
+                <div className={styles.settingWarn} data-dsh-part="custom-plan-errors">
+                  {customPlanErrors.map((error, index) => (
+                    <span key={`${error.index}-${error.field}-${index}`}>
+                      {`#${error.index + 1}${error.id !== undefined ? ` (${error.id})` : ''} ${error.field}: ${friendlyCustomPlanError(error.message) ?? error.message}`}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {customPlans.length > 0 && (
+                <div className={styles.customPlanList} data-dsh-part="custom-plan-list">
+                  {customPlans.map((plan) => {
+                    const busy = sourceTest?.busy === true && sourceTest.target === 'custom' && sourceTest.id === plan.id
+                    const done = sourceTest?.busy === false && sourceTest.target === 'custom' && sourceTest.id === plan.id
+                    return (
+                      <div className={styles.customPlanRow} key={plan.id}>
+                        <div className={styles.customPlanHead}>
+                          <span className={styles.customPlanName}>{plan.displayName}</span>
+                          <span className={styles.scopeChip}>{plan.id}</span>
+                          <button
+                            type="button"
+                            className={styles.refreshBtn}
+                            disabled={disabled || saving || sourceTest?.busy === true}
+                            onClick={() => testSource('custom', plan.id)}
+                          >
+                            {busy ? t('usage.config.testing') : t('usage.config.test')}
+                          </button>
+                        </div>
+                        {plan.error !== undefined ? (
+                          <span className={styles.settingWarn}>{friendlyCustomPlanError(plan.error) ?? plan.error}</span>
+                        ) : (
+                          <span className={styles.settingHint}>
+                            {plan.plan?.windows !== undefined && plan.plan.windows.length > 0
+                              ? plan.plan.windows.map(testWindowText).join(' · ')
+                              : t('usage.config.customPlansPending')}
+                          </span>
+                        )}
+                        {done && (
+                          <span
+                            className={sourceTest.error !== undefined || sourceTest.result?.ok === false ? styles.sourceTestFail : styles.sourceTestOk}
+                            data-dsh-part="custom-plan-test-result"
+                          >
+                            {testText(sourceTest.result ?? (sourceTest.error === undefined ? undefined : { target: 'custom', id: plan.id, ok: false, latencyMs: 0, error: sourceTest.error }))}
+                          </span>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </>
+          )}
           <span className={styles.muted}>{t('usage.config.externalHint')}</span>
         </div>
 
@@ -2175,6 +2286,7 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
   const platformSupported = settingsFields?.includes('platformUsageEnabled') === true
     || snapshot?.platform !== undefined
     || snapshot?.costEstimate !== undefined
+  const customPlansSupported = settingsFields?.includes('customPlans') === true
 
   const onRefresh = (): void => {
     setRefreshing(true)
@@ -2222,6 +2334,8 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
           value={settingsValue}
           alertsSupported={alertsSupported}
           platformSupported={platformSupported}
+          customPlansSupported={customPlansSupported}
+          customPlanErrors={snapshot?.customPlanErrors}
           setCredential={setCredential}
           clearCredential={clearCredential}
         />
@@ -2411,6 +2525,8 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
             value={settingsValue}
             alertsSupported={alertsSupported}
           platformSupported={platformSupported}
+          customPlansSupported={customPlansSupported}
+          customPlanErrors={snapshot.customPlanErrors}
             providers={snapshot.providers}
             credentials={snapshot.externalCredentials}
             setCredential={setCredential}

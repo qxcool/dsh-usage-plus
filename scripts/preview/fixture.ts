@@ -330,6 +330,8 @@ export interface FixtureOptions {
   updatedAgoMs?: number
   /** Render the v0.5.0 threshold alerts; defaults to on for `rich`, off for `sparse`. */
   alerts?: boolean
+  /** Custom quota sources: `ready` (two probed plans), `errors` (config rejected). */
+  customPlans?: 'none' | 'ready' | 'errors'
   /**
    * Data-health fixture: `ready` (clean), `warning` (truncated backfill, a
    * failing probe and a preserved corrupt file) or `missing` (older Host that
@@ -497,13 +499,41 @@ export function buildOverview(options: FixtureOptions = {}): UsageOverviewView {
         : { pricedCalls: 0, pricedModels: 0 }),
     }
 
+  const customPlanErrors = options.customPlans === 'errors'
+    ? [{ index: 0, id: 'bad-plan', field: 'url', message: 'url must be an absolute https URL (http is allowed for loopback only)' }]
+    : []
+  const baseProviders = variant === 'sparse' ? sparseProviders(now) : planProviders(now)
+  const customProviders: ProviderSnapshotView[] = options.customPlans === 'ready'
+    ? [
+        {
+          provider: 'custom:my-plan',
+          source: 'custom',
+          displayName: '内部额度网关',
+          credential: 'env',
+          supported: true,
+          planSupported: true,
+          plan: { windows: [{ key: '5h', percent: 41, resetsAt: new Date(Date.now() + 3_600_000).toISOString() }, { key: 'week', percent: 68 }], updatedAt: now - 120_000 },
+          updatedAt: now - 120_000,
+        },
+        {
+          provider: 'custom:lite-plan',
+          source: 'custom',
+          displayName: 'Lite Plan',
+          credential: 'env',
+          supported: true,
+          planSupported: true,
+          error: 'custom plan rejected the request (401/403)',
+          updatedAt: now - 120_000,
+        },
+      ]
+    : []
   return {
     // Wall-clock on purpose: the header freshness dot is relative to render time.
     updatedAt: Date.now() - updatedAgoMs,
     current: variant === 'sparse'
       ? { provider: 'deepseek', model: 'deepseek-v4.1-flash', source: 'default' }
       : { provider: 'opencode-go', model: 'claude-sonnet-4.5', source: 'live' },
-    providers: variant === 'sparse' ? sparseProviders(now) : planProviders(now),
+    providers: [...baseProviders, ...customProviders],
     externalCredentials: variant === 'sparse'
       ? { cpamc: false, volcanoAk: false, volcanoSk: false }
       : { cpamc: true, volcanoAk: false, volcanoSk: false },
@@ -511,6 +541,7 @@ export function buildOverview(options: FixtureOptions = {}): UsageOverviewView {
     ...(health === undefined ? {} : { health }),
     ...(platform === undefined ? {} : { platform }),
     ...(costEstimate === undefined ? {} : { costEstimate }),
+    ...(customPlanErrors.length > 0 ? { customPlanErrors } : {}),
     usage: {
       today: { date: todayKey, totals: todayTotals, providers: todayRows },
       days: dayRows,

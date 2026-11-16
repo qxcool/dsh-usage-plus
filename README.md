@@ -24,6 +24,8 @@ Independent DSH usage and official Plan-quota plugin (Host + Web UI). Requires D
 - Makes the 26-week heatmap a control: click a day for its provider/model detail, switch the intensity metric (tokens / calls / cost), and future days are disabled.
 - Shows a **this-session** summary inside the composer quota popover (billed tokens, official cache hit, context occupancy, and an estimated DeepSeek CNY session cost).
 - Reads official quota / balance endpoints for DeepSeek, Moonshot (CN/intl), Kimi For Coding, Anthropic Claude Pro/Max, GLM Coding Plan (CN/intl), OpenCode Go, MiniMax (CN/intl), Codex/ChatGPT, GitHub Copilot, OpenRouter, Vercel AI Gateway, SiliconFlow (CN/intl), ZenMux and NanoGPT.
+- Accepts **generic custom quota endpoints** too: any allow-listed HTTPS URL that returns quota JSON, so a new provider needs no shipped adapter.
+- Skips a fork's inherited event prefix during history backfill, so forked sessions are not counted twice.
 
 ## Provider coverage
 
@@ -70,9 +72,9 @@ Clicking any heatmap cell fetches that local day from a loopback-only route and 
 
 ### Settings · data export and sources
 
-![Settings tab with the 数据导出 card, the 告警 threshold group (enable switch, daily-cost limit, plan percent, low-balance amount, cooldown), the 外部额度源 group (官方平台对账, USD 参考估算, CPAMC enabled/url/allowed hosts/token with 测试连接, Volcano keys) and the 数据健康 card (ledger coverage/size, backfill state, probe freshness)](docs/screenshots/settings-export.png)
+![Settings tab with the 数据导出 card, the 告警 threshold group (enable switch, daily-cost limit, plan percent, low-balance amount, cooldown), the 外部额度源 group (官方平台对账, USD 参考估算, CPAMC enabled/url/allowed hosts/token with 测试连接, Volcano keys, and the 自定义额度源 JSON editor with per-plan rows and 测试连接) and the 数据健康 card (ledger coverage/size, backfill state, probe freshness)](docs/screenshots/settings-export.png)
 
-The aggregate ledger (daily × provider × model totals) exports as CSV or JSON for the selected window; files are generated locally and the download route is loopback-only. `官方平台对账` and `USD 参考估算` can each be switched off (the platform read is an internal console API and the USD book is a network fetch); both default on, and both degrade silently when unavailable.
+The aggregate ledger (daily × provider × model totals) exports as CSV or JSON for the selected window; files are generated locally and the download route is loopback-only. `官方平台对账` and `USD 参考估算` can each be switched off (the platform read is an internal console API and the USD book is a network fetch); both default on, and both degrade silently when unavailable. The custom-plan editor pretty-prints a valid array on blur, reports rejected fields inline, and shows one test button per plan.
 
 ## Install
 
@@ -125,6 +127,45 @@ CPAMC (CLI Proxy API management console) is an optional external source: it expo
 
 Only account-level plan windows are read; CPAMC does not provide a balance and other provider accounts are ignored.
 
+## Custom quota sources
+
+**Settings → 外部额度源 → 自定义额度源（JSON）** takes a JSON array of endpoints; each one becomes a normal plan card on the Plans tab and a quota pill when its route matches. No adapter code is needed.
+
+```json
+[
+  {
+    "id": "my-plan",
+    "name": "My Plan",
+    "url": "https://quota.example.com/usage",
+    "allowedHosts": ["quota.example.com"],
+    "tokenEnv": "MY_PLAN_TOKEN",
+    "headers": { "x-tenant": "${env:MY_TENANT}" }
+  }
+]
+```
+
+| Field | Rules |
+|---|---|
+| `id` | Required, lowercase letters/digits/dash, ≤32 chars, unique. Becomes the `custom:<id>` route id. |
+| `name` | Display name; falls back to the id. |
+| `url` | Required. Absolute URL, no credentials/fragment. **https** unless the host is loopback. |
+| `allowedHosts` | Required for a remote host: the hostname must be listed here (loopback never needs it). |
+| `tokenEnv` | Optional. The environment variable holding the bearer secret; sent as `Authorization: Bearer …` and never returned to the browser. |
+| `headers` | Optional. Safe header names only (no `host`, `content-length`, `connection`, `accept-encoding`, `authorization`); values may be literals or `${env:NAME}` references resolved host-side. |
+
+Accepted response shapes (either one works; unknown labels are skipped, missing percentages are omitted rather than invented):
+
+```json
+{ "usage": { "rolling": { "percent": 41, "resetsAt": "2026-11-17T02:00:00Z" },
+             "weekly":  { "percent": 68 }, "monthly": { "percent": 22 } } }
+```
+```json
+{ "windows": [ { "label": "5h", "percent": 41, "resetAt": 1763344800 },
+               { "label": "week", "percent": 68 } ] }
+```
+
+Percentages may be `0..100` or `0..1` fractions; resets may be epoch seconds/milliseconds or ISO strings. Labels alias `5h|rolling|session`, `weekly|week|7d`, `monthly|month|30d`. Probe rules: 8s timeout, redirects refused, loopback/allow-listed hosts only, 12 entries max, typed errors surfaced per plan (and `测试连接` per entry). Invalid fields are reported inline with the JSON text, e.g. `#1 url: …` (see the settings screenshot); each accepted entry also gets its own review card and test button.
+
 ## Official platform reconcile and USD reference
 
 **官方平台对账** compares the official DeepSeek platform console month spend with the local ledger. It reuses the DeepSeek account session DSH already holds (`deepseek-account-platform/default`, or `deepseekAccount.getPlatformSession()`), sends it to `platform.deepseek.com` with the same client headers the console expects, and reads `get_user_summary` (CNY wallet / lifetime spend) plus `usage/cost` (per-day spend for the current month). It adds:
@@ -147,6 +188,8 @@ This endpoint is the console's **internal, undocumented** API. It is best-effort
 
 - Requires DSH `>= 0.2.2-rc.3 < 0.3.0`. Missing optional surfaces (`configForms`, `plugins.bundle.config`, `conversation.composer.dock`) are treated as unavailable capabilities instead of a startup failure.
 - Historical backfill runs only when the ledger is empty and the composition mounts `sessionQuery`; an existing ledger is never re-counted.
+- A fork's inherited event prefix is skipped during backfill (`inheritedEventCount` from `readSession`, falling back to events older than the fork's `createdAt`); the skipped count is shown in the data-health card.
+- Custom quota sources read their secrets from **host environment variables only** (`tokenEnv` / ``), so values must be exported to the DSH process environment rather than saved in a settings field.
 - After an upgrade, a reloaded client can briefly run against an older Host process. Alert fields are then hidden and legacy settings still save; restart DSH to load the new Host (health, alerts and the new adapters need it).
 - Alert episodes and pet-bubble cooldowns live in memory (a DSH restart starts a fresh episode); balance alerts compare CNY balances only, and the daily-cost alert counts priced routes (currently the official DeepSeek price book).
 - The official platform reconcile depends on an internal console API and therefore on a signed-in DeepSeek platform account; it can be disabled or stay silently unavailable, and its figures are official billing facts rather than a measured sample.

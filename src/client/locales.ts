@@ -200,6 +200,7 @@ export const zh = {
   'usage.health.backfillNone': '未执行（需要空台账）',
   'usage.health.backfill': '已完成 · {sessions} 会话 / {events} 事件（{ago}）',
   'usage.health.backfillTruncated': '已截断',
+  'usage.health.backfillForks': '· 跳过 {n} 条 fork 继承事件',
   'usage.health.probesLabel': '提供方探测',
   'usage.health.probesNone': '尚未成功',
   'usage.health.probes': '上次成功 {ago}',
@@ -239,6 +240,21 @@ export const zh = {
   'usage.config.secret.save': '保存',
   'usage.config.secret.clear': '清除',
   'usage.config.externalHint': '密钥写入 DSH 凭据库（不明文落盘）。CPAMC 只读取其 /v0/management 管理接口；远程 CPAMC 需把域名加入允许 host。',
+  'usage.config.customPlans': '自定义额度源（JSON）',
+  'usage.config.customPlans.placeholder': '[{"id":"my-plan","name":"我的套餐","url":"https://api.example.com/usage","allowedHosts":["api.example.com"],"tokenEnv":"MY_PLAN_TOKEN"}]',
+  'usage.config.customPlansHint': '任意返回额度 JSON 的 HTTPS 端点，无需内置适配器。字段：id（小写字母数字-）、name、url（https；回环可用 http）、allowedHosts（远程必需）、tokenEnv（承载 Bearer 密钥的环境变量）、headers（值可写 ${env:NAME}）。接受 {usage:{rolling,weekly,monthly}} 或 {windows:[{label,percent,resetAt}]} 两种返回形状；密钥只从宿主环境变量读取。',
+  'usage.config.customPlansPending': '已配置，刷新后显示窗口',
+  'usage.config.customPlanErrMissingToken': 'tokenEnv 指向的环境变量未设置：自定义额度源的密钥只从宿主环境变量读取。',
+  'usage.config.customPlanErrRedirect': '该地址发生了重定向（常见 http→https 或反代）：请直接填最终地址。',
+  'usage.config.customPlanErrAuth': '端点拒绝了请求（401/403）：tokenEnv 的密钥不正确，或该端点还需要额外 header。',
+  'usage.config.customPlanErrHost': '主机不在允许列表：http 只允许回环，远程必须 https 且域名要写进 allowedHosts。',
+  'usage.config.customPlanErrShape': '端点返回了 JSON，但没有可识别的窗口：支持 {usage:{rolling,weekly,monthly}} 或 {windows:[{label,percent,resetAt}]}。',
+  'usage.config.customPlanErrTimeout': '请求超时（8 秒）：检查网络或代理，或该端点响应过慢。',
+  'usage.config.customPlanErrJson': '端点返回的不是合法 JSON。',
+  'usage.config.customPlanErrHttp': '端点返回 HTTP {status}。',
+  'usage.config.customPlanErrNetwork': '连不上该端点（DNS / TLS / 连接被拒）：检查域名与网络。',
+  'usage.config.customPlanErrGeneric': '端点不可用：检查 url、allowedHosts、tokenEnv 与返回形状。',
+  'usage.config.testCustomOk': '连接成功 · {windows} 个窗口 · {ms} ms',
   'usage.config.readonly': '当前配置为只读，请在宿主配置文件中修改。',
   'usage.config.save': '保存',
   'usage.config.saving': '保存中…',
@@ -441,6 +457,7 @@ export const en: Record<UsageKey, string> = {
   'usage.health.backfillNone': 'Not run (needs an empty ledger)',
   'usage.health.backfill': 'Completed · {sessions} sessions / {events} events ({ago})',
   'usage.health.backfillTruncated': 'Truncated',
+  'usage.health.backfillForks': '· {n} inherited fork events skipped',
   'usage.health.probesLabel': 'Provider probes',
   'usage.health.probesNone': 'No success yet',
   'usage.health.probes': 'Last success {ago}',
@@ -480,6 +497,21 @@ export const en: Record<UsageKey, string> = {
   'usage.config.secret.save': 'Save',
   'usage.config.secret.clear': 'Clear',
   'usage.config.externalHint': 'Secrets are stored in the DSH credential vault (never written into config). CPAMC is read through its /v0/management routes only; remote CPAMC needs its hostname in the allowed hosts.',
+  'usage.config.customPlans': 'Custom quota sources (JSON)',
+  'usage.config.customPlans.placeholder': '[{"id":"my-plan","name":"My Plan","url":"https://api.example.com/usage","allowedHosts":["api.example.com"],"tokenEnv":"MY_PLAN_TOKEN"}]',
+  'usage.config.customPlansHint': 'Any HTTPS endpoint that returns quota JSON, with no shipped adapter needed. Fields: id (lowercase letters/digits/dash), name, url (https; http only for loopback), allowedHosts (required for remote), tokenEnv (env var holding the Bearer secret), headers (values may use ${env:NAME}). Accepts {usage:{rolling,weekly,monthly}} or {windows:[{label,percent,resetAt}]}; secrets are read host-side only.',
+  'usage.config.customPlansPending': 'Configured; refresh to show windows',
+  'usage.config.customPlanErrMissingToken': 'tokenEnv is not set: custom-plan secrets are read from host environment variables only.',
+  'usage.config.customPlanErrRedirect': 'The endpoint redirects (http→https or a proxy); use the final URL directly.',
+  'usage.config.customPlanErrAuth': 'The endpoint rejected the request (401/403): the tokenEnv secret is wrong, or it needs extra headers.',
+  'usage.config.customPlanErrHost': 'Host not allowed: http is loopback-only, remote hosts need https and must be listed in allowedHosts.',
+  'usage.config.customPlanErrShape': 'The endpoint returned JSON without recognizable windows: use {usage:{rolling,weekly,monthly}} or {windows:[{label,percent,resetAt}]}.',
+  'usage.config.customPlanErrTimeout': 'Request timed out (8s): check the network/proxy or that endpoint latency.',
+  'usage.config.customPlanErrJson': 'The endpoint did not return valid JSON.',
+  'usage.config.customPlanErrHttp': 'The endpoint returned HTTP {status}.',
+  'usage.config.customPlanErrNetwork': 'Cannot reach the endpoint (DNS / TLS / refused): check the hostname and network.',
+  'usage.config.customPlanErrGeneric': 'Endpoint unavailable: check url, allowedHosts, tokenEnv and the response shape.',
+  'usage.config.testCustomOk': 'Connected · {windows} window(s) · {ms} ms',
   'usage.config.readonly': 'Settings are read-only. Edit the host config file instead.',
   'usage.config.save': 'Save',
   'usage.config.saving': 'Saving…',
@@ -552,6 +584,25 @@ export function friendlyProbeError(error: string | undefined): string | undefine
   return error
 }
 
+/** Friendly, secret-free copy for a custom-plan probe failure message. */
+export function friendlyCustomPlanError(error: string | undefined): string | undefined {
+  if (error === undefined || error === '') return undefined
+  const text = error.toLowerCase()
+  if (text.includes('token env') && text.includes('not set')) return t('usage.config.customPlanErrMissingToken')
+  if (text.includes('redirect')) return t('usage.config.customPlanErrRedirect')
+  if (text.includes('401') || text.includes('403') || text.includes('rejected the request')) return t('usage.config.customPlanErrAuth')
+  if (text.includes('not loopback') || text.includes('not allowed') || text.includes('not listed in allowedhosts')) return t('usage.config.customPlanErrHost')
+  if (text.includes('url must') || text.includes('absolute url') || text.includes('must be absolute')) return t('usage.config.customPlanErrHost')
+  if (text.includes('no usable quota windows')) return t('usage.config.customPlanErrShape')
+  if (text.includes('timed out') || text.includes('timeout')) return t('usage.config.customPlanErrTimeout')
+  if (text.includes('not valid json') || text.includes('invalid json')) return t('usage.config.customPlanErrJson')
+  if (text.startsWith('custom plan http')) {
+    const status = error.match(/(\d{3})\s*$/)
+    return t('usage.config.customPlanErrHttp', { status: status?.[1] ?? '—' })
+  }
+  if (text.includes('request failed') || text.includes('fetch failed')) return t('usage.config.customPlanErrNetwork')
+  return t('usage.config.customPlanErrGeneric')
+}
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
     /** dsh-usage UI copy. */

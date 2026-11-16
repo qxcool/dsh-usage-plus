@@ -8,6 +8,12 @@
  * `request/header` / `request/context` events, and the DeepSeek spend estimate
  * is stamped at the event's own timestamp.
  *
+ * A fork copies its parent's event prefix as seed events, so folding that prefix
+ * a second time would double count turns the parent pass already counted. Seeded
+ * sessions therefore skip their inherited prefix: the exact
+ * `inheritedEventCount` from `readSession()` when available, otherwise (fake or
+ * older deployments) events stamped before the fork's `header.createdAt`.
+ *
  * The pass is bounded (session and event caps, yields between sessions) and
  * never throws; the caller merges the returned temporary ledger, flushes, and
  * records the completion state itself.
@@ -51,7 +57,7 @@ export interface SessionQueryLike {
 /** One listed session record, as much as backfill reads (installed shape). */
 interface SessionRecordLike {
   id?: string
-  header?: { id?: string; createdAt?: number }
+  header?: { id?: string; createdAt?: number; isSeeded?: boolean }
 }
 
 /** One raw session event, as much as backfill reads. */
@@ -59,6 +65,17 @@ interface SessionEventLike {
   type: string
   time: number
   data?: unknown
+}
+
+/**
+ * End of a session's fork-inherited seed prefix, whose events must not fold
+ * again because the parent pass already folded them.
+ */
+interface SeedBoundary {
+  /** Exact leading raw-event count copied from the parent fork. */
+  events?: number
+  /** Fallback boundary: inherited events predate the fork's `header.createdAt`. */
+  beforeTime?: number
 }
 
 /** Completion state persisted as `<persistDir>/backfill.json`. */
@@ -72,6 +89,12 @@ export interface BackfillState {
   sessions: number
   /** `assistant/message` events folded into the ledger. */
   events: number
+  /**
+   * Optional count of inherited fork usage events skipped because the parent
+   * session already contributed them. Absent in states written before fork
+   * tracking or when no seed prefix existed, so the version stays unchanged.
+   */
+  forkEvents?: number
   /** True when a session/event cap ended the pass early (partial history). */
   truncated?: boolean
 }
@@ -101,6 +124,12 @@ export interface BackfillResult {
   sessions: number
   /** `assistant/message` events folded into `ledger`. */
   events: number
+  /**
+   * Optional count of inherited fork `assistant/message` usage events skipped
+   * so the parent's already-folded turns are not counted twice. Absent when
+   * the pass skipped no foldable seed events.
+   */
+  forkEvents?: number
   /** Raw events inspected (diagnostic; capped separately from `events`). */
   processed: number
   /** Local-date key `YYYY-MM-DD`; events older than it are ignored. */
@@ -173,16 +202,26 @@ function totalsFromHistoricalUsage(usage: Record<string, unknown>, provider: str
   return totals
 }
 
-/** Track one session's provider/model attribution across its event log. */
+/**
+ * Track one session's provider/model attribution across its event log.
+ *
+ * In a seeded (fork) session the inherited prefix is inspected but never
+ * folded: the parent pass already counted those turns. Route events in the
+ * prefix still update attribution, so a fork that resumes an inherited route
+ * folds its own trailing usage correctly. Every inherited usage event that
+ * would otherwise have folded is tallied in `counters.forkEvents`, making the
+ * avoided double count observable.
+ */
 function replaySession(
   events: readonly unknown[],
   ledger: UsageLedgerDocument,
-  options: { startedAt: number; cutoffKey: string; maxEvents: number },
-  counters: { events: number; processed: number },
+  options: { startedAt: number; cutoffKey: string; maxEvents: number; seed?: SeedBoundary },
+  counters: { events: number; processed: number; forkEvents: number },
 ): boolean {
   let provider = ''
   let model = ''
-  for (const raw of events) {
+  for (let index = 0; index < events.length; index += 1) {
+    const raw = events[index]
     if (counters.processed >= options.maxEvents) return false
     counters.processed += 1
     if (!isObject(raw)) continue
@@ -190,6 +229,9 @@ function replaySession(
     const time = raw.time
     if (typeof type !== 'string' || typeof time !== 'number' || !Number.isFinite(time)) continue
     const data = raw.data
+    const inherited = options.seed !== undefined && (options.seed.events !== undefined
+      ? index < options.seed.events
+      : options.seed.beforeTime !== undefined && time < options.seed.beforeTime)
 
     if (type === 'request/header') {
       const header = isObject(data) ? data.header : undefined
@@ -214,10 +256,47 @@ function replaySession(
     if (localDateKey(time) < options.cutoffKey) continue
     const usage = isObject(data) && isObject(data.usage) ? data.usage : undefined
     if (usage === undefined) continue
+    // Inherited usage already belongs to the parent session's ledger bucket.
+    if (inherited) {
+      counters.forkEvents += 1
+      continue
+    }
     foldUsage(ledger, time, provider, model || 'unknown', totalsFromHistoricalUsage(usage, provider, model || 'unknown', time))
     counters.events += 1
   }
   return true
+}
+
+/**
+ * Resolve the fork-inherited prefix to skip for one session snapshot.
+ *
+ * `readSession()` returns the exact `inheritedEventCount` paired with its
+ * header, so no inference is needed when it is present (a count of `0` means
+ * nothing was inherited and skip nothing). A fake or older deployment may omit
+ * the count while still marking `header.isSeeded`; then fall back to
+ * `header.createdAt` because seed events predate the fork. That heuristic has
+ * one risk: forking while a parent turn is still in flight can leave an
+ * inherited event stamped at or after the child's creation (and therefore
+ * folded twice), or an owned event stamped before it (and therefore skipped).
+ * Non-seeded sessions always skip nothing.
+ */
+function resolveSeedBoundary(
+  snapshot: Record<string, unknown>,
+  header: Record<string, unknown> | undefined,
+  listedCreatedAt: number | undefined,
+  seeded: boolean,
+): SeedBoundary | undefined {
+  const rawCount = snapshot.inheritedEventCount
+  if (typeof rawCount === 'number' && Number.isSafeInteger(rawCount) && rawCount >= 0) {
+    return rawCount > 0 ? { events: rawCount } : undefined
+  }
+  if (!seeded) return undefined
+  const createdAt = header !== undefined && typeof header.createdAt === 'number' && Number.isFinite(header.createdAt)
+    ? header.createdAt
+    : typeof listedCreatedAt === 'number' && Number.isFinite(listedCreatedAt)
+      ? listedCreatedAt
+      : undefined
+  return createdAt !== undefined ? { beforeTime: createdAt } : undefined
 }
 
 /**
@@ -233,7 +312,7 @@ export async function collectBackfill(sessionQuery: SessionQueryLike, options: B
   const maxEvents = Math.max(1, options.maxEvents ?? MAX_BACKFILL_EVENTS)
   const yieldEvery = Math.max(1, options.yieldEvery ?? BACKFILL_YIELD_EVERY_SESSIONS)
   const ledger = createLedgerDocument()
-  const counters = { events: 0, processed: 0 }
+  const counters = { events: 0, processed: 0, forkEvents: 0 }
   const result: BackfillResult = { ok: false, ledger, sessions: 0, events: 0, processed: 0, cutoffKey, truncated: false }
 
   let listed: unknown
@@ -263,6 +342,7 @@ export async function collectBackfill(sessionQuery: SessionQueryLike, options: B
         : ''
     if (sessionId === '') continue
     const createdAt = header?.createdAt
+    const listedCreatedAt = typeof createdAt === 'number' && Number.isFinite(createdAt) ? createdAt : undefined
     // listSessions() is newest-first by creation: once a session predates the
     // retention window, every later one does too (cheap early stop).
     if (typeof createdAt === 'number' && Number.isFinite(createdAt) && localDateKey(createdAt) < cutoffKey) break
@@ -276,7 +356,20 @@ export async function collectBackfill(sessionQuery: SessionQueryLike, options: B
     }
     if (!isObject(snapshot) || !Array.isArray(snapshot.events)) continue
     result.sessions += 1
-    if (!replaySession(snapshot.events as readonly unknown[], ledger, { startedAt: options.startedAt, cutoffKey, maxEvents }, counters)) {
+    // The installed snapshot carries its header as `session`; a lightweight
+    // fake may carry it as `header` or omit it and rely on the listed record.
+    const snapshotHeader = isObject(snapshot.session)
+      ? snapshot.session
+      : isObject(snapshot.header)
+        ? snapshot.header
+        : undefined
+    const seeded = (snapshotHeader !== undefined && snapshotHeader.isSeeded === true)
+      || (header !== undefined && header.isSeeded === true)
+    const seed = resolveSeedBoundary(snapshot, snapshotHeader, listedCreatedAt, seeded)
+    const replayOptions = seed === undefined
+      ? { startedAt: options.startedAt, cutoffKey, maxEvents }
+      : { startedAt: options.startedAt, cutoffKey, maxEvents, seed }
+    if (!replaySession(snapshot.events as readonly unknown[], ledger, replayOptions, counters)) {
       result.truncated = true
       break
     }
@@ -285,6 +378,7 @@ export async function collectBackfill(sessionQuery: SessionQueryLike, options: B
   result.ok = options.shouldAbort?.() !== true
   result.events = counters.events
   result.processed = counters.processed
+  if (counters.forkEvents > 0) result.forkEvents = counters.forkEvents
   result.truncated = result.truncated || counters.processed >= maxEvents
   return result
 }

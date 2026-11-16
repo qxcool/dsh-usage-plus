@@ -59,7 +59,14 @@ function usageEvent(time: number, inputTokens = 100): RawEvent {
 interface FakeSession {
   id: string
   createdAt?: number
+  isSeeded?: boolean
+  /** Exact installed `inheritedEventCount`; omit it to exercise the fallback. */
+  inheritedEventCount?: number
   events?: unknown
+  /** Omit the snapshot's own header to exercise the listed-record fallback. */
+  omitSnapshotHeader?: boolean
+  /** Return the snapshot header under the plain `header` key instead of `session`. */
+  legacyHeaderKey?: boolean
   throws?: boolean
 }
 
@@ -79,14 +86,27 @@ function fakeSessionQuery(sessions: FakeSession[]): FakeSessionQuery {
       if (query.throwOnList === true) throw new Error('session store unavailable')
       return sessions.map((session) => ({
         id: session.id,
-        ...(session.createdAt !== undefined ? { header: { createdAt: session.createdAt } } : {}),
+        header: {
+          id: session.id,
+          ...(session.createdAt !== undefined ? { createdAt: session.createdAt } : {}),
+          isSeeded: session.isSeeded === true,
+        },
       }))
     },
     async readSession(sessionId: string): Promise<unknown> {
       query.readCalls.push(sessionId)
       const session = sessions.find((entry) => entry.id === sessionId)
       if (session?.throws === true) throw new Error('corrupt session')
-      return { events: session?.events ?? [] }
+      const snapshot: Record<string, unknown> = { events: session?.events ?? [] }
+      if (session !== undefined && session.omitSnapshotHeader !== true) {
+        snapshot[session.legacyHeaderKey === true ? 'header' : 'session'] = {
+          id: session.id,
+          ...(session.createdAt !== undefined ? { createdAt: session.createdAt } : {}),
+          isSeeded: session.isSeeded === true,
+        }
+      }
+      if (session?.inheritedEventCount !== undefined) snapshot.inheritedEventCount = session.inheritedEventCount
+      return snapshot
     },
   }
   return query
@@ -235,6 +255,156 @@ describe('collectBackfill', () => {
     expect(result.ok).toBe(false)
     expect(query.readCalls).toEqual([])
   })
+
+  it('skips a fork inherited seed prefix so parent turns are not counted twice', async () => {
+    const seedTime = daysAgo(2)
+    const forkTime = daysAgo(1)
+    const parentEvents: RawEvent[] = [
+      headerEvent(seedTime, 'deepseek-official', 'deepseek-v4'),
+      usageEvent(seedTime, 100),
+      usageEvent(seedTime + 1, 50),
+    ]
+    const query = fakeSessionQuery([
+      { id: 'parent', createdAt: seedTime, events: parentEvents },
+      {
+        id: 'fork',
+        createdAt: forkTime,
+        isSeeded: true,
+        inheritedEventCount: 3,
+        events: [...parentEvents, headerEvent(forkTime, 'deepseek-official', 'deepseek-v4'), usageEvent(forkTime, 200)],
+      },
+    ])
+    const result = await collectBackfill(query, { startedAt, retainDays: 182 })
+    // Parent folds its 2 turns; the fork folds only its 1 own turn (3 total, not 5).
+    expect(result.ok).toBe(true)
+    expect(result.sessions).toBe(2)
+    expect(result.events).toBe(3)
+    expect(result.forkEvents).toBe(2)
+    expect(result.processed).toBe(8)
+    const parentBucket = result.ledger.days[localDateKey(seedTime)]?.['deepseek-official']?.['deepseek-v4']
+    expect(parentBucket?.inputTokens).toBe(150)
+    expect(parentBucket?.calls).toBe(2)
+    const forkBucket = result.ledger.days[localDateKey(forkTime)]?.['deepseek-official']?.['deepseek-v4']
+    expect(forkBucket?.inputTokens).toBe(200)
+    expect(forkBucket?.calls).toBe(1)
+  })
+
+  it('falls back to header createdAt when a seeded snapshot omits inheritedEventCount', async () => {
+    const seedTime = daysAgo(3)
+    const forkTime = daysAgo(1)
+    const parentEvents: RawEvent[] = [
+      headerEvent(seedTime, 'p', 'm'),
+      usageEvent(seedTime, 10),
+      usageEvent(seedTime + 1, 20),
+    ]
+    const query = fakeSessionQuery([
+      { id: 'parent', createdAt: seedTime, events: parentEvents },
+      {
+        id: 'fork',
+        createdAt: forkTime,
+        isSeeded: true,
+        // No inheritedEventCount: only header.isSeeded + createdAt identify the cut.
+        events: [...parentEvents, headerEvent(forkTime, 'p', 'm'), usageEvent(forkTime, 40)],
+      },
+    ])
+    const result = await collectBackfill(query, { startedAt, retainDays: 182 })
+    expect(result.events).toBe(3)
+    expect(result.forkEvents).toBe(2)
+    expect(result.processed).toBe(8)
+    expect(result.ledger.days[localDateKey(seedTime)]?.['p']?.['m']?.inputTokens).toBe(30)
+    expect(result.ledger.days[localDateKey(forkTime)]?.['p']?.['m']?.inputTokens).toBe(40)
+  })
+
+  it('uses the listed record header when the seeded snapshot carries none', async () => {
+    const seedTime = daysAgo(3)
+    const forkTime = daysAgo(1)
+    const parentEvents: RawEvent[] = [
+      headerEvent(seedTime, 'p', 'm'),
+      usageEvent(seedTime, 5),
+      usageEvent(seedTime + 1, 6),
+    ]
+    const query = fakeSessionQuery([
+      { id: 'parent', createdAt: seedTime, events: parentEvents },
+      {
+        id: 'fork',
+        createdAt: forkTime,
+        isSeeded: true,
+        omitSnapshotHeader: true,
+        events: [...parentEvents, headerEvent(forkTime, 'p', 'm'), usageEvent(forkTime, 7)],
+      },
+    ])
+    const result = await collectBackfill(query, { startedAt, retainDays: 182 })
+    expect(result.events).toBe(3)
+    expect(result.forkEvents).toBe(2)
+    expect(result.ledger.days[localDateKey(seedTime)]?.['p']?.['m']?.inputTokens).toBe(11)
+    expect(result.ledger.days[localDateKey(forkTime)]?.['p']?.['m']?.inputTokens).toBe(7)
+  })
+
+  it('applies the exact inheritedEventCount by index rather than by event time', async () => {
+    const seedTime = daysAgo(2)
+    const forkTime = daysAgo(1)
+    const query = fakeSessionQuery([{
+      id: 'fork',
+      createdAt: forkTime,
+      isSeeded: true,
+      inheritedEventCount: 2,
+      legacyHeaderKey: true,
+      events: [
+        headerEvent(seedTime, 'p', 'm'),
+        usageEvent(seedTime, 5),
+        // After the exact cut this event is child-owned despite its inherited-looking time.
+        usageEvent(seedTime + 1, 6),
+        headerEvent(forkTime, 'p', 'm'),
+        usageEvent(forkTime, 7),
+      ],
+    }])
+    const result = await collectBackfill(query, { startedAt, retainDays: 182 })
+    expect(result.events).toBe(2)
+    expect(result.forkEvents).toBe(1)
+    expect(result.ledger.days[localDateKey(seedTime)]?.['p']?.['m']?.inputTokens).toBe(6)
+    expect(result.ledger.days[localDateKey(forkTime)]?.['p']?.['m']?.inputTokens).toBe(7)
+  })
+
+  it('folds every event for non-seeded sessions (absent or zero inheritedEventCount)', async () => {
+    const time = daysAgo(1)
+    const early = time - 1_000
+    const events = [headerEvent(early, 'p', 'm'), usageEvent(early, 10), usageEvent(early + 1, 20)]
+    const absent = await collectBackfill(fakeSessionQuery([{ id: 'plain', createdAt: time, events }]), { startedAt, retainDays: 182 })
+    expect(absent.events).toBe(2)
+    expect(absent.forkEvents).toBeUndefined()
+    const zero = await collectBackfill(fakeSessionQuery([{ id: 'zero', createdAt: time, inheritedEventCount: 0, events }]), { startedAt, retainDays: 182 })
+    expect(zero.events).toBe(2)
+    expect(zero.forkEvents).toBeUndefined()
+    // An explicit exact count of 0 wins over the seeded createdAt heuristic.
+    const seededZero = await collectBackfill(fakeSessionQuery([{
+      id: 'seeded-zero',
+      createdAt: time,
+      isSeeded: true,
+      inheritedEventCount: 0,
+      events,
+    }]), { startedAt, retainDays: 182 })
+    expect(seededZero.events).toBe(2)
+    expect(seededZero.forkEvents).toBeUndefined()
+  })
+
+  it('keeps the event cap bounded while skipping an inherited prefix', async () => {
+    const seedTime = daysAgo(2)
+    const forkTime = daysAgo(1)
+    const seedEvents: RawEvent[] = [headerEvent(seedTime, 'p', 'm'), usageEvent(seedTime, 10), usageEvent(seedTime + 1, 20)]
+    const fork: FakeSession = {
+      id: 'fork',
+      createdAt: forkTime,
+      isSeeded: true,
+      inheritedEventCount: 3,
+      events: [...seedEvents, headerEvent(forkTime, 'p', 'm'), usageEvent(forkTime, 30)],
+    }
+    const capped = await collectBackfill(fakeSessionQuery([fork]), { startedAt, retainDays: 182, maxEvents: 3 })
+    expect(capped.truncated).toBe(true)
+    expect(capped.sessions).toBe(1)
+    expect(capped.processed).toBe(3)
+    expect(capped.events).toBe(0)
+    expect(capped.forkEvents).toBe(2)
+  })
 })
 
 describe('backfill helpers', () => {
@@ -250,6 +420,20 @@ describe('backfill helpers', () => {
     const now = new Date(2026, 10, 16, 12, 0, 0).getTime()
     expect(retentionCutoffKey(now, 7)).toBe('2026-11-09')
     expect(retentionCutoffKey(now, 182)).toBe('2026-05-18')
+  })
+
+  it('round-trips backfill state with and without optional forkEvents at version 1', () => {
+    expect(BACKFILL_STATE_VERSION).toBe(1)
+    const base: BackfillState = { version: BACKFILL_STATE_VERSION, completedAt: 1, cutoff: 2, sessions: 3, events: 4 }
+    const without: BackfillState = { ...base }
+    const withFork: BackfillState = { ...base, forkEvents: 2, truncated: true }
+    const parsedWithout = JSON.parse(JSON.stringify(without)) as BackfillState
+    const parsedWith = JSON.parse(JSON.stringify(withFork)) as BackfillState
+    expect(parsedWithout).toEqual(without)
+    expect(parsedWith).toEqual(withFork)
+    expect(parsedWithout.forkEvents).toBeUndefined()
+    expect(parsedWith.forkEvents).toBe(2)
+    expect(parsedWith.version).toBe(BACKFILL_STATE_VERSION)
   })
 })
 
@@ -353,6 +537,67 @@ describe('UsageService backfill wiring', () => {
       expect(hasLedgerUsage(internals.ledger)).toBe(false)
       expect(await readState(dir)).toEqual(state)
     } finally {
+      await service.stop()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('accepts an existing completion state carrying optional forkEvents', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-usage-backfill-state-fork-'))
+    const query = fakeSessionQuery([{ id: 'prior', createdAt: daysAgo(1), events: [usageEvent(daysAgo(1))] }])
+    const state: BackfillState = {
+      version: BACKFILL_STATE_VERSION,
+      completedAt: 1,
+      cutoff: 2,
+      sessions: 3,
+      events: 4,
+      forkEvents: 2,
+    }
+    await writeFile(backfillStatePath(dir), JSON.stringify(state), 'utf8')
+    const service = new UsageService(serviceContext(query), OPTIONS, dir)
+    const internals = internalsOf(service)
+    try {
+      await internals.loadPersisted()
+      await internals.maybeBackfill(Date.now())
+      expect(query.listCalls).toBe(0)
+      expect(await readState(dir)).toEqual(state)
+    } finally {
+      await service.stop()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rebuilds an empty ledger without folding a fork seed prefix twice', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-usage-backfill-fork-'))
+    const seedTime = daysAgo(2)
+    const forkTime = daysAgo(1)
+    const parentEvents: RawEvent[] = [
+      headerEvent(seedTime, 'deepseek-official', 'deepseek-v4'),
+      usageEvent(seedTime, 100),
+      usageEvent(seedTime + 1, 50),
+    ]
+    const query = fakeSessionQuery([
+      { id: 'parent', createdAt: seedTime, events: parentEvents },
+      {
+        id: 'fork',
+        createdAt: forkTime,
+        isSeeded: true,
+        inheritedEventCount: 3,
+        events: [...parentEvents, headerEvent(forkTime, 'deepseek-official', 'deepseek-v4'), usageEvent(forkTime, 200)],
+      },
+    ])
+    const service = new UsageService(serviceContext(query), OPTIONS, dir)
+    const internals = internalsOf(service)
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    try {
+      await internals.loadPersisted()
+      await internals.maybeBackfill(Date.now())
+      // The parent's 2 turns plus the fork's single own turn, never 5.
+      expect(internals.ledger.days[localDateKey(seedTime)]?.['deepseek-official']?.['deepseek-v4']?.inputTokens).toBe(150)
+      expect(internals.ledger.days[localDateKey(forkTime)]?.['deepseek-official']?.['deepseek-v4']?.inputTokens).toBe(200)
+      expect(await readState(dir)).toMatchObject({ version: BACKFILL_STATE_VERSION, sessions: 2, events: 3 })
+    } finally {
+      info.mockRestore()
       await service.stop()
       await rm(dir, { recursive: true, force: true })
     }

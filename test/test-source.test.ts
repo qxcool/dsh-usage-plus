@@ -102,7 +102,7 @@ describe('external test route', () => {
     const out = response()
     await route.handler(request('/api/dsh-usage-plus/test', 'POST', { target: 'cpamc' }), out.res)
     expect(out.status()).toBe(200)
-    expect(service.testExternalSource).toHaveBeenCalledWith('cpamc')
+    expect(service.testExternalSource).toHaveBeenCalledWith('cpamc', undefined)
     expect(JSON.parse(out.body())).toEqual(result)
   })
 })
