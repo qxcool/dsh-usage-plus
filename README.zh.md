@@ -8,7 +8,7 @@
 
 ## 特性
 
-- 自动复用 DSH 已配置模型的凭据，查询 Kimi Coding、GLM Coding Plan、OpenCode Go、MiniMax Coding Plan 与 Codex/ChatGPT 订阅额度。
+- 自动复用 DSH 已配置模型的凭据，查询 DeepSeek、Moonshot（国内/国际）、Kimi Coding、Anthropic Claude Pro/Max、GLM Coding Plan（国内/国际）、OpenCode Go、MiniMax（国内/国际）、Codex/ChatGPT、GitHub Copilot、OpenRouter、Vercel AI Gateway、SiliconFlow（国内/国际）、ZenMux 与 NanoGPT 的官方余额/额度。
 - 在 `conversation.composer.dock`（与官方轮次 / Token / ContextMeter 同行）显示当前模型的真实 5 小时、每周、每月额度；服务端没有返回官方额度窗口时完全不显示。
 - 插件页每个数字都带口径徽标（`全设备` / `账号级` / `本会话`），设备级合计不会被误读成会话级数字。
 - 额度条按「每个会话选择的模型」解析：读取该会话 `modelSelection` 投影（composer 模型位 / `/model` 切换立即生效）。尚未产生会话选择时才回退到宿主当前路由；**会话已选中模型时绝不再串到其它会话或全局套餐**。
@@ -21,24 +21,26 @@
 - 宿主按数据版本缓存概览文档：热轮询不再重新聚合台账，并用缓存 ETag 直接返回 `304`。
 - 概览支持 7 / 30 / 90 / 182 天窗口切换，并可从插件页把聚合台账导出为 CSV 或 JSON。
 - 首次安装时若台账为空，会从 DSH 会话历史回填既有用量（有界、受保留期限制，写入 `backfill.json` 标记；需要宿主组合挂载 session query 服务）。
+- 可选阈值告警：今日已计价消费、套餐窗口百分比、人民币余额过低；页面横幅 + 复用宠物气泡，按可配置冷却时间去重。
+- 设置页数据健康卡：台账覆盖与体积、保留期、回填状态、探测新鲜度/失败提供方、保留的损坏文件记录。
 
 ## 截图
 
 ### 输入框额度条（当前模型）
 
-![输入框底部状态行（OpenCode Go 路由）：轮次/步数、总 token 与缓存命中率，以及紧凑的「额度 5h 63.5% · 周 78.2% · 月 18.4%」额度胶囊](docs/screenshots/composer-plan-strip.png)
+![输入框底部状态行（OpenCode Go 路由）：轮次/步数、总 token 与缓存命中率，以及紧凑的「额度 5h 63.5% · 周 78.2% · 月 18.4%」额度胶囊；右上角琥珀色小圆点表示该提供方有阈值告警](docs/screenshots/composer-plan-strip.png)
 
 当前模型命中套餐后，在 composer dock 状态条显示官方 5 小时 / 周 / 月额度的紧凑胶囊，环形标记最紧窗口；点开可看逐窗口进度条、重置时间与来源徽标（如「火山」）。无官方窗口时不渲染。
 
 ### 插件 → 已安装插件 → dsh-usage-plus · 概览
 
-![使用统计概览（全设备口径）：今日主数字与较昨日对比、近 30 天（可切换 7/30/90/182 天）/ 累计 / 调用 / 平均成本、缓存命中率环、26 周（周一至周日）活动热力图（星期栏、按列对齐的月份标签、活跃天数与峰值）、账号级额度环、提供方趋势、今日提供方明细与 Token 分桶，以及可展开的按日历史](docs/screenshots/settings-overview.png)
+![使用统计概览（全设备口径）：顶部三行阈值告警（日消费、套餐窗口、余额不足），下方为今日主数字与较昨日对比、近 30 天（可切换 7/30/90/182 天）/ 累计 / 调用 / 平均成本、缓存命中率环、26 周（周一至周日）活动热力图（星期栏、按列对齐的月份标签、活跃天数与峰值）、账号级额度环、提供方趋势、今日提供方明细与 Token 分桶，以及可展开的按日历史](docs/screenshots/settings-overview.png)
 
 概览是一块仪表盘：今日主数字、作为主图的 26 周热力图、账号级额度环与可切换 7 / 30 / 90 / 182 天窗口的提供方排名。所有数字都带口径徽标（`全设备` / `账号级`），余额行只展示真实余额；套餐额度、外部数据源与聚合台账的 CSV / JSON 导出在同页其它标签中。
 
 ### 设置 · 数据导出
 
-![设置页顶部「数据导出」卡片：所选 30 天窗口徽标与「导出 CSV」「导出 JSON」按钮，下方是插件设置表单](docs/screenshots/settings-export.png)
+![设置页：「数据导出」卡片、新增的「告警」阈值分组（启用开关、日消费上限、套餐阈值、余额阈值、冷却时间）与「数据健康」卡片（台账覆盖/体积、回填状态、探测新鲜度）](docs/screenshots/settings-export.png)
 
 聚合台账（按日 × 提供方 × 模型合计）可按所选窗口导出为 CSV 或 JSON；文件在本机生成，下载路由仅允许回环地址。
 
@@ -55,6 +57,27 @@ dsh plugin --profile desktop add github:qxcool/dsh-usage-plus
 GitHub 形式安装的是本仓库已提交的 `lib/` 构建产物；npm 包可能落后于 GitHub 版本，需要最新版时优先用 GitHub 形式。要求 DSH `0.2.2-rc.3` 或更新（低于 `0.3.0`）。
 
 包内已自带 patch（`id: usage-plus`，`name: dsh-usage-plus`）。若 profile 里仍有旧的 `@linxin666/dsh-usage` / `web-ui-usage`，请在 profile 的 `cordis.patch.yml` 中将其 `disabled: true`，避免 UI 重复。
+
+## 提供方覆盖
+
+| 提供方路由 id | 数据来源 | 事实 |
+|---|---|---|
+| `deepseek` / `deepseek-official` | `api.deepseek.com/user/balance` | 人民币余额 |
+| `moonshotai-cn` / `moonshotai` | Moonshot `/v1/users/me/balance` | 人民币 / 美元余额 |
+| `kimi-coding` | Kimi For Coding 用量 API | 5 小时 / 周窗口 |
+| `anthropic` | Claude Pro/Max OAuth 用量（仅 OAuth） | 5 小时 / 周窗口 |
+| `zai`（`zai-coding` 别名）/ `zai-coding-cn` | GLM Coding Plan 监控 API | 套餐窗口 |
+| `opencode-go` | OpenCode Go 用量 API | 滚动 / 周 / 月窗口 |
+| `minimax-cn` / `minimax` | MiniMax coding-plan remains API | 5 小时 / 周窗口 |
+| `openai-codex` | ChatGPT Codex 用量（OAuth） | 5 小时 / 周窗口 |
+| `github-copilot` | Copilot premium 额度（OAuth） | 月窗口 |
+| `openrouter` | OpenRouter credits API | 美元余额 |
+| `vercel-ai-gateway` | Vercel AI Gateway credits API | 美元余额 |
+| `siliconflow` / `siliconflow-cn` / `siliconflow-intl` | SiliconFlow 用户信息 | 人民币 / 美元余额 |
+| `zenmux` | ZenMux PAYG 余额 API | 美元余额 |
+| `nano-gpt`（需手工声明路由） | NanoGPT check-balance API | 美元余额 |
+
+CPAMC 与火山方舟仍作为独立外部数据源在设置页配置。仅 OAuth 的适配器（`anthropic`、`github-copilot`）在 API Key 凭据下会直接跳过而不是报错；没有可验证额度 API 的路由不显示卡片或额度条。
 
 ## 外部数据源
 
@@ -76,6 +99,7 @@ GitHub 形式安装的是本仓库已提交的 `lib/` 构建产物；npm 包可�
 
 - 要求 DSH `>= 0.2.2-rc.3 < 0.3.0`；缺少 `configForms`、`plugins.bundle.config` 或 `conversation.composer.dock` 等可选能力时自动跳过对应界面，不影响 DSH 启动。
 - 历史回填仅在台账为空且宿主组合挂载 `sessionQuery` 时执行；已有台账不会被重复计数。
+- 告警事件与宠物气泡冷却保存在内存中（DSH 重启会重新开始一个事件）；余额告警只比较人民币余额，日消费告警只统计已计价路由（目前为 DeepSeek 官方价格表）。
 - 无官方 Plan API 的提供方不会显示额度条，也不会伪造窗口。
 - CPAMC 仅允许回环（或白名单 host）；管理路由只读且拒绝重定向。
 - 火山方舟需凭据库 AK/SK（或环境变量）；签名只在 Host 进程执行。

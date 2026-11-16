@@ -16,6 +16,21 @@ export interface UsageServiceOptions {
     pollIntervalSec: number;
     bubbleMode: 'always' | 'change' | 'off';
     retainDays: number;
+    /** Master switch for threshold alerts (payload + pet bubble). Default true. */
+    alertsEnabled?: boolean;
+    /** Today's priced spend (CNY) limit; 0/absent disables the daily-cost alert. */
+    dailyCostLimitCny?: number;
+    /** Official plan-window percent that raises an alert; 0/absent disables it. */
+    planAlertPercent?: number;
+    /** Known CNY balance at/below which an alert is raised; 0/absent disables it. */
+    balanceAlertCny?: number;
+    /** Minutes between alert bubbles for the same episode key. Default 60. */
+    alertCooldownMinutes?: number;
+    /**
+     * Filesystem-fact health cache TTL in ms. Default 2000; tests set 0 to make
+     * corrupt-file/backfill-status changes visible immediately.
+     */
+    healthCacheTtlMs?: number;
     cpamcEnabled: boolean;
     cpamcBaseURL: string;
     cpamcManagementKeyEnv: string;
@@ -187,6 +202,16 @@ export declare class UsageService {
     private credentialStatusInFlight;
     /** Invalidates in-flight credential-status reads that predate a credential write. */
     private credentialStatusGeneration;
+    /** Short-TTL data-health cache: health costs filesystem reads, not per-poll work. */
+    private healthCache;
+    /** Alert episodes: `kind:provider:window` → epoch ms the current episode started. */
+    private readonly alertEpisodes;
+    /** Last pet bubble instant per alert key; enforces the configured cooldown. */
+    private readonly alertBubbleAt;
+    /** Last probe attempt instant (any provider), surfaced in `health.probes`. */
+    private probeAttemptAt;
+    /** Last successful probe instant, surfaced in `health.probes`. */
+    private probeSuccessAt;
     /**
      * @param ctx - host context.
      * @param options - resolved plugin options.
@@ -239,6 +264,25 @@ export declare class UsageService {
      * warm polls (and the pet bubble's today lookup) reuse it.
      */
     private usageSummary;
+    /**
+     * Data health. Filesystem-derived facts (ledger bytes, corrupt files,
+     * backfill state) sit behind a short TTL so a warm overview poll performs no
+     * I/O; the in-memory probe instants are cheap and refreshed on every read.
+     */
+    private currentHealth;
+    /**
+     * Filesystem/ledger facts for `currentHealth`: storage stats and backfill
+     * state. Never throws: each file read is individually guarded. The volatile
+     * probe instants are normalized out of the ETag (see `jsonEtag`).
+     */
+    private buildHealthFacts;
+    /**
+     * Bubble one newly-started alert to the pet. Honors the bubble off switch,
+     * the alert master switch, and the per-key cooldown; active alerts still
+     * appear in the overview payload regardless of whether the bubble is
+     * suppressed. Fully guarded: a missing/failing pet never breaks the overview.
+     */
+    private announceAlert;
     /** Mark a document-visible mutation: the next overview read rebuilds. */
     private bumpRevision;
     /** Mark a ledger mutation: both the document and the usage windows rebuild. */

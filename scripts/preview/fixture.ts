@@ -18,7 +18,9 @@
  */
 import type {
   ProviderSnapshotView,
+  UsageAlert,
   UsageDaySummary,
+  UsageHealth,
   UsageOverviewView,
   UsageProviderSummary,
   UsageTokenTotals,
@@ -324,6 +326,14 @@ export interface FixtureOptions {
    * Charts and day rows stay anchored to `now`, so only the header time moves.
    */
   updatedAgoMs?: number
+  /** Render the v0.5.0 threshold alerts; defaults to on for `rich`, off for `sparse`. */
+  alerts?: boolean
+  /**
+   * Data-health fixture: `ready` (clean), `warning` (truncated backfill, a
+   * failing probe and a preserved corrupt file) or `missing` (older Host that
+   * omits `overview.health`).
+   */
+  health?: 'ready' | 'warning' | 'missing'
 }
 
 /** Build the whole overview the section and the strip both consume. */
@@ -381,6 +391,70 @@ export function buildOverview(options: FixtureOptions = {}): UsageOverviewView {
   const allFrom = dateKeys[0]!
   const todayKey = dateKeys[dateKeys.length - 1]!
 
+  const showAlerts = options.alerts ?? variant !== 'sparse'
+  const alerts: UsageAlert[] = showAlerts
+    ? [
+      {
+        kind: 'daily-cost',
+        severity: 'critical',
+        value: 12.4,
+        threshold: 10,
+        since: now - 35 * 60_000,
+        message: "Today's spend ¥12.40 reached the ¥10.00 limit",
+      },
+      {
+        kind: 'plan-threshold',
+        severity: 'warning',
+        provider: 'opencode-go',
+        window: 'week',
+        value: 78,
+        threshold: 70,
+        since: now - 2 * 60 * 60_000,
+        message: 'opencode-go week at 78% (threshold 70%)',
+      },
+      {
+        kind: 'balance-low',
+        severity: 'warning',
+        provider: 'deepseek',
+        value: 23.17,
+        threshold: 50,
+        since: now - 6 * 60 * 60_000,
+        message: 'deepseek balance ¥23.17 below ¥50.00',
+      },
+    ]
+    : []
+
+  const healthMode = options.health ?? 'ready'
+  // Health freshness is relative to render time (like `updatedAt`), not the
+  // synthetic chart anchor, so relative labels stay truthful in screenshots.
+  const wallNow = Date.now()
+  const activeDays = dayRows.filter((row) => totalOf(row.totals) > 0).length
+  const health: UsageHealth | undefined = healthMode === 'missing'
+    ? undefined
+    : {
+      storage: {
+        label: '~/.dsh/dsh-usage-plus',
+        bytes: 2_411_724,
+        activeDays,
+        firstDay: dateKeys[0] ?? null,
+        lastDay: todayKey,
+        retentionDays: days,
+        corruptFiles: healthMode === 'warning' ? ['usage.json.corrupt-1763000000'] : [],
+      },
+      backfill: {
+        completedAt: wallNow - 3 * 60 * 60_000,
+        cutoff: wallNow - 180 * DAY_MS,
+        sessions: 128,
+        events: 8_412,
+        ...(healthMode === 'warning' ? { truncated: true } : {}),
+      },
+      probes: {
+        lastAttemptAt: wallNow - 20_000,
+        lastSuccessAt: wallNow - 25_000,
+        failing: healthMode === 'warning' ? ['kimi-coding'] : [],
+      },
+    }
+
   return {
     // Wall-clock on purpose: the header freshness dot is relative to render time.
     updatedAt: Date.now() - updatedAgoMs,
@@ -391,6 +465,8 @@ export function buildOverview(options: FixtureOptions = {}): UsageOverviewView {
     externalCredentials: variant === 'sparse'
       ? { cpamc: false, volcanoAk: false, volcanoSk: false }
       : { cpamc: true, volcanoAk: false, volcanoSk: false },
+    ...(alerts.length > 0 ? { alerts } : {}),
+    ...(health === undefined ? {} : { health }),
     usage: {
       today: { date: todayKey, totals: todayTotals, providers: todayRows },
       days: dayRows,

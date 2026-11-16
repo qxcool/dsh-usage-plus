@@ -14,7 +14,7 @@ and it never runs `pnpm build` / `pnpm test`.
 ```powershell
 # 1. Screenshots (starts/reuses vite by itself, writes PNGs):
 python scripts/preview/shot.py                                  # overview + strip
-python scripts/preview/shot.py --only all                       # + plans, settings, light, sparse, strip-open
+python scripts/preview/shot.py --only all                       # + plans, settings, health-warning, health-missing, no-alerts, range-90, range-retained, light, sparse, strip-open
 python scripts/preview/shot.py --prefix dev-after               # after-redesign names
 python scripts/preview/shot.py --only overview --width 900      # narrow layout probe
 python scripts/preview/shot.py --only range-90 --width 960      # 90-day window at the Plugins column
@@ -41,6 +41,8 @@ capture, and reports how long the harness took to become ready.
 | `tab`     | `usage` \| `plans` \| `settings`       | `usage`   | section tab to activate after mount           |
 | `range`   | `7` \| `30` \| `90` \| `182`            | `30`      | overview window to select after mount         |
 | `retain`  | days                                    | –         | simulate shorter ledger retention             |
+| `alerts`  | `0` \| `1`                              | rich=on   | threshold-alert fixture (empty stack when 0)  |
+| `health`  | `ready` \| `warning` \| `missing`       | `ready`   | data-health fixture / old-Host fallback       |
 | `variant` | `rich` \| `sparse`                     | `rich`    | fixture shape (see below)                     |
 | `updated` | `fresh` \| `stale`                     | `fresh`   | document age for the header freshness dot (`fresh` = 8 s, `stale` = 10 min) |
 | `open`    | `1`                                    | –         | strip: open the quota popover on load         |

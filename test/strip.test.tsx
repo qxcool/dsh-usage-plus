@@ -233,6 +233,34 @@ describe('PlanUsageStrip per-session route', () => {
     }
   })
 
+  it('shows a warning dot only when an alert names the current provider', async () => {
+    const current = { provider: 'opencode-go', model: 'glm-5.3-flash', source: 'live' as const }
+    const matching = overview({
+      current,
+      alerts: [{ kind: 'plan-threshold', severity: 'warning', provider: 'opencode-go', window: 'week', value: 78, threshold: 70, since: 1, message: 'plan' }],
+    })
+    const first = mount(createElement(PlanUsageStrip, { store: fakeStore(matching) as never }))
+    await flush()
+    const dot = first.host.querySelector('[data-dsh-part="quota-alert-dot"]')
+    expect(dot).not.toBeNull()
+    expect(dot?.getAttribute('data-alert-severity')).toBe('warning')
+    expect(first.host.textContent).toContain('额度')
+    first.root.unmount()
+
+    // A device-wide cost alert or another provider's alert must not mark this pill.
+    const unrelated = overview({
+      current,
+      alerts: [
+        { kind: 'daily-cost', severity: 'critical', value: 12.4, threshold: 10, since: 1, message: 'cost' },
+        { kind: 'balance-low', severity: 'critical', provider: 'minimax-cn', value: 3, threshold: 10, since: 2, message: 'balance' },
+      ],
+    })
+    const second = mount(createElement(PlanUsageStrip, { store: fakeStore(unrelated) as never }))
+    await flush()
+    expect(second.host.querySelector('[data-dsh-part="quota-alert-dot"]')).toBeNull()
+    second.root.unmount()
+  })
+
   it('parses session route views with next set', () => {
     expect(sessionRouteFrom({ next: { provider: 'opencode-go', model: 'glm-5.3-flash' } })).toEqual({
       provider: 'opencode-go',

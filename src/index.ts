@@ -35,6 +35,16 @@ export interface Config {
   bubbleMode?: string
   /** Ledger retention in local days. */
   retainDays?: number
+  /** Master switch for threshold alerts (in-page banner + optional pet bubble). */
+  alertsEnabled?: boolean
+  /** Today's priced spend limit in CNY; 0 disables the daily-cost alert. */
+  dailyCostLimitCny?: number
+  /** Tightest official plan window percent that raises an alert; 0 disables it. */
+  planAlertPercent?: number
+  /** Known provider balance (CNY) below which an alert is raised; 0 disables it. */
+  balanceAlertCny?: number
+  /** Minutes before the same alert kind/provider/window may bubble again. */
+  alertCooldownMinutes?: number
   cpamcEnabled?: boolean
   cpamcBaseURL?: string
   cpamcManagementKeyEnv?: string
@@ -56,6 +66,11 @@ export const Config = z.object({
   pollIntervalSec: z.number().min(30).max(3600).default(60).volatile(),
   bubbleMode: z.string().default('always').volatile(),
   retainDays: z.number().min(7).max(730).default(182).volatile(),
+  alertsEnabled: z.boolean().default(true).volatile(),
+  dailyCostLimitCny: z.number().min(0).max(1_000_000_000).default(0).volatile(),
+  planAlertPercent: z.number().min(0).max(100).default(0).volatile(),
+  balanceAlertCny: z.number().min(0).max(1_000_000_000).default(0).volatile(),
+  alertCooldownMinutes: z.number().min(1).max(1440).default(60).volatile(),
   cpamcEnabled: z.boolean().default(false).volatile(),
   cpamcBaseURL: z.string().default('http://127.0.0.1:8317').volatile(),
   cpamcManagementKeyEnv: z.string().default('CPAMC_MANAGEMENT_KEY').volatile(),
@@ -67,6 +82,11 @@ export const Config = z.object({
 
 export interface ResolvedConfig extends UsageServiceOptions {
   enabled: boolean
+  alertsEnabled: boolean
+  dailyCostLimitCny: number
+  planAlertPercent: number
+  balanceAlertCny: number
+  alertCooldownMinutes: number
 }
 
 /** Shared cosmokit volatile-reference brand (Cordis re-exports the type only). */
@@ -98,6 +118,11 @@ export function resolveConfig(input?: Record<string, unknown> | Config): Resolve
     pollIntervalSec: typeof config.pollIntervalSec === 'number' ? config.pollIntervalSec : 60,
     bubbleMode,
     retainDays: typeof config.retainDays === 'number' ? config.retainDays : 182,
+    alertsEnabled: config.alertsEnabled ?? true,
+    dailyCostLimitCny: typeof config.dailyCostLimitCny === 'number' ? config.dailyCostLimitCny : 0,
+    planAlertPercent: typeof config.planAlertPercent === 'number' ? config.planAlertPercent : 0,
+    balanceAlertCny: typeof config.balanceAlertCny === 'number' ? config.balanceAlertCny : 0,
+    alertCooldownMinutes: typeof config.alertCooldownMinutes === 'number' ? config.alertCooldownMinutes : 60,
     cpamcEnabled: config.cpamcEnabled ?? false,
     cpamcBaseURL: config.cpamcBaseURL ?? 'http://127.0.0.1:8317',
     cpamcManagementKeyEnv: config.cpamcManagementKeyEnv ?? 'CPAMC_MANAGEMENT_KEY',

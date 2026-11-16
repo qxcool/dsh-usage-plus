@@ -7,11 +7,13 @@
  * All probes run host-side (Node fetch); API keys never reach the browser.
  * @module @linxin666/dsh-usage/core/adapters
  */
-import type { PlanWindowView } from './types.ts';
+import type { CredentialKind, PlanWindowView } from './types.ts';
 /** One HTTP probe the service executes verbatim. */
 export interface ProbeSpec {
     url: string;
     headers: Record<string, string>;
+    /** HTTP method; the service defaults to GET when omitted. */
+    method?: 'GET' | 'POST';
 }
 /** Inputs an adapter may use to build a probe. */
 export interface AdapterProbeContext {
@@ -19,7 +21,17 @@ export interface AdapterProbeContext {
     apiKey: string;
     /** Provider account id riding a dedicated header, when the credential carries one (Codex). */
     accountId?: string;
+    /**
+     * The pi-ai OAuth grant's refresh token (for `github-copilot` this is the
+     * GitHub token while the access token is the Copilot bearer). Host-only:
+     * never crosses the wire.
+     */
+    refreshToken?: string;
 }
+/** Which resolved credential kind a probe half accepts. */
+export type ProbeCredentialGate = 'oauth' | 'api-key' | 'any';
+/** Whether one probe half may run with the resolved credential kind. */
+export declare function probeHalfAllowed(gate: ProbeCredentialGate | undefined, credential: CredentialKind): boolean;
 /** A parsed balance fact. */
 export interface BalanceParse {
     currency: string;
@@ -44,10 +56,14 @@ export interface ProviderAdapter {
     /** Fallback display name when the LLM runtime has none. */
     displayName: string;
     balance?: {
+        /** Credential kinds this half accepts; default `any`. */
+        credential?: ProbeCredentialGate;
         build(context: AdapterProbeContext): ProbeSpec;
         parse(status: number, body: unknown): BalanceParse | undefined;
     };
     plan?: {
+        /** Credential kinds this half accepts; default `any`. */
+        credential?: ProbeCredentialGate;
         build(context: AdapterProbeContext): ProbeSpec;
         parse(status: number, body: unknown): PlanParse | undefined;
     };

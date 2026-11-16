@@ -15,7 +15,7 @@ import { createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { UsageSectionCard, type UsageSectionFace } from '../src/client/UsageSectionCard.tsx'
 import { apply } from '../src/client/index.ts'
-import { emptyTotals, type ProviderSnapshotView, type UsageOverviewView } from '../src/core/types.ts'
+import { emptyTotals, type ProviderSnapshotView, type UsageAlert, type UsageHealth, type UsageOverviewView } from '../src/core/types.ts'
 import { createUsageStore } from '../src/client/usage-store.ts'
 import { exportRequestPath, overviewRequestPath, type UsageRangeDays } from '../src/client/usage-api.ts'
 import styles from '../src/client/usage.module.css'
@@ -86,7 +86,11 @@ function overview(): UsageOverviewView {
 
 function face(
   snapshot: UsageOverviewView,
-  options: { rangeDays?: UsageRangeDays; onRange?: (days: UsageRangeDays) => void } = {},
+  options: {
+    rangeDays?: UsageRangeDays
+    onRange?: (days: UsageRangeDays) => void
+    onMutate?: (ops: ReadonlyArray<{ op: string; path: readonly string[]; value?: unknown }>) => void
+  } = {},
 ): Record<string, unknown> {
   const state = {
     snapshot,
@@ -107,7 +111,10 @@ function face(
       getSnapshot: () => ({ status: 'ready', value: {}, writable: true, revision: 0 }),
       subscribe: () => () => {},
       set: async () => true,
-      mutate: async () => true,
+      mutate: async (ops: ReadonlyArray<{ op: string; path: readonly string[]; value?: unknown }>) => {
+        options.onMutate?.(ops)
+        return true
+      },
     },
   }
 }
@@ -349,5 +356,186 @@ describe('overview window and export', () => {  let root: Root | undefined
       '/api/dsh-usage-plus/overview?days=7',
     ])
     expect(overviewInit(2)?.headers).toEqual({ 'if-none-match': '"etag-7"' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v0.5.0: threshold alerts, alert settings, data health.
+// ---------------------------------------------------------------------------
+
+/** Set a controlled input the way React's onChange sees a real edit. */
+function setInputValue(input: HTMLInputElement, value: string): void {
+  act(() => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    setter?.call(input, value)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+
+function pressTab(host: HTMLElement, label: string): void {
+  const button = [...host.querySelectorAll('button')].find((candidate) => candidate.textContent === label)
+  expect(button).toBeDefined()
+  act(() => {
+    button?.click()
+  })
+}
+
+const ALERTS: UsageAlert[] = [
+  { kind: 'daily-cost', severity: 'critical', value: 12.4, threshold: 10, since: 1, message: 'daily cost' },
+  { kind: 'plan-threshold', severity: 'warning', provider: 'opencode-go', window: 'week', value: 78, threshold: 70, since: 2, message: 'plan threshold' },
+  { kind: 'balance-low', severity: 'warning', provider: 'opencode-go', value: 23.17, threshold: 50, since: 3, message: 'balance low' },
+]
+
+function healthy(): UsageHealth {
+  const now = Date.now()
+  return {
+    storage: {
+      label: '~/.dsh/dsh-usage-plus',
+      bytes: 2_411_724,
+      activeDays: 42,
+      firstDay: '2026-10-03',
+      lastDay: '2026-11-16',
+      retentionDays: 182,
+      corruptFiles: ['usage.json.corrupt-1763000000'],
+    },
+    backfill: { completedAt: now - 3 * 60 * 60_000, cutoff: now - 180 * 86_400_000, sessions: 128, events: 8_412, truncated: true },
+    probes: { lastAttemptAt: now - 20_000, lastSuccessAt: now - 25_000, failing: ['kimi-coding'] },
+  }
+}
+
+describe('threshold alerts', () => {
+  let root: Root | undefined
+  afterEach(() => {
+    cleanup()
+    root?.unmount()
+    root = undefined
+  })
+
+  it('renders one banner per alert with kind copy, severity styling and scope chips', async () => {
+    const snapshot = overview()
+    snapshot.alerts = ALERTS
+    const { host, root: mounted } = mount(snapshot)
+    root = mounted
+    await flush()
+
+    const stack = host.querySelector('[data-dsh-part="alert-stack"]')
+    expect(stack).not.toBeNull()
+    expect(stack?.getAttribute('data-alert-count')).toBe('3')
+    const items = [...host.querySelectorAll('[data-dsh-part="alert"]')]
+    expect(items).toHaveLength(3)
+    expect(items[0]?.getAttribute('data-alert-kind')).toBe('daily-cost')
+    expect(items[0]?.getAttribute('data-alert-severity')).toBe('critical')
+    expect(items[1]?.getAttribute('data-alert-severity')).toBe('warning')
+    expect(items[1]?.getAttribute('data-alert-provider')).toBe('opencode-go')
+
+    // Localized by kind, not the Host's English message.
+    expect(host.textContent).toContain('今日消费 ¥12.40 已达上限 ¥10.00')
+    expect(host.textContent).toContain('opencode-go (completions) 每周 已用 78%（阈值 70%）')
+    expect(host.textContent).toContain('opencode-go (completions) 余额 ¥23.17 低于 ¥50.00')
+    // Scope chips: device-wide cost vs account-level provider facts.
+    expect(items[0]?.textContent).toContain('全设备')
+    expect(items[1]?.textContent).toContain('账号级')
+  })
+
+  it('renders no stack at all when the Host reports no alerts', async () => {
+    const { host, root: mounted } = mount(overview())
+    root = mounted
+    await flush()
+    expect(host.querySelector('[data-dsh-part="alert-stack"]')).toBeNull()
+    expect(host.querySelector('[data-dsh-part="alert"]')).toBeNull()
+  })
+})
+
+describe('alert settings and data health', () => {
+  let root: Root | undefined
+  afterEach(() => {
+    cleanup()
+    root?.unmount()
+    root = undefined
+  })
+
+  it('stages and saves all five alert fields with the existing payload semantics', async () => {
+    const calls: Array<ReadonlyArray<{ op: string; path: readonly string[]; value?: unknown }>> = []
+    const { host, root: mounted } = mount(overview(), { onMutate: (ops) => calls.push(ops) })
+    root = mounted
+    await flush()
+    pressTab(host, '设置')
+
+    const group = host.querySelector<HTMLElement>('[data-dsh-part="alert-settings"]')
+    expect(group).not.toBeNull()
+    const inputs = [...(group?.querySelectorAll<HTMLInputElement>('input') ?? [])]
+    expect(inputs).toHaveLength(5)
+    // Defaults mirror the Host schema: alerts on, 0 thresholds, 60-minute cooldown.
+    expect(inputs[0]?.type).toBe('checkbox')
+    expect(inputs[0]?.checked).toBe(true)
+    expect(inputs[1]?.value).toBe('0')
+    expect(inputs[4]?.value).toBe('60')
+
+    // Turning alerts off disables the threshold inputs without losing values.
+    act(() => inputs[0]?.click())
+    expect(inputs[1]?.disabled).toBe(true)
+    act(() => inputs[0]?.click())
+    expect(inputs[1]?.disabled).toBe(false)
+
+    setInputValue(inputs[1]!, '25')
+    setInputValue(inputs[2]!, '85')
+    setInputValue(inputs[3]!, '40')
+    setInputValue(inputs[4]!, '30')
+
+    const save = [...host.querySelectorAll<HTMLButtonElement>('[data-dsh-part="settings-row"] button')]
+      .filter((button) => button.textContent === '保存' && !button.disabled)
+      .pop()
+    expect(save).toBeDefined()
+    await act(async () => {
+      save?.click()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+
+    expect(calls).toHaveLength(1)
+    const byPath = new Map((calls[0] ?? []).map((op) => [op.path.join('.'), op.value]))
+    expect(byPath.get('alertsEnabled')).toBe(true)
+    expect(byPath.get('dailyCostLimitCny')).toBe(25)
+    expect(byPath.get('planAlertPercent')).toBe(85)
+    expect(byPath.get('balanceAlertCny')).toBe(40)
+    expect(byPath.get('alertCooldownMinutes')).toBe(30)
+  })
+
+  it('renders coverage, ledger size, backfill, probes and corrupt files in the health card', async () => {
+    const snapshot = overview()
+    snapshot.health = healthy()
+    snapshot.providers.push(provider({ provider: 'kimi-coding', displayName: 'Kimi Coding' }))
+    const { host, root: mounted } = mount(snapshot)
+    root = mounted
+    await flush()
+    pressTab(host, '设置')
+
+    const card = host.querySelector('[data-dsh-part="health-card"]')
+    expect(card).not.toBeNull()
+    expect(card?.getAttribute('data-health-state')).toBe('ready')
+    expect(host.textContent).toContain('台账覆盖')
+    expect(host.textContent).toContain('10-03 至 11-16')
+    expect(host.textContent).toContain('42/182 天有数据')
+    expect(host.textContent).toContain('2.3 MiB')
+    expect(host.textContent).toContain('已完成')
+    expect(host.textContent).toContain('128 会话 / 8412 事件')
+    expect(host.textContent).toContain('已截断')
+    expect(host.textContent).toContain('Kimi Coding')
+    expect(host.textContent).toContain('发现 1 个损坏台账文件')
+    // Coverage bar width = activeDays / retentionDays.
+    const fill = host.querySelector<HTMLElement>('[data-dsh-part="health-coverage"] span[style*="width"]')
+    expect(fill?.style.width).toMatch(/^23\.0/)
+  })
+
+  it('falls back to a note when an older Host omits health', async () => {
+    const snapshot = overview()
+    delete snapshot.health
+    const { host, root: mounted } = mount(snapshot)
+    root = mounted
+    await flush()
+    pressTab(host, '设置')
+
+    const card = host.querySelector('[data-dsh-part="health-card"]')
+    expect(card?.getAttribute('data-health-state')).toBe('missing')
+    expect(host.textContent).toContain('需要 v0.5.0 及以上')
   })
 })

@@ -20,7 +20,7 @@ import { isDeepSeekProviderRoute } from '../core/adapters.ts'
 import { buildHeatmapGrid } from '../core/heatmap.ts'
 import { currentPlanProvider, orderedPlanWindows, planSourceLabelKey, planTabProviders } from '../core/plan-match.ts'
 import { deepseekPeriodAt } from '../core/pricing.ts'
-import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotView, UsageDaySummary, UsageOverviewView, UsageProviderSummary, UsageTokenTotals } from '../core/types.ts'
+import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotView, UsageAlert, UsageDaySummary, UsageHealth, UsageOverviewView, UsageProviderSummary, UsageTokenTotals } from '../core/types.ts'
 import { exportRequestPath, USAGE_RANGE_DAYS, type UsageRangeDays } from './usage-api.ts'
 
 /** The settings fields this section edits (staged Save via configForms.mutate). */
@@ -28,6 +28,16 @@ export interface UsageSettings {
   enabled?: boolean
   pollIntervalSec?: number
   bubbleMode?: string
+  /** Master switch for threshold alerts (Overview banner + strip warning dot). */
+  alertsEnabled?: boolean
+  /** Today's priced spend limit in CNY; 0 disables the daily-cost alert. */
+  dailyCostLimitCny?: number
+  /** Tightest official plan window percent that raises an alert; 0 disables it. */
+  planAlertPercent?: number
+  /** Known provider balance (CNY) below which an alert is raised; 0 disables it. */
+  balanceAlertCny?: number
+  /** Minutes before the same alert kind/provider/window may bubble again. */
+  alertCooldownMinutes?: number
   cpamcEnabled?: boolean
   cpamcBaseURL?: string
   cpamcManagementKeyEnv?: string
@@ -973,6 +983,178 @@ function ExportCard(props: { days: UsageRangeDays }): ReactNode {
 }
 
 // ---------------------------------------------------------------------------
+// Threshold alerts (Overview banner stack).
+// ---------------------------------------------------------------------------
+
+/** Localized label for the plan window key carried by a plan alert. */
+function alertWindowLabel(window: string | undefined): string {
+  if (window === undefined || window === '') return ''
+  if (window === '5h' || window === 'week' || window === 'month') return t(`usage.plan.windows.${window}`)
+  return window
+}
+
+/** One alert's kind-specific copy; unknown future kinds fall back to the wire message. */
+function alertText(alert: UsageAlert, nameOf: ReadonlyMap<string, string>): string {
+  const provider = alert.provider === undefined ? '' : nameOf.get(alert.provider) ?? alert.provider
+  switch (alert.kind) {
+    case 'daily-cost':
+      return t('usage.alerts.dailyCost', { value: formatCost(alert.value), threshold: formatCost(alert.threshold) })
+    case 'plan-threshold':
+      return t('usage.alerts.plan', {
+        provider,
+        window: alertWindowLabel(alert.window),
+        value: percentText(alert.value),
+        threshold: percentText(alert.threshold),
+      })
+    case 'balance-low':
+      return t('usage.alerts.balance', { provider, value: formatCost(alert.value), threshold: formatCost(alert.threshold) })
+    default:
+      return alert.message
+  }
+}
+
+/**
+ * Compact stack of the Host's active threshold alerts. Renders nothing when
+ * there is no alert, so the Overview never reserves dead space.
+ */
+function AlertStack(props: { alerts: UsageAlert[]; providers: ProviderSnapshotView[] }): ReactNode {
+  const { alerts, providers } = props
+  if (alerts.length === 0) return null
+  const nameOf = new Map(providers.map((provider) => [provider.provider, provider.displayName]))
+  return (
+    <div className={styles.alertStack} data-dsh-part="alert-stack" data-alert-count={alerts.length} role="status" aria-live="polite">
+      {alerts.map((alert) => (
+        <div
+          key={`${alert.kind}:${alert.provider ?? ''}:${alert.window ?? ''}:${alert.since}`}
+          className={`${styles.alertItem} ${alert.severity === 'critical' ? styles.alertCritical : styles.alertWarning}`}
+          data-dsh-part="alert"
+          data-alert-kind={alert.kind}
+          data-alert-severity={alert.severity}
+          data-alert-provider={alert.provider ?? ''}
+        >
+          <span className={styles.alertGlyph} aria-hidden="true">!</span>
+          <span className={styles.alertText}>{alertText(alert, nameOf)}</span>
+          <span className={styles.alertChips}>
+            {alert.provider !== undefined && <span className={styles.scopeChip}>{nameOf.get(alert.provider) ?? alert.provider}</span>}
+            <span className={styles.scopeChip}>{alert.kind === 'daily-cost' ? t('usage.scope.device') : t('usage.scope.account')}</span>
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Data health (Settings tab reference card).
+// ---------------------------------------------------------------------------
+
+/** Human-readable byte size; the health card is the only place bytes surface. */
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KiB', 'MiB', 'GiB'] as const
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return `${unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`
+}
+
+/** Coarse relative time for probe/backfill timestamps. */
+function formatAgo(ms: number, now = Date.now()): string {
+  const minutes = Math.max(0, Math.round((now - ms) / 60_000))
+  if (minutes < 1) return t('usage.health.ago.now')
+  if (minutes < 60) return t('usage.health.ago.minutes', { n: minutes })
+  const hours = Math.round(minutes / 60)
+  if (hours < 48) return t('usage.health.ago.hours', { n: hours })
+  return t('usage.health.ago.days', { n: Math.round(hours / 24) })
+}
+
+/** Ledger coverage, backfill, probe and corruption health. */
+function HealthCard(props: { health?: UsageHealth; providers: ProviderSnapshotView[] }): ReactNode {
+  const { health, providers } = props
+  if (health === undefined) {
+    return (
+      <section className={`${styles.card} ${styles.healthCard}`} data-dsh-part="health-card" data-health-state="missing">
+        <span className={styles.cardTitle}>{t('usage.health.title')}</span>
+        <span className={styles.muted}>{t('usage.health.missing')}</span>
+      </section>
+    )
+  }
+  const { storage, backfill, probes } = health
+  const coverage = storage.retentionDays > 0
+    ? Math.min(100, Math.max(0, (storage.activeDays / storage.retentionDays) * 100))
+    : 0
+  const nameOf = new Map(providers.map((provider) => [provider.provider, provider.displayName]))
+  const failing = probes.failing.map((id) => nameOf.get(id) ?? id)
+  return (
+    <section className={`${styles.card} ${styles.healthCard}`} data-dsh-part="health-card" data-health-state="ready">
+      <div className={styles.cardHead}>
+        <div className={styles.cardHeadGroup}>
+          <span className={styles.cardTitle}>{t('usage.health.title')}</span>
+          <span className={styles.scopeChip}>{storage.label}</span>
+        </div>
+      </div>
+      <div className={styles.healthBody}>
+        <div className={styles.healthRow} data-dsh-part="health-coverage">
+          <span className={styles.healthLabel}>{t('usage.health.coverageLabel')}</span>
+          <span className={`${styles.healthValue} ${styles.mono}`}>
+            {storage.firstDay !== null && storage.lastDay !== null
+              ? t('usage.health.coverage', { from: storage.firstDay.slice(5), to: storage.lastDay.slice(5) })
+              : t('usage.health.noDays')}
+          </span>
+          <span className={styles.healthHint}>{t('usage.health.coverageDays', { active: storage.activeDays, retention: storage.retentionDays })}</span>
+          <span className={styles.healthBar} aria-hidden="true">
+            <span style={{ width: `${coverage}%` }} />
+          </span>
+        </div>
+        <div className={styles.healthRow} data-dsh-part="health-ledger">
+          <span className={styles.healthLabel}>{t('usage.health.ledgerLabel')}</span>
+          <span className={`${styles.healthValue} ${styles.mono}`}>{formatBytes(storage.bytes)}</span>
+          <span className={styles.healthHint}>{storage.label}</span>
+        </div>
+        <div className={styles.healthRow} data-dsh-part="health-backfill">
+          <span className={styles.healthLabel}>{t('usage.health.backfillLabel')}</span>
+          {backfill === null
+            ? <span className={`${styles.healthValue} ${styles.muted}`}>{t('usage.health.backfillNone')}</span>
+            : (
+              <span className={styles.healthValue}>
+                {t('usage.health.backfill', {
+                  ago: formatAgo(backfill.completedAt),
+                  sessions: backfill.sessions,
+                  events: backfill.events,
+                })}
+              </span>
+            )}
+          {backfill?.truncated === true && <span className={styles.healthWarn}>{t('usage.health.backfillTruncated')}</span>}
+        </div>
+        <div className={styles.healthRow} data-dsh-part="health-probes">
+          <span className={styles.healthLabel}>{t('usage.health.probesLabel')}</span>
+          <span className={styles.healthValue}>
+            {probes.lastSuccessAt === null
+              ? t('usage.health.probesNone')
+              : t('usage.health.probes', { ago: formatAgo(probes.lastSuccessAt) })}
+          </span>
+          <span className={failing.length > 0 ? styles.healthWarn : styles.healthHint}>
+            {failing.length > 0
+              ? t('usage.health.probesFailing', { providers: failing.join(' · ') })
+              : t('usage.health.probesOk')}
+          </span>
+        </div>
+        {storage.corruptFiles.length > 0 && (
+          <div className={styles.healthRow} data-dsh-part="health-corrupt">
+            <span className={styles.healthLabel}>{t('usage.health.corruptLabel')}</span>
+            <span className={styles.healthWarn}>{t('usage.health.corrupt', { n: storage.corruptFiles.length })}</span>
+            <span className={`${styles.healthHint} ${styles.mono}`}>{storage.corruptFiles.join(' · ')}</span>
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Plan windows tab.
 // ---------------------------------------------------------------------------
 
@@ -1044,14 +1226,34 @@ function PlanCard(props: { provider: ProviderSnapshotView; currentId?: string })
 // Settings tab.
 // ---------------------------------------------------------------------------
 
-const CONFIG_DEFAULTS: Required<Pick<UsageSettings, 'enabled' | 'pollIntervalSec' | 'bubbleMode' | 'cpamcEnabled' | 'cpamcBaseURL' | 'cpamcAllowedHosts' | 'volcanoEnabled'>> = {
+/** Numeric alert thresholds mirror the Host schema bounds (0 disables). */
+const ALERT_DEFAULTS = {
+  alertsEnabled: true,
+  dailyCostLimitCny: 0,
+  planAlertPercent: 0,
+  balanceAlertCny: 0,
+  alertCooldownMinutes: 60,
+} as const
+
+type AlertSettings = typeof ALERT_DEFAULTS
+
+const CONFIG_DEFAULTS: Required<Pick<UsageSettings, 'enabled' | 'pollIntervalSec' | 'bubbleMode' | 'alertsEnabled' | 'dailyCostLimitCny' | 'planAlertPercent' | 'balanceAlertCny' | 'alertCooldownMinutes' | 'cpamcEnabled' | 'cpamcBaseURL' | 'cpamcAllowedHosts' | 'volcanoEnabled'>> = {
   enabled: true,
   pollIntervalSec: 60,
   bubbleMode: 'always',
+  ...ALERT_DEFAULTS,
   cpamcEnabled: false,
   cpamcBaseURL: 'http://127.0.0.1:8317',
   cpamcAllowedHosts: '',
   volcanoEnabled: false,
+}
+
+/** Clamp one numeric alert field the way the Host schema does. */
+function clampAlertNumber(field: keyof AlertSettings, value: unknown): number {
+  const parsed = typeof value === 'number' && Number.isFinite(value) ? value : ALERT_DEFAULTS[field] as number
+  if (field === 'planAlertPercent') return Math.min(100, Math.max(0, parsed))
+  if (field === 'alertCooldownMinutes') return Math.min(1440, Math.max(1, Math.round(parsed)))
+  return Math.min(1_000_000_000, Math.max(0, parsed))
 }
 
 function normalizeSettings(value: UsageSettings | undefined): typeof CONFIG_DEFAULTS {
@@ -1060,6 +1262,11 @@ function normalizeSettings(value: UsageSettings | undefined): typeof CONFIG_DEFA
     enabled: value?.enabled ?? CONFIG_DEFAULTS.enabled,
     pollIntervalSec: typeof value?.pollIntervalSec === 'number' ? value.pollIntervalSec : CONFIG_DEFAULTS.pollIntervalSec,
     bubbleMode: bubble === 'change' || bubble === 'off' || bubble === 'always' ? bubble : CONFIG_DEFAULTS.bubbleMode,
+    alertsEnabled: value?.alertsEnabled ?? CONFIG_DEFAULTS.alertsEnabled,
+    dailyCostLimitCny: clampAlertNumber('dailyCostLimitCny', value?.dailyCostLimitCny),
+    planAlertPercent: clampAlertNumber('planAlertPercent', value?.planAlertPercent),
+    balanceAlertCny: clampAlertNumber('balanceAlertCny', value?.balanceAlertCny),
+    alertCooldownMinutes: clampAlertNumber('alertCooldownMinutes', value?.alertCooldownMinutes),
     cpamcEnabled: value?.cpamcEnabled ?? CONFIG_DEFAULTS.cpamcEnabled,
     cpamcBaseURL: value?.cpamcBaseURL ?? CONFIG_DEFAULTS.cpamcBaseURL,
     cpamcAllowedHosts: value?.cpamcAllowedHosts ?? CONFIG_DEFAULTS.cpamcAllowedHosts,
@@ -1112,6 +1319,11 @@ function SettingsRow(props: {
       { op: 'set', path: ['enabled'], value: draft.enabled },
       { op: 'set', path: ['pollIntervalSec'], value: draft.pollIntervalSec },
       { op: 'set', path: ['bubbleMode'], value: draft.bubbleMode },
+      { op: 'set', path: ['alertsEnabled'], value: draft.alertsEnabled },
+      { op: 'set', path: ['dailyCostLimitCny'], value: draft.dailyCostLimitCny },
+      { op: 'set', path: ['planAlertPercent'], value: draft.planAlertPercent },
+      { op: 'set', path: ['balanceAlertCny'], value: draft.balanceAlertCny },
+      { op: 'set', path: ['alertCooldownMinutes'], value: draft.alertCooldownMinutes },
       { op: 'set', path: ['cpamcEnabled'], value: draft.cpamcEnabled },
       { op: 'set', path: ['cpamcBaseURL'], value: draft.cpamcBaseURL },
       { op: 'set', path: ['cpamcAllowedHosts'], value: draft.cpamcAllowedHosts },
@@ -1184,6 +1396,78 @@ function SettingsRow(props: {
               <option value="off">{t('usage.config.bubbleMode.off')}</option>
             </select>
           </label>
+        </div>
+
+        <div className={styles.settingsSection} data-dsh-part="alert-settings">
+          <span className={styles.subTitle}>{t('usage.config.alerts')}</span>
+          <label className={styles.settingRow}>
+            <span>{t('usage.config.alertsEnabled')}</span>
+            <input
+              type="checkbox"
+              checked={draft.alertsEnabled}
+              disabled={disabled || saving}
+              onChange={(event) => { edit('alertsEnabled', event.target.checked) }}
+            />
+          </label>
+          <label className={styles.settingRow}>
+            <span>{t('usage.config.dailyCostLimitCny')}</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={draft.dailyCostLimitCny}
+              disabled={disabled || saving || !draft.alertsEnabled}
+              onChange={(event) => {
+                const parsed = Number(event.target.value)
+                if (Number.isFinite(parsed) && parsed >= 0) edit('dailyCostLimitCny', parsed)
+              }}
+            />
+          </label>
+          <label className={styles.settingRow}>
+            <span>{t('usage.config.planAlertPercent')}</span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={1}
+              value={draft.planAlertPercent}
+              disabled={disabled || saving || !draft.alertsEnabled}
+              onChange={(event) => {
+                const parsed = Number(event.target.value)
+                if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 100) edit('planAlertPercent', parsed)
+              }}
+            />
+          </label>
+          <label className={styles.settingRow}>
+            <span>{t('usage.config.balanceAlertCny')}</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={draft.balanceAlertCny}
+              disabled={disabled || saving || !draft.alertsEnabled}
+              onChange={(event) => {
+                const parsed = Number(event.target.value)
+                if (Number.isFinite(parsed) && parsed >= 0) edit('balanceAlertCny', parsed)
+              }}
+            />
+          </label>
+          <label className={styles.settingRow}>
+            <span>{t('usage.config.alertCooldownMinutes')}</span>
+            <input
+              type="number"
+              min={1}
+              max={1440}
+              step={1}
+              value={draft.alertCooldownMinutes}
+              disabled={disabled || saving || !draft.alertsEnabled}
+              onChange={(event) => {
+                const parsed = Number(event.target.value)
+                if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 1440) edit('alertCooldownMinutes', Math.round(parsed))
+              }}
+            />
+          </label>
+          <span className={styles.muted}>{t('usage.config.alertsHint')}</span>
         </div>
 
         <div className={styles.settingsSection}>
@@ -1543,6 +1827,9 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
             covered={coveredRange(snapshot.usage.range, ui.rangeDays)}
             onSelect={setRangeDays}
           />
+          {/* Threshold alerts sit between the range picker and the hero: they
+              are about the current facts, not the selected window. */}
+          <AlertStack alerts={snapshot.alerts ?? []} providers={snapshot.providers} />
           <div className={styles.cockpit} data-dsh-part="usage-cockpit">
             <div className={`${styles.cell} ${styles.cell12}`}>
               <HeroBand
@@ -1627,6 +1914,7 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
             setCredential={setCredential}
             clearCredential={clearCredential}
           />
+          <HealthCard health={snapshot.health} providers={snapshot.providers} />
         </>
       )}
     </div>

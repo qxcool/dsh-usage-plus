@@ -27,6 +27,16 @@ export interface Config {
     bubbleMode?: string;
     /** Ledger retention in local days. */
     retainDays?: number;
+    /** Master switch for threshold alerts (in-page banner + optional pet bubble). */
+    alertsEnabled?: boolean;
+    /** Today's priced spend limit in CNY; 0 disables the daily-cost alert. */
+    dailyCostLimitCny?: number;
+    /** Tightest official plan window percent that raises an alert; 0 disables it. */
+    planAlertPercent?: number;
+    /** Known provider balance (CNY) below which an alert is raised; 0 disables it. */
+    balanceAlertCny?: number;
+    /** Minutes before the same alert kind/provider/window may bubble again. */
+    alertCooldownMinutes?: number;
     cpamcEnabled?: boolean;
     cpamcBaseURL?: string;
     cpamcManagementKeyEnv?: string;
@@ -47,6 +57,11 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     pollIntervalSec: z<number, number, "volatile-defined">;
     bubbleMode: z<string, string, "volatile-defined">;
     retainDays: z<number, number, "volatile-defined">;
+    alertsEnabled: z<boolean, boolean, "volatile-defined">;
+    dailyCostLimitCny: z<number, number, "volatile-defined">;
+    planAlertPercent: z<number, number, "volatile-defined">;
+    balanceAlertCny: z<number, number, "volatile-defined">;
+    alertCooldownMinutes: z<number, number, "volatile-defined">;
     cpamcEnabled: z<boolean, boolean, "volatile-defined">;
     cpamcBaseURL: z<string, string, "volatile-defined">;
     cpamcManagementKeyEnv: z<string, string, "volatile-defined">;
@@ -59,6 +74,11 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     pollIntervalSec: z<number, number, "volatile-defined">;
     bubbleMode: z<string, string, "volatile-defined">;
     retainDays: z<number, number, "volatile-defined">;
+    alertsEnabled: z<boolean, boolean, "volatile-defined">;
+    dailyCostLimitCny: z<number, number, "volatile-defined">;
+    planAlertPercent: z<number, number, "volatile-defined">;
+    balanceAlertCny: z<number, number, "volatile-defined">;
+    alertCooldownMinutes: z<number, number, "volatile-defined">;
     cpamcEnabled: z<boolean, boolean, "volatile-defined">;
     cpamcBaseURL: z<string, string, "volatile-defined">;
     cpamcManagementKeyEnv: z<string, string, "volatile-defined">;
@@ -69,6 +89,11 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
 }>>, "plain">;
 export interface ResolvedConfig extends UsageServiceOptions {
     enabled: boolean;
+    alertsEnabled: boolean;
+    dailyCostLimitCny: number;
+    planAlertPercent: number;
+    balanceAlertCny: number;
+    alertCooldownMinutes: number;
 }
 /**
  * Snapshot loader Config (volatile refs or plain values) into a plain partial.

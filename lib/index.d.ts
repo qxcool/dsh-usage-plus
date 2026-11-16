@@ -6,6 +6,21 @@ interface UsageServiceOptions {
   pollIntervalSec: number;
   bubbleMode: 'always' | 'change' | 'off';
   retainDays: number;
+  /** Master switch for threshold alerts (payload + pet bubble). Default true. */
+  alertsEnabled?: boolean;
+  /** Today's priced spend (CNY) limit; 0/absent disables the daily-cost alert. */
+  dailyCostLimitCny?: number;
+  /** Official plan-window percent that raises an alert; 0/absent disables it. */
+  planAlertPercent?: number;
+  /** Known CNY balance at/below which an alert is raised; 0/absent disables it. */
+  balanceAlertCny?: number;
+  /** Minutes between alert bubbles for the same episode key. Default 60. */
+  alertCooldownMinutes?: number;
+  /**
+   * Filesystem-fact health cache TTL in ms. Default 2000; tests set 0 to make
+   * corrupt-file/backfill-status changes visible immediately.
+   */
+  healthCacheTtlMs?: number;
   cpamcEnabled: boolean;
   cpamcBaseURL: string;
   cpamcManagementKeyEnv: string;
@@ -42,6 +57,16 @@ interface Config {
   bubbleMode?: string;
   /** Ledger retention in local days. */
   retainDays?: number;
+  /** Master switch for threshold alerts (in-page banner + optional pet bubble). */
+  alertsEnabled?: boolean;
+  /** Today's priced spend limit in CNY; 0 disables the daily-cost alert. */
+  dailyCostLimitCny?: number;
+  /** Tightest official plan window percent that raises an alert; 0 disables it. */
+  planAlertPercent?: number;
+  /** Known provider balance (CNY) below which an alert is raised; 0 disables it. */
+  balanceAlertCny?: number;
+  /** Minutes before the same alert kind/provider/window may bubble again. */
+  alertCooldownMinutes?: number;
   cpamcEnabled?: boolean;
   cpamcBaseURL?: string;
   cpamcManagementKeyEnv?: string;
@@ -62,6 +87,11 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
   pollIntervalSec: z<number, number, "volatile-defined">;
   bubbleMode: z<string, string, "volatile-defined">;
   retainDays: z<number, number, "volatile-defined">;
+  alertsEnabled: z<boolean, boolean, "volatile-defined">;
+  dailyCostLimitCny: z<number, number, "volatile-defined">;
+  planAlertPercent: z<number, number, "volatile-defined">;
+  balanceAlertCny: z<number, number, "volatile-defined">;
+  alertCooldownMinutes: z<number, number, "volatile-defined">;
   cpamcEnabled: z<boolean, boolean, "volatile-defined">;
   cpamcBaseURL: z<string, string, "volatile-defined">;
   cpamcManagementKeyEnv: z<string, string, "volatile-defined">;
@@ -74,6 +104,11 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
   pollIntervalSec: z<number, number, "volatile-defined">;
   bubbleMode: z<string, string, "volatile-defined">;
   retainDays: z<number, number, "volatile-defined">;
+  alertsEnabled: z<boolean, boolean, "volatile-defined">;
+  dailyCostLimitCny: z<number, number, "volatile-defined">;
+  planAlertPercent: z<number, number, "volatile-defined">;
+  balanceAlertCny: z<number, number, "volatile-defined">;
+  alertCooldownMinutes: z<number, number, "volatile-defined">;
   cpamcEnabled: z<boolean, boolean, "volatile-defined">;
   cpamcBaseURL: z<string, string, "volatile-defined">;
   cpamcManagementKeyEnv: z<string, string, "volatile-defined">;
@@ -84,6 +119,11 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
 }>>, "plain">;
 interface ResolvedConfig extends UsageServiceOptions {
   enabled: boolean;
+  alertsEnabled: boolean;
+  dailyCostLimitCny: number;
+  planAlertPercent: number;
+  balanceAlertCny: number;
+  alertCooldownMinutes: number;
 }
 /**
  * Snapshot loader Config (volatile refs or plain values) into a plain partial.

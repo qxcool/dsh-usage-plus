@@ -14,6 +14,8 @@
  *   range=7|30|90|182         overview window to select, default 30
  *   retain=<days>             simulated ledger retention (forces the covered-range note)
  *   variant=rich|sparse       fixture shape, default rich
+ *   alerts=0|1                threshold-alert fixture (default: on for rich)
+ *   health=ready|warning|missing  data-health fixture (default ready)
  *   updated=fresh|stale       document age for the header freshness dot
  *                             (fresh = 8 s, stale = 10 min), default fresh
  *   open=1                    strip: open the quota popover on load
@@ -49,6 +51,10 @@ const initialRange: UsageRangeDays = isUsageRangeDays(rangeParam) ? rangeParam :
 const retainParam = Number(params.get('retain') ?? 0)
 const retainDays = Number.isFinite(retainParam) && retainParam > 0 ? Math.floor(retainParam) : undefined
 const variant = params.get('variant') === 'sparse' ? 'sparse' : 'rich'
+const alertsParam = params.get('alerts')
+const alerts = alertsParam === '0' ? false : alertsParam === '1' ? true : undefined
+const healthParam = params.get('health')
+const health = healthParam === 'warning' || healthParam === 'missing' ? healthParam : 'ready'
 /** `updatedAt` is wall-clock (freshness dot); everything else hangs off FIXED_NOW. */
 const updatedAgoMs = params.get('updated') === 'stale' ? 10 * 60_000 : 8_000
 const openOnLoad = params.get('open') === '1'
@@ -175,7 +181,7 @@ function createFakeSettings() {
   }
 }
 
-const fixture = buildOverview({ now: FIXED_NOW, variant, updatedAgoMs })
+const fixture = buildOverview({ now: FIXED_NOW, variant, updatedAgoMs, alerts, health })
 const store = createFakeStore(windowFor(fixture, initialRange))
 const settings = createFakeSettings()
 const face = {

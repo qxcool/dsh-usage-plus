@@ -17,24 +17,48 @@ Independent DSH usage and official Plan-quota plugin (Host + Web UI). Requires D
 - Serves the overview from a per-revision host cache, so warm polls skip ledger aggregation and answer `304` from a cached ETag.
 - Switches the usage window (7 / 30 / 90 / 182 days) on the overview and exports the aggregate ledger as CSV or JSON from the plugin page.
 - Rebuilds an empty ledger from DSH session history on first install (bounded, retention-limited, marked in `backfill.json`; requires the session query service in the composition).
+- Raises optional threshold alerts for today's priced spend, plan-window percentages and low CNY balances — in-page banners plus the existing pet bubble, de-duplicated by a configurable cooldown.
+- Adds a data-health card in Settings: ledger coverage and size, retention, backfill state, probe freshness/failing providers, and preserved corrupt-file names.
+- Reads official quota / balance endpoints for DeepSeek, Moonshot (CN/intl), Kimi For Coding, Anthropic Claude Pro/Max, GLM Coding Plan (CN/intl), OpenCode Go, MiniMax (CN/intl), Codex/ChatGPT, GitHub Copilot, OpenRouter, Vercel AI Gateway, SiliconFlow (CN/intl), ZenMux and NanoGPT.
+
+## Provider coverage
+
+| Provider route id(s) | Source | Fact |
+|---|---|---|
+| `deepseek` / `deepseek-official` | `api.deepseek.com/user/balance` | CNY balance |
+| `moonshotai-cn` / `moonshotai` | Moonshot `/v1/users/me/balance` | CNY / USD balance |
+| `kimi-coding` | Kimi For Coding usage API | 5-hour / weekly plan windows |
+| `anthropic` | Claude Pro/Max OAuth usage (OAuth-only) | 5-hour / weekly windows |
+| `zai` (`zai-coding` alias) / `zai-coding-cn` | GLM Coding Plan monitor API | plan windows |
+| `opencode-go` | OpenCode Go usage API | rolling / weekly / monthly windows |
+| `minimax-cn` / `minimax` | MiniMax coding-plan remains API | 5-hour / weekly windows |
+| `openai-codex` | ChatGPT Codex usage (OAuth) | 5-hour / weekly windows |
+| `github-copilot` | Copilot premium-request quota (OAuth) | monthly window |
+| `openrouter` | OpenRouter credits API | USD balance |
+| `vercel-ai-gateway` | Vercel AI Gateway credits API | USD balance |
+| `siliconflow` / `siliconflow-cn` / `siliconflow-intl` | SiliconFlow user info | CNY / USD balance |
+| `zenmux` | ZenMux PAYG balance API | USD balance |
+| `nano-gpt` (hand-declared route) | NanoGPT check-balance API | USD balance |
+
+CPAMC and Volcano Ark remain separate external sources configured in Settings. OAuth-only adapters (`anthropic`, `github-copilot`) are skipped — not error-reported — for API-key credentials; a route with no verified quota API shows no card or pill.
 
 ## Screenshots
 
 ### Composer plan strip (current model)
 
-![Composer footer for an OpenCode Go route: turn/step counters, total tokens with cache hit rate, and the compact "额度 5h 63.5% · 周 78.2% · 月 18.4%" plan pill](docs/screenshots/composer-plan-strip.png)
+![Composer footer for an OpenCode Go route: turn/step counters, total tokens with cache hit rate, and the compact "额度 5h 63.5% · 周 78.2% · 月 18.4%" plan pill with an amber alert dot for a provider threshold alert](docs/screenshots/composer-plan-strip.png)
 
 When the active model matches an official plan source, the composer dock shows a compact pill with the real 5-hour / weekly / monthly readings; the ring marks the tightest window. Open it for per-window bars, reset times, and the source chip (for example Volcano). Nothing is rendered when the remote API exposes no official window.
 
 ### Plugins → Installed plugins → dsh-usage-plus · Overview
 
-![Usage overview (device-wide): a today hero figure with vs-yesterday comparator, 30-day / all-time / calls / average-cost stats, cache-hit ring, the 26-week Mon–Sun heatmap with weekday gutter, column-anchored month labels and active-day / peak facts, account-level quota rings, the provider trend over a selectable 7/30/90/182-day window, today's provider breakdown with token mix, and a collapsible per-day history](docs/screenshots/settings-overview.png)
+![Usage overview (device-wide): a three-row threshold alert banner (daily cost, plan window, low balance) above a today hero figure with vs-yesterday comparator, 30-day / all-time / calls / average-cost stats, cache-hit ring, the 26-week Mon–Sun heatmap with weekday gutter, column-anchored month labels and active-day / peak facts, account-level quota rings, the provider trend over a selectable 7/30/90/182-day window, today's provider breakdown with token mix, and a collapsible per-day history](docs/screenshots/settings-overview.png)
 
 The overview reads as one instrument panel: a hero figure for today, the 26-week heatmap as the main chart, account-level quota rings, and a provider ranking over a selectable 7 / 30 / 90 / 182-day window. Every figure is labelled with its scope (`全设备` / `账号级`); the balance line only lists real balances. Plan quotas, external sources and the aggregate CSV / JSON export live on the other tabs of the same plugin page.
 
 ### Settings · data export
 
-![Settings tab with the 数据导出 card: the selected 30-day window chip and 导出 CSV / 导出 JSON buttons above the plugin settings](docs/screenshots/settings-export.png)
+![Settings tab with the 数据导出 card, the 告警 threshold group (enable switch, daily-cost limit, plan percent, low-balance amount, cooldown) and the 数据健康 card (ledger coverage/size, backfill state, probe freshness)](docs/screenshots/settings-export.png)
 
 The aggregate ledger (daily × provider × model totals) exports as CSV or JSON for the selected window; files are generated locally and the download route is loopback-only.
 
@@ -66,6 +90,7 @@ Optional credential names are `CPAMC_MANAGEMENT_KEY`, `VOLC_ACCESSKEY`, and `VOL
 
 - Requires DSH `>= 0.2.2-rc.3 < 0.3.0`. Missing optional surfaces (`configForms`, `plugins.bundle.config`, `conversation.composer.dock`) are treated as unavailable capabilities instead of a startup failure.
 - Historical backfill runs only when the ledger is empty and the composition mounts `sessionQuery`; an existing ledger is never re-counted.
+- Alert episodes and pet-bubble cooldowns live in memory (a DSH restart starts a fresh episode); balance alerts compare CNY balances only, and the daily-cost alert counts priced routes (currently the official DeepSeek price book).
 - Providers without an official Plan API show no strip and no fabricated windows.
 - CPAMC accepts loopback origins (or hosts listed in `cpamcAllowedHosts`) only; management routes are read-only and reject redirects.
 - Volcano Ark needs vaulted AK/SK (or `VOLC_ACCESSKEY` / `VOLC_SECRETKEY`); signing runs only in the Host process.

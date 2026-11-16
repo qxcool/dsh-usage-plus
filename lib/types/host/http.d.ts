@@ -45,9 +45,14 @@ export declare function writeJson(res: ServerResponse, status: number, body: unk
 export declare function writeText(res: ServerResponse, status: number, body: string, headers?: OutgoingHttpHeaders): void;
 /**
  * A strong ETag for one JSON document: SHA-1 over the document with its
- * volatile top-level `updatedAt` normalized away, quoted for HTTP. Documents
- * that differ only in the instant they were assembled share an ETag, so a
- * polling client revalidates with `If-None-Match` instead of re-downloading.
+ * volatile fields normalized away, quoted for HTTP. Normalized today:
+ * - top-level `updatedAt` (assembly instant);
+ * - `health.probes.lastAttemptAt` / `lastSuccessAt` (probe-cycle instants that
+ *   move even when the probed facts — and therefore the revision — did not).
+ * Everything else in `health` (bytes, active days, backfill state, failing
+ * providers) is data, so a change there still changes the ETag. Documents that
+ * differ only in the volatile instants share an ETag, so a polling client
+ * revalidates with `If-None-Match` instead of re-downloading.
  */
 export declare function jsonEtag(document: unknown): string;
 //# sourceMappingURL=http.d.ts.map

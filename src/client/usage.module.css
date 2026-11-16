@@ -246,6 +246,65 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Threshold alerts: a quiet inline stack, amber for warning, red for critical.
+   Nothing renders when the Host reports no active alert. */
+.alertStack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.alertItem {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--alert-tone) 34%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--alert-tone) 10%, transparent);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.alertWarning {
+  --alert-tone: var(--u-warn);
+}
+
+.alertCritical {
+  --alert-tone: var(--u-bad);
+}
+
+.alertGlyph {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--alert-tone) 20%, transparent);
+  color: var(--alert-tone);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.alertText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.alertChips {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 /* ------------------------------------------------------------------ */
 /* Shared card chassis                                                */
 /* ------------------------------------------------------------------ */
@@ -449,6 +508,64 @@
 .exportError {
   font-size: 11.5px;
   color: var(--u-bad);
+}
+
+/* Data health: dense reference rows inside the shared card chassis. */
+.healthCard {
+  gap: 12px;
+}
+
+.healthBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.healthRow {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  min-width: 0;
+  font-size: 11.5px;
+}
+
+.healthLabel {
+  color: var(--u-text-3);
+  white-space: nowrap;
+}
+
+.healthValue {
+  min-width: 0;
+  color: var(--u-text-2);
+  overflow-wrap: anywhere;
+}
+
+.healthHint {
+  color: var(--u-text-3);
+  font-size: 11px;
+  text-align: right;
+}
+
+.healthWarn {
+  color: var(--u-warn);
+  font-size: 11px;
+}
+
+.healthBar {
+  grid-column: 1 / -1;
+  height: 4px;
+  margin-top: 4px;
+  border-radius: 2px;
+  background: var(--u-surface-2);
+  overflow: hidden;
+}
+
+.healthBar > span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--u-accent);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1785,6 +1902,23 @@
 .quotaMeterTrigger:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--u-accent) 55%, transparent);
+}
+
+/* Subtle warning dot when an active alert names the current provider; absolute
+   so the composer strip layout/height never changes. */
+.quotaMeterAlertDot {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--u-warn);
+  pointer-events: none;
+}
+
+.quotaMeterAlertDot[data-alert-severity='critical'] {
+  background: var(--u-bad);
 }
 
 .quotaMeterTrigger[aria-expanded='true'] {

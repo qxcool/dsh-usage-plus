@@ -8,12 +8,14 @@
  * @module @linxin666/dsh-usage/core/adapters
  */
 
-import type { PlanWindowView } from './types.ts'
+import type { CredentialKind, PlanWindowView } from './types.ts'
 
 /** One HTTP probe the service executes verbatim. */
 export interface ProbeSpec {
   url: string
   headers: Record<string, string>
+  /** HTTP method; the service defaults to GET when omitted. */
+  method?: 'GET' | 'POST'
 }
 
 /** Inputs an adapter may use to build a probe. */
@@ -22,6 +24,22 @@ export interface AdapterProbeContext {
   apiKey: string
   /** Provider account id riding a dedicated header, when the credential carries one (Codex). */
   accountId?: string
+  /**
+   * The pi-ai OAuth grant's refresh token (for `github-copilot` this is the
+   * GitHub token while the access token is the Copilot bearer). Host-only:
+   * never crosses the wire.
+   */
+  refreshToken?: string
+}
+
+/** Which resolved credential kind a probe half accepts. */
+export type ProbeCredentialGate = 'oauth' | 'api-key' | 'any'
+
+/** Whether one probe half may run with the resolved credential kind. */
+export function probeHalfAllowed(gate: ProbeCredentialGate | undefined, credential: CredentialKind): boolean {
+  if (gate === undefined || gate === 'any') return true
+  if (gate === 'oauth') return credential === 'oauth'
+  return credential === 'api-key' || credential === 'env'
 }
 
 /** A parsed balance fact. */
@@ -50,10 +68,14 @@ export interface ProviderAdapter {
   /** Fallback display name when the LLM runtime has none. */
   displayName: string
   balance?: {
+    /** Credential kinds this half accepts; default `any`. */
+    credential?: ProbeCredentialGate
     build(context: AdapterProbeContext): ProbeSpec
     parse(status: number, body: unknown): BalanceParse | undefined
   }
   plan?: {
+    /** Credential kinds this half accepts; default `any`. */
+    credential?: ProbeCredentialGate
     build(context: AdapterProbeContext): ProbeSpec
     parse(status: number, body: unknown): PlanParse | undefined
   }
@@ -103,6 +125,11 @@ function usedPercent(used: unknown, limit: unknown): number | undefined {
   const limitNum = toNum(limit)
   if (usedNum === undefined || limitNum === undefined || limitNum <= 0) return undefined
   return Math.max(0, Math.min(100, (usedNum / limitNum) * 100))
+}
+
+/** Clamp a provider-reported percent into the renderable 0-100 range. */
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value))
 }
 
 function bearer(apiKey: string): Record<string, string> {
@@ -238,6 +265,16 @@ function glmPlan(host: string, ids: readonly string[]): ProviderAdapter {
   }
 }
 
+/**
+ * The international GLM Coding Plan. `zai` is the live pi-ai catalog id; the
+ * legacy `zai-coding` is kept as a hand-declared alias so both routes resolve,
+ * and `preferredId` collapses both live routes onto this one probe/row.
+ */
+const GLM_INTL: ProviderAdapter = {
+  ...glmPlan('api.z.ai', ['zai', 'zai-coding']),
+  preferredId: 'zai',
+}
+
 /** OpenCode Go quota: percent-only rolling/weekly/monthly windows. */
 const OPENCODE_GO: ProviderAdapter = {
   ids: ['opencode-go'],
@@ -318,6 +355,29 @@ const OPENROUTER: ProviderAdapter = {
   },
 }
 
+/**
+ * Vercel AI Gateway prepaid credit balance, scoped to the key's team. The
+ * official API returns USD strings; `token_pass` has no total (no percent
+ * window) and `total_used` is lifetime spend, so both stay unparsed.
+ */
+const VERCEL_AI_GATEWAY: ProviderAdapter = {
+  ids: ['vercel-ai-gateway'],
+  displayName: 'Vercel AI Gateway',
+  balance: {
+    credential: 'api-key',
+    build: ({ apiKey }) => ({
+      url: 'https://ai-gateway.vercel.sh/v1/credits',
+      headers: bearer(apiKey),
+    }),
+    parse: (status, body) => {
+      if (status !== 200 || typeof body !== 'object' || body === null) return undefined
+      const balance = toNum((body as Record<string, unknown>).balance)
+      if (balance === undefined) return undefined
+      return { currency: 'USD', totalBalance: money(balance) }
+    },
+  },
+}
+
 function siliconFlow(host: string, ids: readonly string[], currency: string): ProviderAdapter {
   return {
     ids,
@@ -348,6 +408,30 @@ const ZENMUX: ProviderAdapter = {
       const credits = toNum((data as Record<string, unknown>).total_credits)
       if (credits === undefined) return undefined
       return { currency: 'USD', totalBalance: money(credits) }
+    },
+  },
+}
+
+/**
+ * NanoGPT prepaid USD balance. The docs' check-balance endpoint is POST-only
+ * (no request body) and authenticates with `x-api-key`; `nano_balance` is a
+ * crypto-denominated amount (Nano/XNO), not USD, so it stays unparsed.
+ */
+const NANOGPT: ProviderAdapter = {
+  ids: ['nano-gpt'],
+  displayName: 'NanoGPT',
+  balance: {
+    credential: 'api-key',
+    build: ({ apiKey }) => ({
+      url: 'https://nano-gpt.com/api/check-balance',
+      method: 'POST',
+      headers: { 'x-api-key': apiKey, accept: 'application/json' },
+    }),
+    parse: (status, body) => {
+      if (status !== 200 || typeof body !== 'object' || body === null) return undefined
+      const usd = toNum((body as Record<string, unknown>).usd_balance)
+      if (usd === undefined) return undefined
+      return { currency: 'USD', totalBalance: money(usd) }
     },
   },
 }
@@ -410,6 +494,129 @@ function codexWindowKey(seconds: number | undefined): string {
 }
 
 /**
+ * Anthropic subscription (Claude Pro/Max) windows over the pi-ai OAuth access
+ * token. The endpoint is the internal one Claude Code reports from, and the
+ * `claude-code/<version>` user-agent is load-bearing: without it the API
+ * rate-limits aggressively (persistent 429). OAuth-only — an API key has no
+ * subscription windows, so the half is gated rather than error-reported.
+ */
+const ANTHROPIC: ProviderAdapter = {
+  ids: ['anthropic'],
+  displayName: 'Anthropic (Claude Pro/Max)',
+  plan: {
+    credential: 'oauth',
+    build: ({ apiKey }) => ({
+      url: 'https://api.anthropic.com/api/oauth/usage',
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+        'user-agent': 'claude-code/2.0.0',
+        accept: 'application/json',
+      },
+    }),
+    parse: (status, body) => {
+      if (status !== 200 || typeof body !== 'object' || body === null) return undefined
+      const root = body as Record<string, unknown>
+      const windows: PlanWindowView[] = []
+      const mapping: Array<[string, string]> = [
+        ['five_hour', '5h'],
+        ['seven_day', 'week'],
+        ['seven_day_sonnet', 'week-sonnet'],
+        ['seven_day_opus', 'week-opus'],
+      ]
+      for (const [field, key] of mapping) {
+        const entry = root[field]
+        if (typeof entry !== 'object' || entry === null) continue
+        const row = entry as Record<string, unknown>
+        const percent = toNum(row.utilization)
+        if (percent === undefined) continue
+        // Idle windows legitimately carry `resets_at: null`; keep percent 0.
+        windows.push({ key, percent: clampPercent(percent), resetsAt: toIso(row.resets_at) })
+      }
+      // No tier name is exposed by this endpoint; `extra_usage` is not a
+      // confirmed currency fact, so it stays unparsed.
+      if (windows.length === 0) return undefined
+      return { windows }
+    },
+  },
+}
+
+/**
+ * GitHub Copilot premium-request quota. pi-ai's OAuth grant stores the GitHub
+ * token as `refresh` and the Copilot bearer as `access`; the
+ * `copilot_internal/user` route wants the GitHub token, which the host
+ * forwards as `refreshToken`. The route also accepts `Authorization: Bearer`,
+ * but `token` is the scheme VS Code/Copilot CLI use. A hand-declared route
+ * without a separate refresh token falls back to the resolved access token.
+ */
+const GITHUB_COPILOT: ProviderAdapter = {
+  ids: ['github-copilot'],
+  displayName: 'GitHub Copilot',
+  plan: {
+    credential: 'oauth',
+    build: ({ apiKey, refreshToken }) => ({
+      url: 'https://api.github.com/copilot_internal/user',
+      headers: {
+        authorization: `token ${refreshToken ?? apiKey}`,
+        accept: 'application/json',
+      },
+    }),
+    parse: (status, body) => {
+      if (status !== 200 || typeof body !== 'object' || body === null) return undefined
+      const root = body as Record<string, unknown>
+      const resetsAt = toIso(root.quota_reset_date_utc)
+      const windows: PlanWindowView[] = []
+      const snapshots = root.quota_snapshots
+      if (typeof snapshots === 'object' && snapshots !== null) {
+        const entries = snapshots as Record<string, unknown>
+        // The monthly window tracks `premium_interactions`; chat/completions are
+        // usually unlimited. Skip unlimited snapshots, otherwise keep the first
+        // limited one (premium_interactions first) as the single month window.
+        const keys = ['premium_interactions', ...Object.keys(entries).filter((key) => key !== 'premium_interactions')]
+        for (const key of keys) {
+          const entry = entries[key]
+          if (typeof entry !== 'object' || entry === null) continue
+          const row = entry as Record<string, unknown>
+          if (row.unlimited === true) continue
+          const remaining = toNum(row.percent_remaining)
+          if (remaining === undefined) continue
+          windows.push({ key: 'month', percent: clampPercent(100 - remaining), resetsAt })
+          break
+        }
+      }
+      // Older accounts send request counts instead of snapshots; only used
+      // when the current shape yields nothing.
+      if (windows.length === 0) {
+        const legacyPercent = legacyCopilotPercent(root)
+        if (legacyPercent !== undefined) windows.push({ key: 'month', percent: legacyPercent, resetsAt })
+      }
+      if (windows.length === 0) return undefined
+      return { planName: str(root.copilot_plan), windows }
+    },
+  },
+}
+
+/**
+ * Legacy Copilot request-count shape: `monthly_quotas` is the entitlement and
+ * `limited_user_quotas` the remaining count for limited users, so the used
+ * percent is `100 - remaining / entitlement * 100`. Returns undefined when no
+ * pair is usable.
+ */
+function legacyCopilotPercent(root: Record<string, unknown>): number | undefined {
+  const totals = root.monthly_quotas
+  const remaining = root.limited_user_quotas
+  if (typeof totals !== 'object' || totals === null) return undefined
+  if (typeof remaining !== 'object' || remaining === null) return undefined
+  for (const key of ['premium_interactions', 'chat', 'completions']) {
+    const total = toNum((totals as Record<string, unknown>)[key])
+    const left = toNum((remaining as Record<string, unknown>)[key])
+    if (total === undefined || left === undefined || total <= 0) continue
+    return clampPercent(100 - (left / total) * 100)
+  }
+  return undefined
+}
+
+/**
  * The adapter registry, in no particular order. Route keys come from the
  * pi-ai provider catalog plus the routes this deployment observed in user
  * configuration (`zenmux`).
@@ -419,16 +626,20 @@ export const PROVIDER_ADAPTERS: readonly ProviderAdapter[] = [
   moonshotBalance('api.moonshot.cn', 'CNY', ['moonshotai-cn']),
   moonshotBalance('api.moonshot.ai', 'USD', ['moonshotai']),
   KIMI_CODING,
+  ANTHROPIC,
   glmPlan('open.bigmodel.cn', ['zai-coding-cn']),
-  glmPlan('api.z.ai', ['zai-coding']),
+  GLM_INTL,
   OPENCODE_GO,
   minimaxPlan('api.minimaxi.com', ['minimax-cn']),
   minimaxPlan('api.minimax.io', ['minimax']),
   OPENAI_CODEX,
+  GITHUB_COPILOT,
   OPENROUTER,
+  VERCEL_AI_GATEWAY,
   siliconFlow('api.siliconflow.cn', ['siliconflow', 'siliconflow-cn'], 'CNY'),
   siliconFlow('api.siliconflow.com', ['siliconflow-intl'], 'USD'),
   ZENMUX,
+  NANOGPT,
 ]
 
 /** Find the adapter serving a provider route key, if any. */

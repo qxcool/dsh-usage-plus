@@ -72,6 +72,8 @@ export interface BackfillState {
   sessions: number
   /** `assistant/message` events folded into the ledger. */
   events: number
+  /** True when a session/event cap ended the pass early (partial history). */
+  truncated?: boolean
 }
 
 /** Options for one backfill collection pass. */

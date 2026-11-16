@@ -7,21 +7,22 @@
  * @module @linxin666/dsh-usage/host/usage-service
  */
 
-import { copyFile, mkdir, open, readFile, rename, unlink } from 'node:fs/promises'
+import { copyFile, mkdir, open, readdir, readFile, rename, stat, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { credentialKey, credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { TokenUsage } from '@deepseek-ai/dsh-llm'
 import { dshHome } from '../dsh-home.ts'
-import { adapterFor, dedupeProviderAliasRoutes, isDeepSeekProviderRoute, providerErrorMessage } from '../core/adapters.ts'
+import { adapterFor, dedupeProviderAliasRoutes, isDeepSeekProviderRoute, probeHalfAllowed, providerErrorMessage } from '../core/adapters.ts'
 import type { BalanceParse, PlanParse } from '../core/adapters.ts'
 import { deepseekModelSpend, deepseekPeriodAt } from '../core/pricing.ts'
-import { createLedgerDocument, deserializeLedger, foldUsage, localDateKey, pruneLedger, summarizeLedgerUsage, totalTokens } from '../core/ledger.ts'
+import { createLedgerDocument, deserializeLedger, foldUsage, ledgerDayKeys, localDateKey, pruneLedger, summarizeLedgerUsage, totalTokens } from '../core/ledger.ts'
 import type { LedgerUsageSummary } from '../core/ledger.ts'
 import { currentPlanProvider } from '../core/plan-match.ts'
-import type { BalanceView, CredentialKind, ExternalCredentialStatus, ExternalCredentialTarget, PlanView, ProviderSnapshotState, ProviderSnapshotView, UsageLedgerDocument, UsageOverviewView, UsageTokenTotals } from '../core/types.ts'
+import type { BalanceView, CredentialKind, ExternalCredentialStatus, ExternalCredentialTarget, PlanView, ProviderSnapshotState, ProviderSnapshotView, UsageAlert, UsageHealth, UsageLedgerDocument, UsageOverviewView, UsageTokenTotals } from '../core/types.ts'
 import { emptyTotals } from '../core/types.ts'
+import { alertKey, evaluateAlerts } from './alerts.ts'
 import { probeCpamc, probeVolcano } from './external-sources.ts'
 import { jsonEtag } from './http.ts'
 import {
@@ -45,6 +46,8 @@ interface ResolvedCredential {
   key?: string
   /** Provider account id riding a dedicated header, when the credential carries one. */
   accountId?: string
+  /** pi-ai OAuth grant refresh token, for adapters that need the upstream token (Copilot). */
+  refreshToken?: string
 }
 
 /** One live LLM provider route the service knows about. */
@@ -58,6 +61,21 @@ export interface UsageServiceOptions {
   pollIntervalSec: number
   bubbleMode: 'always' | 'change' | 'off'
   retainDays: number
+  /** Master switch for threshold alerts (payload + pet bubble). Default true. */
+  alertsEnabled?: boolean
+  /** Today's priced spend (CNY) limit; 0/absent disables the daily-cost alert. */
+  dailyCostLimitCny?: number
+  /** Official plan-window percent that raises an alert; 0/absent disables it. */
+  planAlertPercent?: number
+  /** Known CNY balance at/below which an alert is raised; 0/absent disables it. */
+  balanceAlertCny?: number
+  /** Minutes between alert bubbles for the same episode key. Default 60. */
+  alertCooldownMinutes?: number
+  /**
+   * Filesystem-fact health cache TTL in ms. Default 2000; tests set 0 to make
+   * corrupt-file/backfill-status changes visible immediately.
+   */
+  healthCacheTtlMs?: number
   cpamcEnabled: boolean
   cpamcBaseURL: string
   cpamcManagementKeyEnv: string
@@ -66,6 +84,12 @@ export interface UsageServiceOptions {
   volcanoAccessKeyEnv: string
   volcanoSecretKeyEnv: string
 }
+
+/** Display-safe label for the plugin data directory (never an absolute home path). */
+const DATA_DIR_LABEL = '~/.dsh/dsh-usage-plus'
+
+/** Fallback values for the optional alert options. */
+const DEFAULT_ALERT_COOLDOWN_MINUTES = 60
 
 /** Probe timeout per HTTP call. */
 const PROBE_TIMEOUT_MS = 10_000
@@ -107,6 +131,8 @@ const ROUTE_CACHE_TTL_MS = 5_000
 
 /** TTL for the external credential flags: three credential-vault reads. */
 const CREDENTIAL_STATUS_TTL_MS = 5_000
+/** Data-health TTL: keeps stat/readdir/backfill reads off every warm poll. */
+const HEALTH_CACHE_TTL_MS = 2_000
 
 /** TTL for configEditor entry snapshots a document read depends on (baseURL). */
 const CONFIG_CACHE_TTL_MS = 5_000
@@ -442,6 +468,19 @@ function sameRoutes(left: readonly ProviderRoute[], right: readonly ProviderRout
   return true
 }
 
+/**
+ * Non-volatile health signature: the health payload with the probe instants
+ * zeroed, so a changed data fact (bytes, corrupt files, backfill state,
+ * failing set) invalidates the cached document/ETag while a probe cycle alone
+ * does not.
+ */
+function healthCacheKey(health: UsageHealth): string {
+  return JSON.stringify({
+    ...health,
+    probes: { ...health.probes, lastAttemptAt: null, lastSuccessAt: null },
+  })
+}
+
 export class UsageService {
   private readonly ctx: Context
   private options: UsageServiceOptions
@@ -491,7 +530,7 @@ export class UsageService {
    * `revision|dayKey`. Different `?days=` variants do not thrash each other;
    * a revision/day rollover replaces the whole map.
    */
-  private overviewCache: { base: string; documents: Map<number, { document: UsageOverviewView; etag: string }> } | undefined
+  private overviewCache: { base: string; documents: Map<number, { document: UsageOverviewView; etag: string; healthSignature: string }> } | undefined
   /**
    * Aggregated usage windows, one per accepted range window, keyed by
    * `ledgerRevision|retainDays|dayKey`. The today/heatmap/all-time windows are
@@ -510,6 +549,16 @@ export class UsageService {
   private credentialStatusInFlight: Promise<ExternalCredentialStatus> | undefined
   /** Invalidates in-flight credential-status reads that predate a credential write. */
   private credentialStatusGeneration = 0
+  /** Short-TTL data-health cache: health costs filesystem reads, not per-poll work. */
+  private healthCache: { at: number; value: Omit<UsageHealth, 'probes'> } | undefined
+  /** Alert episodes: `kind:provider:window` → epoch ms the current episode started. */
+  private readonly alertEpisodes = new Map<string, number>()
+  /** Last pet bubble instant per alert key; enforces the configured cooldown. */
+  private readonly alertBubbleAt = new Map<string, number>()
+  /** Last probe attempt instant (any provider), surfaced in `health.probes`. */
+  private probeAttemptAt: number | null = null
+  /** Last successful probe instant, surfaced in `health.probes`. */
+  private probeSuccessAt: number | null = null
 
   /**
    * @param ctx - host context.
@@ -557,6 +606,9 @@ export class UsageService {
     this.routesCache = undefined
     this.entryConfigCache.clear()
     this.credentialStatusCache = undefined
+    this.healthCache = undefined
+    this.alertEpisodes.clear()
+    this.alertBubbleAt.clear()
     return this.flushLedger()
   }
 
@@ -568,6 +620,7 @@ export class UsageService {
     // the pet TTL. Invalidate once, then prune immediately on a shrink.
     this.bumpRevision()
     this.invalidateCredentialStatus()
+    this.healthCache = undefined
     this.pruneIfNeeded()
   }
 
@@ -608,26 +661,35 @@ export class UsageService {
       // revision, and a fold/probe landing during the await is caught by the
       // re-check below: never cache a document built on stale state.
       const externalCredentials = await this.externalCredentialStatus()
+      // Health is refreshed behind a short TTL (file bytes / corrupt files /
+      // backfill state): a warm 10s poll must not stat/readdir/readFile on
+      // every request, while its volatile probe instants stay normalized out
+      // of the ETag.
+      const health = await this.currentHealth()
       if (this.revision !== revision || localDateKey(Date.now()) !== dayKey) continue
       const base = `${revision}|${dayKey}`
       if (this.overviewCache?.base !== base) this.overviewCache = { base, documents: new Map() }
       // One cache slot per range window: switching 7/30/90/182 does not evict
-      // the other variants, so a range toggle stays cheap.
+      // the other variants, so a range toggle stays cheap. The health signature
+      // (probe instants excluded) must also match: data-health facts changing
+      // between reads rebuild the document and its ETag.
+      const healthSignature = healthCacheKey(health)
       const cached = this.overviewCache.documents.get(rangeDays)
-      if (cached !== undefined) {
+      if (cached !== undefined && cached.healthSignature === healthSignature) {
         cached.document.updatedAt = Date.now()
+        cached.document.health = health
         return { document: cached.document, etag: cached.etag }
       }
-      const document = this.assembleOverview(this.usageSummary(rangeDays), externalCredentials)
+      const document = this.assembleOverview(this.usageSummary(rangeDays), externalCredentials, health)
       const etag = jsonEtag(document)
       if (this.revision === revision && this.overviewCache?.base === base) {
-        this.overviewCache.documents.set(rangeDays, { document, etag })
+        this.overviewCache.documents.set(rangeDays, { document, etag, healthSignature })
       }
       return { document, etag }
     }
     // A fold or probe landed mid-await both times: answer with a consistent
     // document, but do not cache it under a moving revision.
-    const document = this.assembleOverview(this.usageSummary(rangeDays), await this.externalCredentialStatus())
+    const document = this.assembleOverview(this.usageSummary(rangeDays), await this.externalCredentialStatus(), await this.currentHealth())
     return { document, etag: jsonEtag(document) }
   }
 
@@ -646,21 +708,27 @@ export class UsageService {
    * are computed once per revision. The returned `providers` array is freshly
    * sorted, so it never aliases the cached route list.
    */
-  private assembleOverview(usage: LedgerUsageSummary, externalCredentials: ExternalCredentialStatus): UsageOverviewView {
+  private assembleOverview(usage: LedgerUsageSummary, externalCredentials: ExternalCredentialStatus, health: UsageHealth): UsageOverviewView {
     const routes = this.listProviderRoutes()
     const rows: ProviderSnapshotView[] = []
     for (const route of routes) {
       const adapter = adapterFor(route.id)
       const snapshot = this.snapshots.get(route.id)
       const error = snapshot?.balanceError ?? snapshot?.planError
+      // Credential-gated halves are advertised as unsupported until the resolved
+      // credential kind matches, so an API-key user does not get a plan card
+      // for an OAuth-only subscription endpoint.
+      const credentialKind = snapshot?.credential ?? 'none'
+      const balanceSupported = adapter?.balance !== undefined && probeHalfAllowed(adapter.balance.credential, credentialKind)
+      const planSupported = adapter?.plan !== undefined && probeHalfAllowed(adapter.plan.credential, credentialKind)
       rows.push({
         provider: route.id,
         source: 'model',
         displayName: route.displayName || adapter?.displayName || route.id,
         credential: snapshot?.credential ?? 'none',
-        supported: adapter !== undefined && (adapter.balance !== undefined || adapter.plan !== undefined),
-        ...(adapter?.balance !== undefined ? { balanceSupported: true } : {}),
-        ...(adapter?.plan !== undefined ? { planSupported: true } : {}),
+        supported: balanceSupported || planSupported,
+        ...(balanceSupported ? { balanceSupported: true } : {}),
+        ...(planSupported ? { planSupported: true } : {}),
         ...(snapshot?.balance !== undefined ? { balance: snapshot.balance } : {}),
         ...(snapshot?.plan !== undefined ? { plan: snapshot.plan } : {}),
         ...(error !== undefined ? { error } : {}),
@@ -677,10 +745,35 @@ export class UsageService {
       currentProvider: this.current.provider,
     })
     providers.sort((a, b) => Number(b.supported) - Number(a.supported) || a.displayName.localeCompare(b.displayName))
+    // Alert evaluation also advances episode state and bubbles the alerts that
+    // just started; it is fully guarded so a malformed fact never breaks the
+    // overview. Cached documents keep the alerts computed at assembly time —
+    // alert-driving facts are part of the revision, so the cache entry is
+    // already invalid when they change.
+    let alerts: UsageAlert[] = []
+    try {
+      const evaluation = evaluateAlerts(
+        { todayCost: usage.today.totals.cost, providers },
+        {
+          alertsEnabled: this.options.alertsEnabled ?? true,
+          dailyCostLimitCny: this.options.dailyCostLimitCny ?? 0,
+          planAlertPercent: this.options.planAlertPercent ?? 0,
+          balanceAlertCny: this.options.balanceAlertCny ?? 0,
+        },
+        this.alertEpisodes,
+        Date.now(),
+      )
+      alerts = evaluation.alerts
+      for (const started of evaluation.started) this.announceAlert(started)
+    } catch {
+      alerts = []
+    }
     const baseURL = this.current.provider !== undefined ? this.piAiProfile(this.current.provider)?.baseURL : undefined
     return {
       updatedAt: Date.now(),
       providers,
+      alerts,
+      health,
       current: {
         ...this.current,
         ...(typeof baseURL === 'string' && baseURL.trim() !== '' ? { baseURL: baseURL.trim() } : {}),
@@ -717,9 +810,141 @@ export class UsageService {
     return usage
   }
 
+  // ------------------------------------------------------------------
+  // Data health
+  // ------------------------------------------------------------------
+
+  /**
+   * Data health. Filesystem-derived facts (ledger bytes, corrupt files,
+   * backfill state) sit behind a short TTL so a warm overview poll performs no
+   * I/O; the in-memory probe instants are cheap and refreshed on every read.
+   */
+  private async currentHealth(): Promise<UsageHealth> {
+    const now = Date.now()
+    const ttl = this.options.healthCacheTtlMs ?? HEALTH_CACHE_TTL_MS
+    let cached = this.healthCache
+    if (cached === undefined || now - cached.at >= ttl) {
+      cached = { at: Date.now(), value: await this.buildHealthFacts() }
+      this.healthCache = cached
+    }
+    const failing: string[] = []
+    for (const [id, snapshot] of this.snapshots) {
+      if (snapshot.balanceError !== undefined || snapshot.planError !== undefined) failing.push(id)
+    }
+    failing.sort()
+    return {
+      ...cached.value,
+      probes: {
+        lastAttemptAt: this.probeAttemptAt,
+        lastSuccessAt: this.probeSuccessAt,
+        failing,
+      },
+    }
+  }
+
+  /**
+   * Filesystem/ledger facts for `currentHealth`: storage stats and backfill
+   * state. Never throws: each file read is individually guarded. The volatile
+   * probe instants are normalized out of the ETag (see `jsonEtag`).
+   */
+  private async buildHealthFacts(): Promise<Omit<UsageHealth, 'probes'>> {
+    try {
+      let bytes = 0
+      try {
+        bytes = (await stat(this.ledgerPath)).size
+      } catch {
+        bytes = 0
+      }
+      let corruptFiles: string[] = []
+      try {
+        corruptFiles = (await readdir(this.persistDir))
+          .filter((name) => name.startsWith('usage-ledger.json.corrupt-'))
+          .sort()
+      } catch {
+        corruptFiles = []
+      }
+      const activeDays: string[] = []
+      for (const dayKey of ledgerDayKeys(this.ledger)) {
+        const day = this.ledger.days[dayKey]
+        if (day === undefined) continue
+        for (const models of Object.values(day)) {
+          if (typeof models === 'object' && models !== null && Object.keys(models).length > 0) {
+            activeDays.push(dayKey)
+            break
+          }
+        }
+      }
+      const state = await this.readBackfillState()
+      return {
+        storage: {
+          label: DATA_DIR_LABEL,
+          bytes,
+          activeDays: activeDays.length,
+          firstDay: activeDays[0] ?? null,
+          lastDay: activeDays[activeDays.length - 1] ?? null,
+          retentionDays: this.options.retainDays,
+          corruptFiles,
+        },
+        backfill: state === undefined
+          ? null
+          : {
+              completedAt: state.completedAt,
+              cutoff: state.cutoff,
+              sessions: state.sessions,
+              events: state.events,
+              ...(state.truncated === true ? { truncated: true } : {}),
+            },
+      }
+    } catch {
+      return {
+        storage: {
+          label: DATA_DIR_LABEL,
+          bytes: 0,
+          activeDays: 0,
+          firstDay: null,
+          lastDay: null,
+          retentionDays: this.options.retainDays,
+          corruptFiles: [],
+        },
+        backfill: null,
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Threshold alert bubbles
+  // ------------------------------------------------------------------
+
+  /**
+   * Bubble one newly-started alert to the pet. Honors the bubble off switch,
+   * the alert master switch, and the per-key cooldown; active alerts still
+   * appear in the overview payload regardless of whether the bubble is
+   * suppressed. Fully guarded: a missing/failing pet never breaks the overview.
+   */
+  private announceAlert(alert: UsageAlert): void {
+    if (this.disposed || this.options.bubbleMode === 'off') return
+    if ((this.options.alertsEnabled ?? true) === false) return
+    const now = Date.now()
+    const cooldownMinutes = Math.max(0, this.options.alertCooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES)
+    const last = this.alertBubbleAt.get(alertKey(alert.kind, alert.provider, alert.window))
+    if (last !== undefined && now - last < cooldownMinutes * 60_000) return
+    try {
+      const pet = service<{ announce(input: Record<string, unknown>): void }>(this.ctx, 'pet')
+      if (pet === undefined) return
+      const title = alert.provider !== undefined ? this.routeDisplayName(alert.provider) : 'dsh-usage-plus'
+      const payload: Record<string, unknown> = alert.kind === 'plan-threshold'
+        ? { kind: 'plan', title, percent: alert.value, tone: alert.severity === 'critical' ? 'low' : 'warn' }
+        : { kind: 'cost', title, amount: alert.message, tone: alert.severity === 'critical' ? 'warn' : 'ok' }
+      const ttlMs = Math.min(7_200_000, this.options.pollIntervalSec * 2_000 + 30_000)
+      this.alertBubbleAt.set(alertKey(alert.kind, alert.provider, alert.window), now)
+      pet.announce({ source: USAGE_ANNOUNCE_SOURCE, ttlMs, ...payload })
+    } catch {
+      // A missing or failing pet service must never break the overview.
+    }
+  }
+
   /** Mark a document-visible mutation: the next overview read rebuilds. */
-  private bumpRevision(): void {
-    this.revision += 1
+  private bumpRevision(): void {    this.revision += 1
   }
 
   /** Mark a ledger mutation: both the document and the usage windows rebuild. */
@@ -1063,6 +1288,8 @@ export class UsageService {
       const path = backfillStatePath(this.persistDir)
       await mkdir(dirname(path), { recursive: true })
       await writeJsonAtomic(path, state)
+      // A fresh backfill state is health-visible immediately.
+      this.healthCache = undefined
     } catch {
       // Best-effort: a state write failure only means the check may repeat.
     }
@@ -1120,6 +1347,7 @@ export class UsageService {
         cutoff: startedAt,
         sessions: result.sessions,
         events: result.events,
+        ...(result.truncated ? { truncated: true } : {}),
       })
       console.info(`[dsh-usage-plus] session backfill: ${result.sessions} session(s), ${result.events} usage event(s)${result.truncated ? ' (truncated by caps)' : ''}`)
     } catch (error) {
@@ -1167,6 +1395,8 @@ export class UsageService {
     try {
       await mkdir(dirname(this.ledgerPath), { recursive: true })
       await writeJsonAtomic(this.ledgerPath, this.ledger)
+      // The ledger byte size moved: let the next health read refresh it.
+      this.healthCache = undefined
     } catch {
       // Persistence failures degrade silently; the in-memory ledger keeps counting.
     }
@@ -1352,9 +1582,20 @@ export class UsageService {
     const runProbe = async (kind: 'balance' | 'plan'): Promise<BalanceView | PlanView | undefined> => {
       const half = adapter[kind]
       if (half === undefined) return undefined
+      // An OAuth-only endpoint probed with an API key would only produce a
+      // misleading 401 line; skip the half instead (supported flags follow).
+      if (!probeHalfAllowed(half.credential, credential.kind)) return undefined
       try {
-        const spec = half.build({ apiKey: credential.key as string, ...(credential.accountId !== undefined ? { accountId: credential.accountId } : {}) })
-        const response = await fetch(spec.url, { headers: spec.headers, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
+        const spec = half.build({
+          apiKey: credential.key as string,
+          ...(credential.accountId !== undefined ? { accountId: credential.accountId } : {}),
+          ...(credential.refreshToken !== undefined ? { refreshToken: credential.refreshToken } : {}),
+        })
+        const response = await fetch(spec.url, {
+          method: spec.method ?? 'GET',
+          headers: spec.headers,
+          signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+        })
         const body: unknown = await response.json().catch(() => undefined)
         if (!response.ok) throw new Error(providerErrorMessage(response.status, body))
         const parsed = half.parse(response.status, body)
@@ -1400,7 +1641,9 @@ export class UsageService {
 
   /** Advance or clear the retry backoff after one provider's probe run. */
   private recordProbeOutcome(provider: string, failed: boolean): void {
+    this.probeAttemptAt = Date.now()
     if (!failed) {
+      this.probeSuccessAt = this.probeAttemptAt
       this.probeBackoff.delete(provider)
       return
     }
@@ -1431,8 +1674,16 @@ export class UsageService {
         // pi-ai stores its OAuth credential verbatim: { type: 'oauth', access, refresh, expires, ... }.
         const payload = record.payload as Record<string, unknown>
         const access = typeof payload.access === 'string' && payload.access !== '' ? payload.access : undefined
+        const refreshToken = typeof payload.refresh === 'string' && payload.refresh !== '' ? payload.refresh : undefined
         const accountId = typeof payload.chatgpt_account_id === 'string' && payload.chatgpt_account_id !== '' ? payload.chatgpt_account_id : undefined
-        if (access !== undefined) return { kind: 'oauth', key: access, ...(accountId !== undefined ? { accountId } : {}) }
+        if (access !== undefined) {
+          return {
+            kind: 'oauth',
+            key: access,
+            ...(accountId !== undefined ? { accountId } : {}),
+            ...(refreshToken !== undefined ? { refreshToken } : {}),
+          }
+        }
         return { kind: 'oauth' }
       }
     } catch {

@@ -118,13 +118,26 @@ export function writeText(
 
 /**
  * A strong ETag for one JSON document: SHA-1 over the document with its
- * volatile top-level `updatedAt` normalized away, quoted for HTTP. Documents
- * that differ only in the instant they were assembled share an ETag, so a
- * polling client revalidates with `If-None-Match` instead of re-downloading.
+ * volatile fields normalized away, quoted for HTTP. Normalized today:
+ * - top-level `updatedAt` (assembly instant);
+ * - `health.probes.lastAttemptAt` / `lastSuccessAt` (probe-cycle instants that
+ *   move even when the probed facts — and therefore the revision — did not).
+ * Everything else in `health` (bytes, active days, backfill state, failing
+ * providers) is data, so a change there still changes the ETag. Documents that
+ * differ only in the volatile instants share an ETag, so a polling client
+ * revalidates with `If-None-Match` instead of re-downloading.
  */
 export function jsonEtag(document: unknown): string {
-  const stable = isJsonObject(document) && Object.hasOwn(document, 'updatedAt')
-    ? { ...document, updatedAt: 0 }
-    : document
+  let stable: unknown = document
+  if (isJsonObject(document)) {
+    stable = Object.hasOwn(document, 'updatedAt') ? { ...document, updatedAt: 0 } : { ...document }
+    const health = (stable as Record<string, unknown>).health
+    if (isJsonObject(health) && isJsonObject(health.probes)) {
+      ;(stable as Record<string, unknown>).health = {
+        ...health,
+        probes: { ...health.probes, lastAttemptAt: 0, lastSuccessAt: 0 },
+      }
+    }
+  }
   return `"${createHash('sha1').update(JSON.stringify(stable)).digest('base64url')}"`
 }

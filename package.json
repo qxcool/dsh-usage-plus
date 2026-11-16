@@ -1,7 +1,7 @@
 {
   "name": "dsh-usage-plus",
   "description": "Independent DSH usage and plan-quota plugin with official provider windows, CPAMC / Volcano sources, and a composer-dock quota strip.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "engines": {
     "dsh": ">=0.2.2-rc.3 <0.3.0-0",
@@ -73,7 +73,11 @@
         "https://open.volcengineapi.com",
         "https://api.ominisalesagent.com",
         "http://127.0.0.1",
-        "http://localhost"
+        "http://localhost",
+        "https://api.anthropic.com",
+        "https://ai-gateway.vercel.sh",
+        "https://api.github.com",
+        "https://nano-gpt.com"
       ]
     }
   },

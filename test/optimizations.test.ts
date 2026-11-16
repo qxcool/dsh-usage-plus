@@ -314,6 +314,9 @@ interface PerfHarness {
 }
 
 /** A service over a 182-day, 2-provider × 3-model ledger with counting stubs. */
+/** Unique, never-created persist dir per harness: health reads stay deterministic. */
+let perfHarnessSequence = 0
+
 function perfHarness(options: Partial<UsageServiceOptions> = {}, ledgerDays = 182): PerfHarness {
   const counters = { llmLists: 0, credentialDescribes: 0 }
   const ctx = {
@@ -339,7 +342,7 @@ function perfHarness(options: Partial<UsageServiceOptions> = {}, ledgerDays = 18
     },
     on: () => () => {},
   } as unknown as Context
-  const service = new UsageService(ctx, { ...PERF_OPTIONS, ...options })
+  const service = new UsageService(ctx, { ...PERF_OPTIONS, ...options }, join(tmpdir(), `dsh-usage-perf-${process.pid}-${perfHarnessSequence++}`))
   const internals = service as unknown as PerfServiceInternals
   internals.ledger = buildPerfLedger(ledgerDays)
   internals.current = { provider: 'provider-a', model: 'model-1', source: 'live' }
@@ -493,9 +496,10 @@ describe('revision-cached overview', () => {
       const start = performance.now()
       for (let index = 0; index < iterations; index += 1) await service.overviewPayload()
       const perCallMs = (performance.now() - start) / iterations
-      // Generous CI bound: the observed warm path is ~0.02ms; anything close to
-      // this bound means the derived cache regressed to a full re-aggregation.
-      expect(perCallMs).toBeLessThan(15)
+      // Generous CI bound: the warm path answers from the derived document cache
+      // plus a 2s health TTL (no ledger re-summarization, no fs reads); observed
+      // idle ~0.8-2.4ms/call, occasionally higher under a loaded CI worker.
+      expect(perCallMs).toBeLessThan(50)
     } finally {
       await service.stop()
     }
@@ -952,5 +956,46 @@ describe('overview range windows', () => {
     await route.handler(req, out.res)
     expect(out.status()).toBe(200)
     expect(seen).toEqual([undefined])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v0.5.0 alerts/health wiring: the idle 304 cache must survive volatile health
+// ---------------------------------------------------------------------------
+
+describe('overview alerts and health wiring', () => {
+  it('carries alerts/health on every document and keeps the idle ETag stable across probe instants', async () => {
+    const { service, internals } = perfHarness()
+    try {
+      const first = await service.overviewPayload()
+      expect(first.document.alerts).toEqual([])
+      expect(first.document.health?.storage.label).toBe('~/.dsh/dsh-usage-plus')
+      expect(first.document.health?.probes.failing).toEqual([])
+      const stamps = first.document.health?.probes
+      const attemptBefore = stamps?.lastAttemptAt ?? null
+
+      // A probe cycle moves the volatile instants but must not change the data
+      // revision (unchanged facts) — the ETag has to stay valid.
+      const hidden = internals as unknown as { probeAttemptAt: number | null; probeSuccessAt: number | null }
+      hidden.probeAttemptAt = 1_700_000_000_000
+      hidden.probeSuccessAt = 1_700_000_000_000
+      const second = await service.overviewPayload()
+      expect(second.document).toBe(first.document)
+      expect(second.etag).toBe(first.etag)
+      expect(second.document.health?.probes.lastAttemptAt).toBe(1_700_000_000_000)
+      expect(second.document.health?.probes.lastAttemptAt).not.toBe(attemptBefore)
+    } finally {
+      await service.stop()
+    }
+  })
+
+  it('changes the ETag when non-volatile health data changes', () => {
+    const base = { updatedAt: 1, health: { storage: { bytes: 10, corruptFiles: [] }, probes: { lastAttemptAt: 1, lastSuccessAt: 2, failing: [] } } }
+    const moved = { updatedAt: 2, health: { storage: { bytes: 10, corruptFiles: [] }, probes: { lastAttemptAt: 99, lastSuccessAt: 98, failing: [] } } }
+    expect(jsonEtag(moved)).toBe(jsonEtag(base))
+    const failing = { ...moved, health: { ...moved.health, probes: { ...moved.health.probes, failing: ['deepseek-official'] } } }
+    expect(jsonEtag(failing)).not.toBe(jsonEtag(base))
+    const corrupt = { ...moved, health: { ...moved.health, storage: { bytes: 10, corruptFiles: ['usage-ledger.json.corrupt-1'] } } }
+    expect(jsonEtag(corrupt)).not.toBe(jsonEtag(base))
   })
 })

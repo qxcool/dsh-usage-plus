@@ -248,6 +248,9 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
   const identity = model === undefined || model === ''
     ? provider.displayName
     : `${provider.displayName} · ${model}`
+  // Only provider-scoped alerts (plan/balance) affect this pill; a device-wide
+  // daily-cost alert is surfaced in the Overview banner instead.
+  const providerAlert = snapshot.alerts?.find((alert) => alert.provider === provider.provider)
 
   return (
     <span ref={rootRef} className={`${styles.quotaMeter} ${level}`} data-dsh-plugin="usage-plus" data-dsh-part="quota-meter" data-usage-plus-rev="4">
@@ -255,7 +258,7 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
         ref={triggerRef}
         type="button"
         className={styles.quotaMeterTrigger}
-        aria-label={`${identity} · ${source} · ${t('usage.plan.quota')} · ${windowSummary}`}
+        aria-label={`${identity} · ${source} · ${t('usage.plan.quota')} · ${windowSummary}${providerAlert === undefined ? '' : ` · ${t('usage.alerts.stripDot')}`}`}
         aria-haspopup="dialog"
         aria-controls={panelId}
         aria-expanded={open}
@@ -278,6 +281,14 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
         <span className={styles.quotaMeterLabel}>{t('usage.plan.quota')}</span>
         <span className={styles.quotaMeterReading}>{windowSummary}</span>
       </button>
+      {providerAlert !== undefined && (
+        <span
+          className={styles.quotaMeterAlertDot}
+          data-dsh-part="quota-alert-dot"
+          data-alert-severity={providerAlert.severity}
+          aria-hidden="true"
+        />
+      )}
       {open && (
         <div
           ref={panelRef}

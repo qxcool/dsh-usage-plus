@@ -143,10 +143,77 @@ export interface ExternalCredentialStatus {
   volcanoSk: boolean
 }
 
+/**
+ * Host-evaluated alert kinds:
+ * - `daily-cost` — today's priced spend crossed the configured CNY limit;
+ * - `plan-threshold` — the tightest official plan window crossed the configured percent;
+ * - `balance-low` — a provider's known balance fell below the configured CNY amount.
+ */
+export type UsageAlertKind = 'daily-cost' | 'plan-threshold' | 'balance-low'
+
+/** Alert severity: `critical` means at/over a hard limit, `warning` is approaching it. */
+export type UsageAlertSeverity = 'warning' | 'critical'
+
+/** One active alert raised by the Host from the current ledger/snapshot facts. */
+export interface UsageAlert {
+  kind: UsageAlertKind
+  severity: UsageAlertSeverity
+  /** Provider route the alert belongs to, when it is provider-scoped. */
+  provider?: string
+  /** Plan window key (`5h` / `week` / `month` / provider string), for plan alerts. */
+  window?: string
+  /** Observed value: CNY for daily-cost/balance, percent for plan-threshold. */
+  value: number
+  /** Configured threshold that triggered the alert (same unit as `value`). */
+  threshold: number
+  /** Epoch ms the current alert episode started. */
+  since: number
+  /** Short English message; the section can localize by `kind` instead. */
+  message: string
+}
+
+/** Ledger/storage and probe health shown in the data-health section. */
+export interface UsageHealth {
+  storage: {
+    /** Display-safe data directory label (`~/.dsh/dsh-usage-plus`). */
+    label: string
+    /** Ledger file size in bytes, 0 when it has not been written yet. */
+    bytes: number
+    /** Retained days that hold at least one usage bucket. */
+    activeDays: number
+    /** Oldest retained day key, when any. */
+    firstDay: string | null
+    /** Newest retained day key, when any. */
+    lastDay: string | null
+    /** Configured retention in local days. */
+    retentionDays: number
+    /** Basenames of preserved corrupt ledger files (`.corrupt-<epoch>`). */
+    corruptFiles: string[]
+  }
+  /** Completion state of the one-time session-history backfill, when it ran. */
+  backfill: {
+    completedAt: number
+    cutoff: number
+    sessions: number
+    events: number
+    truncated?: boolean
+  } | null
+  probes: {
+    lastAttemptAt: number | null
+    lastSuccessAt: number | null
+    /** Provider route ids whose last probe failed. */
+    failing: string[]
+  }
+}
+
 /** The overview the browser section renders. */
 export interface UsageOverviewView {
   updatedAt: number
   providers: ProviderSnapshotView[]
+  /** Active threshold alerts; optional so an older Host document still parses. */
+  alerts?: UsageAlert[]
+  /** Ledger/probe health for the data-health section; optional for older Hosts. */
+  health?: UsageHealth
   /** The provider the pet bubble and the header highlight; `source` says how it was picked. */
   current: {
     provider?: string
