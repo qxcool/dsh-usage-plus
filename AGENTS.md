@@ -6,4 +6,4 @@ release rules remain authoritative.
 
 Target track: **Host + Web UI** (Host owns ledger/probes; Web client owns Plugins page + composer dock strip).
 
-Compatible engines: `dsh >= 0.1.7-rc.1` (volatile Config forms, `configForms`, `plugins.item`, `conversation.composer.dock`).
+Compatible engines: `dsh >= 0.2.2-rc.3 < 0.3.0` (volatile Config forms, `configForms`, `plugins.bundle.config` / `plugins.row.config`, `conversation.composer.dock`); Node `>= 24.9.0` for CLI and development.

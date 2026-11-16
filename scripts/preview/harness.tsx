@@ -24,8 +24,15 @@ import { buildOverview } from './fixture.ts'
 import type { UsageOverviewView } from '../../src/core/types.ts'
 import './theme.css'
 
-/** One fixed instant so every screenshot run renders identical numbers. */
-const FIXED_NOW = Date.UTC(2026, 10, 8, 7, 6, 0)
+/**
+ * Local noon of the current day: the ledger dates read as "now", while the
+ * seeded series stays stable for every run made on the same day.
+ */
+const FIXED_NOW = (() => {
+  const at = new Date()
+  at.setHours(12, 0, 0, 0)
+  return at.getTime()
+})()
 
 const params = new URLSearchParams(window.location.search)
 const part = params.get('part') === 'strip' ? 'strip' : 'section'

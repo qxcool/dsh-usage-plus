@@ -37,7 +37,7 @@ export interface UsageConfigForm {
     };
     subscribe(listener: () => void): () => void;
     set(field: keyof UsageSettings, value: unknown): Promise<boolean>;
-    /** Atomic multi-field write (preferred for Save on plugins.item pages). */
+    /** Atomic multi-field write (preferred for Save on the bundle configuration page). */
     mutate(ops: ReadonlyArray<{
         op: 'set';
         path: readonly string[];
@@ -47,7 +47,7 @@ export interface UsageConfigForm {
         path: readonly string[];
     }>, expectedRevision?: number): Promise<boolean>;
 }
-/** The registration-side face the plugins.item slot injects. */
+/** The registration-side face the bundle configuration page injects. */
 export interface UsageSectionFace {
     /** The section-local store (overview snapshot + lifecycle). */
     store: UsageStoreInstance;

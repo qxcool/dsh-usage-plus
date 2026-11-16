@@ -42,19 +42,26 @@ body {
   /* DSH aliases consumed by the plugin's CSS module. Mirror the real build:
      --dsw-alias-brand-primary is the text-on-surface contrast colour (near
      white on dark), so data colour must come from the new-color token. If the
-     harness hardcodes blue here, accent-token bugs stay invisible. */
-  --dsw-alias-bg-elevated: #1e2023;
+     harness hardcodes blue here, accent-token bugs stay invisible.
+     The menu surface mirrors 0.2.2's translucent panel: it only works paired
+     with --dsw-menu-backdrop-filter, exactly like the Host's own menus. */
   --dsw-alias-border-l3: #33353a;
   --dsw-alias-brand-primary: #f9fafb;
   --dsw-alias-brand-primary-new-colorprimary-new-color: #5686fe;
   --dsw-static-deepseek-450: #5686fe;
   --dsw-alias-state-success-primary: #22d363;
+  --dsw-alias-state-warn-primary: #f5a524;
+  --dsw-alias-state-error-primary: #f25a5a;
   --dsw-alias-label-primary: #e9eaec;
   --dsw-alias-label-secondary: #a4a7ac;
   --dsw-alias-label-tertiary: #7d8188;
   --dsw-alias-interactive-bg-hover: rgb(255 255 255 / 7%);
-  --dsw-specific-menu: #24262b;
-  --dsw-elevation-prominent: 0 12px 32px rgb(0 0 0 / 50%);
+  --dsw-menu-surface-fill: rgba(48, 49, 54, 0.64);
+  --dsw-specific-menu: var(--dsw-menu-surface-fill);
+  --dsw-alias-menu-group-header-fill: rgba(48, 49, 54, 0.94);
+  --dsw-menu-backdrop-filter: blur(40px) saturate(150%);
+  --dsw-elevation-panel: 0 0 0 0.5px rgb(255 255 255 / 16%), 0 3px 8px 0 rgb(0 0 0 / 3%), 0 0 16px 0 rgb(0 0 0 / 2%);
+  --dsw-elevation-prominent: 0 0 0 0.5px rgb(255 255 255 / 16%), 0 3px 8px 0 rgb(0 0 0 / 4%), 0 0 20px 0 rgb(0 0 0 / 5%);
   --ds-font-family-code: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
 }
 
@@ -65,18 +72,23 @@ body {
   --preview-panel-border: #e0e2e7;
   --preview-text: #1b1d21;
 
-  --dsw-alias-bg-elevated: #f7f8fa;
   --dsw-alias-border-l3: #d3d6dc;
   --dsw-alias-brand-primary: #0f1115;
   --dsw-alias-brand-primary-new-colorprimary-new-color: #4176e6;
   --dsw-static-deepseek-450: #4176e6;
   --dsw-alias-state-success-primary: #12a15f;
+  --dsw-alias-state-warn-primary: #d9930f;
+  --dsw-alias-state-error-primary: #d93843;
   --dsw-alias-label-primary: #1b1d21;
   --dsw-alias-label-secondary: #5b6068;
   --dsw-alias-label-tertiary: #82878f;
   --dsw-alias-interactive-bg-hover: rgb(0 0 0 / 6%);
-  --dsw-specific-menu: #ffffff;
-  --dsw-elevation-prominent: 0 12px 32px rgb(15 20 30 / 16%);
+  --dsw-menu-surface-fill: rgba(252, 253, 254, 0.7);
+  --dsw-specific-menu: var(--dsw-menu-surface-fill);
+  --dsw-alias-menu-group-header-fill: rgba(248, 249, 250, 0.94);
+  --dsw-menu-backdrop-filter: blur(40px) saturate(150%);
+  --dsw-elevation-panel: 0 0 0 0.5px rgb(0 0 0 / 16%), 0 3px 8px 0 rgb(0 0 0 / 3%), 0 0 16px 0 rgb(0 0 0 / 2%);
+  --dsw-elevation-prominent: 0 0 0 0.5px rgb(0 0 0 / 16%), 0 3px 8px 0 rgb(0 0 0 / 4%), 0 0 20px 0 rgb(0 0 0 / 5%);
   --ds-font-family-code: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
 }
 

@@ -47,14 +47,14 @@ export interface UsageConfigForm {
   }
   subscribe(listener: () => void): () => void
   set(field: keyof UsageSettings, value: unknown): Promise<boolean>
-  /** Atomic multi-field write (preferred for Save on plugins.item pages). */
+  /** Atomic multi-field write (preferred for Save on the bundle configuration page). */
   mutate(
     ops: ReadonlyArray<{ op: 'set'; path: readonly string[]; value: unknown } | { op: 'unset'; path: readonly string[] }>,
     expectedRevision?: number,
   ): Promise<boolean>
 }
 
-/** The registration-side face the plugins.item slot injects. */
+/** The registration-side face the bundle configuration page injects. */
 export interface UsageSectionFace {
   /** The section-local store (overview snapshot + lifecycle). */
   store: UsageStoreInstance
@@ -523,11 +523,16 @@ function monthRuns(labels: string[]): MonthRun[] {
   labels.forEach((label, index) => {
     if (label !== '') starts.push(index)
   })
-  return starts.map((start, index) => ({
-    label: labels[start] ?? '',
-    start,
-    span: (starts[index + 1] ?? labels.length) - start,
-  }))
+  return starts
+    .map((start, index) => ({
+      label: labels[start] ?? '',
+      start,
+      span: (starts[index + 1] ?? labels.length) - start,
+    }))
+    // A month boundary at the grid's edge can leave a single week column: its
+    // label cannot fit one 13px cell and would collide with the next month.
+    // The neighbouring label still marks the boundary for the reader.
+    .filter((run) => run.span > 1)
 }
 
 const HeatmapCard = memo(function HeatmapCard(props: { days: UsageDaySummary[] }): ReactNode {
@@ -936,7 +941,7 @@ function normalizeSettings(value: UsageSettings | undefined): typeof CONFIG_DEFA
 }
 
 /**
- * Config tab for plugins.item: edits stay staged until Save.
+ * Config tab on the bundle's configuration page: edits stay staged until Save.
  * Matches the official Plugins page contract (leave page → discard draft).
  */
 function SettingsRow(props: {
@@ -1422,10 +1427,10 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
               avgCost={avgCost}
             />
           </div>
-          <div className={`${styles.cell} ${styles.cell7}`}>
+          <div className={`${styles.cell} ${styles.cell7} ${styles.cellHeatmap}`}>
             <HeatmapCard days={days} />
           </div>
-          <div className={`${styles.cell} ${styles.cell5}`}>
+          <div className={`${styles.cell} ${styles.cell5} ${styles.cellQuota}`}>
             <QuotaCard provider={matchedPlan} model={current.model} onSeeAll={() => setTab('plans')} />
           </div>
           <div className={`${styles.cell} ${styles.cell7}`}>

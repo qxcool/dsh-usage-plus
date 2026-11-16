@@ -1,7 +1,7 @@
 /**
- * dsh-usage browser half — Plugins page (plugins.item) over the `usage-plus`
- * profile entry, plus the composer plan strip. Config reads/writes go through
- * `ctx.configForms` (DSH 0.1.7+); probing stays on the host.
+ * dsh-usage browser half — bundle configuration page (`plugins.bundle.config`)
+ * over the `usage-plus` profile entry, plus the composer plan strip. Config
+ * reads/writes go through `ctx.configForms`; probing stays on the host.
  * @module dsh-usage-plus/client
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis';
@@ -24,25 +24,17 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface SlotMap {
         /**
          * Composer bottom dock — below the input card, beside official StatsPills
-         * and ContextMeter (DSH 0.1.7+ moved context/usage chrome here).
+         * and ContextMeter.
          */
         'conversation.composer.dock': {
             kind: 'list';
             scope: 'session';
         };
-        /**
-         * Official / third-party configuration page on the Plugins sidebar.
-         * @see @deepseek-ai/dsh-client-ui-plugin-manager README — Configuration pages
-         */
-        'plugins.item': {
-            kind: 'list';
-            scope: 'root';
-        };
     }
 }
 /**
- * Client plugin body: register dictionaries, the Plugins-page card (while the
- * Host serves `usage-plus`), and the composer plan strip.
+ * Client plugin body: register dictionaries, the bundle's configuration page,
+ * and the composer plan strip.
  */
 export declare function apply(ctx: ClientContext): void;
 //# sourceMappingURL=index.d.ts.map

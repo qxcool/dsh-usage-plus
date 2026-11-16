@@ -16,6 +16,11 @@ import { UsageSectionCard } from '../src/client/UsageSectionCard.tsx'
 import { emptyTotals, type ProviderSnapshotView, type UsageOverviewView } from '../src/core/types.ts'
 import styles from '../src/client/usage.module.css'
 
+// The component resolves its copy from document.documentElement.lang at call
+// time; pin the Chinese dictionary for the assertions below (non-zh falls back
+// to English by design).
+document.documentElement.lang = 'zh'
+
 function provider(partial: Partial<ProviderSnapshotView>): ProviderSnapshotView {
   return { provider: 'x', displayName: 'X', credential: 'env', supported: true, ...partial }
 }

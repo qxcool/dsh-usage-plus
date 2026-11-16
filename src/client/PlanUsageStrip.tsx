@@ -6,13 +6,19 @@ import { sessionRouteFrom, type SessionSelectionView } from './session-route.ts'
 import { formatPlanReset, t } from './locales.ts'
 import styles from './usage.module.css'
 
-/** Ship one diagnostic line to the host when the state key changes. */
+/** Last strip-state key and instant, for the five-minute diagnostic throttle. */
 let lastDiagKey = ''
 let lastDiagAt = 0
+
+/**
+ * Report a state change to the host diagnostic log. Identical `strip-state`
+ * keys are throttled for five minutes (the strip re-renders on every shared
+ * poll); error and registration kinds are always forwarded.
+ */
 export function reportDiag(kind: string, key: string): void {
   const now = Date.now()
   const full = `${kind}:${key}`
-  if (kind === 'strip-state' && full === lastDiagKey && now - lastDiagAt < 30_000) return
+  if (kind === 'strip-state' && full === lastDiagKey && now - lastDiagAt < 300_000) return
   if (kind === 'strip-state') {
     lastDiagKey = full
     lastDiagAt = now

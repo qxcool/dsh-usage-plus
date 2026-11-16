@@ -2,7 +2,7 @@
 
 [中文](README.zh.md) | English
 
-Independent DSH usage and official Plan-quota plugin (Host + Web UI). It does not pin a DSH version: optional UI surfaces activate only when the running DSH exposes the required capabilities.
+Independent DSH usage and official Plan-quota plugin (Host + Web UI). Requires DSH `>= 0.2.2-rc.3 < 0.3.0` and, for CLI/development, Node `>= 24.9.0`; older DSH releases are not supported. Optional UI surfaces activate only when the running DSH exposes the required capabilities.
 
 [![dsh.pub registry status](https://dsh.pub/api/badges/qxcool/dsh-usage-plus.svg)](https://dsh.pub/en/plugins/dsh-usage-plus/)
 
@@ -10,7 +10,7 @@ Independent DSH usage and official Plan-quota plugin (Host + Web UI). It does no
 - Shows real 5-hour, weekly, and monthly windows on `conversation.composer.dock` (alongside StatsPills / ContextMeter).
 - Labels every Plugins-page number with its scope (`全设备` / `账号级` / `本会话`) so device-wide totals never read as session totals.
 - Renders nothing when a provider exposes no official quota window.
-- Keeps CPAMC and Volcano Ark as separate sources (Plugins page → Settings).
+- Keeps CPAMC and Volcano Ark as separate sources (plugin page → Settings).
 - Overview includes a full 26-week Mon–Sun activity heatmap (ledger default 182 days).
 - Keeps all secrets in the host process / credential vault.
 - Shares one conditional-GET poller across the Plugins page and every composer strip; requests never overlap and a hidden tab pauses.
@@ -24,7 +24,7 @@ Independent DSH usage and official Plan-quota plugin (Host + Web UI). It does no
 
 When the active model matches an official plan source, the composer dock shows a compact pill with the real 5-hour / weekly / monthly readings; the ring marks the tightest window. Open it for per-window bars, reset times, and the source chip (for example Volcano). Nothing is rendered when the remote API exposes no official window.
 
-### Plugins → Usage · Overview
+### Plugins → Installed plugins → dsh-usage-plus · Overview
 
 ![Usage overview (device-wide): a today hero figure with vs-yesterday comparator, 30-day / all-time / calls / average-cost stats, cache-hit ring, the 26-week Mon–Sun heatmap with weekday gutter, column-anchored month labels and active-day / peak facts, account-level quota rings, the 30-day provider trend, today's provider breakdown with token mix, and a collapsible per-day history](docs/screenshots/settings-overview.png)
 
@@ -40,13 +40,13 @@ dsh plugin --profile desktop add github:qxcool/dsh-usage-plus
 # dsh plugin --profile desktop add ./
 ```
 
-The GitHub form installs the committed `lib/` artifacts in this repository. The npm package may lag behind the GitHub release, so prefer the GitHub form when you want the current version.
+The GitHub form installs the committed `lib/` artifacts in this repository. The npm package may lag behind the GitHub release, so prefer the GitHub form when you want the current version. DSH `0.2.2-rc.3` or newer (below `0.3.0`) is required.
 
 The package ships its own bundle patch (`id: usage-plus`, `name: dsh-usage-plus`).
 If the older `@linxin666/dsh-usage` / `web-ui-usage` row is also present, disable it
 in the profile patch to avoid duplicate UI.
 
-Optional credential names are `CPAMC_MANAGEMENT_KEY`, `VOLC_ACCESSKEY`, and `VOLC_SECRETKEY`. Enable the matching source under **Plugins → Usage Statistics → Settings**, then **Save**. Leaving the page discards an unsaved draft (official `plugins.item` contract).
+Optional credential names are `CPAMC_MANAGEMENT_KEY`, `VOLC_ACCESSKEY`, and `VOLC_SECRETKEY`. Enable the matching source under **Plugins → Installed plugins → dsh-usage-plus → Settings**, then **Save**. Leaving the page discards an unsaved draft (official `plugins.bundle.config` contract).
 
 ## Model Experience
 
@@ -56,7 +56,7 @@ Optional credential names are `CPAMC_MANAGEMENT_KEY`, `VOLC_ACCESSKEY`, and `VOL
 
 ## Known Limitations
 
-- DSH versions are not pinned. Missing optional surfaces (`configForms`, `plugins.item`, `conversation.composer.dock`) are treated as unavailable capabilities instead of a startup failure.
+- Requires DSH `>= 0.2.2-rc.3 < 0.3.0`. Missing optional surfaces (`configForms`, `plugins.bundle.config`, `conversation.composer.dock`) are treated as unavailable capabilities instead of a startup failure.
 - Providers without an official Plan API show no strip and no fabricated windows.
 - CPAMC accepts loopback origins (or hosts listed in `cpamcAllowedHosts`) only; management routes are read-only and reject redirects.
 - Volcano Ark needs vaulted AK/SK (or `VOLC_ACCESSKEY` / `VOLC_SECRETKEY`); signing runs only in the Host process.

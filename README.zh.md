@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-独立的 DSH 用量与官方 Plan 额度插件（Host + Web UI）。不锁定 DSH 版本；可选界面仅在运行中的 DSH 提供相应能力时启用。
+独立的 DSH 用量与官方 Plan 额度插件（Host + Web UI）。要求 DSH `>= 0.2.2-rc.3 < 0.3.0`；CLI / 开发环境要求 Node `>= 24.9.0`，不支持更旧的 DSH。可选界面仅在运行中的 DSH 提供相应能力时启用。
 
 [![dsh.pub 收录状态](https://dsh.pub/api/badges/qxcool/dsh-usage-plus.svg)](https://dsh.pub/zh/plugins/dsh-usage-plus/)
 
@@ -12,7 +12,7 @@
 - 在 `conversation.composer.dock`（与官方轮次 / Token / ContextMeter 同行）显示当前模型的真实 5 小时、每周、每月额度；服务端没有返回官方额度窗口时完全不显示。
 - 插件页每个数字都带口径徽标（`全设备` / `账号级` / `本会话`），设备级合计不会被误读成会话级数字。
 - 额度条按「每个会话选择的模型」解析：读取该会话 `modelSelection` 投影（composer 模型位 / `/model` 切换立即生效）。尚未产生会话选择时才回退到宿主当前路由；**会话已选中模型时绝不再串到其它会话或全局套餐**。
-- 在「插件 → 使用统计」页按“模型配置自动查询 / CPAMC / 火山方舟”分组展示（DSH 0.1.7+ 配置表单位于 Plugins 页，草稿需点保存）。
+- 在「插件 → 已安装插件 → dsh-usage-plus」页按“模型配置自动查询 / CPAMC / 火山方舟”分组展示（配置表单位于插件详情页，草稿需点保存）。
 - CPAMC 只允许回环地址（或 `cpamcAllowedHosts` 白名单），固定调用只读管理路由并拒绝重定向。
 - 火山方舟使用 `VOLC_ACCESSKEY` / `VOLC_SECRETKEY` 对官方 OpenAPI 做 HMAC-SHA256 签名。
 - 密钥始终留在 DSH 宿主进程 / 凭据库，不发送到浏览器。
@@ -28,7 +28,7 @@
 
 当前模型命中套餐后，在 composer dock 状态条显示官方 5 小时 / 周 / 月额度的紧凑胶囊，环形标记最紧窗口；点开可看逐窗口进度条、重置时间与来源徽标（如「火山」）。无官方窗口时不渲染。
 
-### 插件 → 使用统计 · 概览
+### 插件 → 已安装插件 → dsh-usage-plus · 概览
 
 ![使用统计概览（全设备口径）：今日主数字与较昨日对比、近 30 天 / 累计 / 调用 / 平均成本、缓存命中率环、26 周（周一至周日）活动热力图（星期栏、按列对齐的月份标签、活跃天数与峰值）、账号级额度环、近 30 天提供方趋势、今日提供方明细与 Token 分桶，以及可展开的按日历史](docs/screenshots/settings-overview.png)
 
@@ -44,7 +44,7 @@ dsh plugin --profile desktop add github:qxcool/dsh-usage-plus
 # dsh plugin --profile desktop add ./
 ```
 
-GitHub 形式安装的是本仓库已提交的 `lib/` 构建产物；npm 包可能落后于 GitHub 版本，需要最新版时优先用 GitHub 形式。
+GitHub 形式安装的是本仓库已提交的 `lib/` 构建产物；npm 包可能落后于 GitHub 版本，需要最新版时优先用 GitHub 形式。要求 DSH `0.2.2-rc.3` 或更新（低于 `0.3.0`）。
 
 包内已自带 patch（`id: usage-plus`，`name: dsh-usage-plus`）。若 profile 里仍有旧的 `@linxin666/dsh-usage` / `web-ui-usage`，请在 profile 的 `cordis.patch.yml` 中将其 `disabled: true`，避免 UI 重复。
 
@@ -56,7 +56,7 @@ GitHub 形式安装的是本仓库已提交的 `lib/` 构建产物；npm 包可�
 - `VOLC_ACCESSKEY`
 - `VOLC_SECRETKEY`
 
-然后在「插件 → 使用统计 → 设置」中启用相应独立数据源并点击**保存**。离开页面会丢弃未保存草稿（官方 `plugins.item` 约定）。CPAMC 默认地址为 `http://127.0.0.1:8317`。
+然后在「插件 → 已安装插件 → dsh-usage-plus → 设置」中启用相应独立数据源并点击**保存**。离开页面会丢弃未保存草稿（官方 `plugins.bundle.config` 约定）。CPAMC 默认地址为 `http://127.0.0.1:8317`。
 
 ## 模型体验（Model Experience）
 
@@ -66,7 +66,7 @@ GitHub 形式安装的是本仓库已提交的 `lib/` 构建产物；npm 包可�
 
 ## 已知限制（Known Limitations）
 
-- 不锁定 DSH Desktop / Harness 版本；缺少 `configForms`、`plugins.item` 或 `conversation.composer.dock` 等可选能力时自动跳过对应界面，不影响 DSH 启动。
+- 要求 DSH `>= 0.2.2-rc.3 < 0.3.0`；缺少 `configForms`、`plugins.bundle.config` 或 `conversation.composer.dock` 等可选能力时自动跳过对应界面，不影响 DSH 启动。
 - 无官方 Plan API 的提供方不会显示额度条，也不会伪造窗口。
 - CPAMC 仅允许回环（或白名单 host）；管理路由只读且拒绝重定向。
 - 火山方舟需凭据库 AK/SK（或环境变量）；签名只在 Host 进程执行。

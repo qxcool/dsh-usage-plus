@@ -7,14 +7,14 @@
  * @module @linxin666/dsh-usage/host/usage-service
  */
 
-import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises'
+import { copyFile, mkdir, open, readFile, rename, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { credentialKey, credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { TokenUsage } from '@deepseek-ai/dsh-llm'
 import { dshHome } from '../dsh-home.ts'
-import { adapterFor, isDeepSeekProviderRoute, providerErrorMessage } from '../core/adapters.ts'
+import { adapterFor, dedupeProviderAliasRoutes, isDeepSeekProviderRoute, providerErrorMessage } from '../core/adapters.ts'
 import type { BalanceParse, PlanParse } from '../core/adapters.ts'
 import { deepseekModelSpend, deepseekPeriodAt } from '../core/pricing.ts'
 import { createLedgerDocument, deserializeLedger, foldUsage, localDateKey, pruneLedger, summarizeLedgerUsage, totalTokens } from '../core/ledger.ts'
@@ -68,8 +68,17 @@ const PROBE_TIMEOUT_MS = 10_000
  */
 const PROBE_BACKOFF_MS = [60_000, 300_000, 900_000] as const
 
-/** Ledger flush debounce. */
+/** Ledger flush debounce: coalesce a burst of folds into one write. */
 const FLUSH_DEBOUNCE_MS = 3_000
+
+/**
+ * Minimum gap between two ledger writes. The ledger is a full-document
+ * rewrite+fsync, so an active session (a fold every few seconds) would
+ * otherwise rewrite the whole retained document up to ~20×/minute. The
+ * debounce still applies as the lower bound; this only delays, never drops —
+ * `stop()` always performs a final flush.
+ */
+const FLUSH_MIN_INTERVAL_MS = 20_000
 
 /** How many days the per-provider trend bars aggregate. */
 const TREND_DAYS = 30
@@ -113,6 +122,19 @@ export function probeBackoffDelayMs(failures: number): number {
   if (!Number.isFinite(failures) || failures <= 0) return 0
   const index = Math.min(Math.floor(failures) - 1, PROBE_BACKOFF_MS.length - 1)
   return PROBE_BACKOFF_MS[index] as number
+}
+
+/**
+ * Delay before the next debounced ledger flush. The burst debounce is the
+ * lower bound; a write that started less than the minimum interval ago pushes
+ * the next one out so the full-document fsync rewrite cannot run continuously
+ * during an active session. Pure: unit-tested directly, no timer involved.
+ */
+export function nextFlushDelayMs(nowMs: number, lastFlushAtMs: number): number {
+  const floorWait = lastFlushAtMs + FLUSH_MIN_INTERVAL_MS - nowMs
+  // Clamp to the floor itself: a backwards clock jump must not park the ledger
+  // unflushed for the length of the jump (stop() still flushes regardless).
+  return Math.max(FLUSH_DEBOUNCE_MS, Math.min(floorWait, FLUSH_MIN_INTERVAL_MS))
 }
 
 /**
@@ -322,6 +344,48 @@ export function replaceExternalSnapshots(
   for (const row of rows) snapshots.set(row.provider, row)
 }
 
+/** Balance facts equal, ignoring the volatile probe read timestamp. */
+function sameBalanceFacts(left: BalanceView | undefined, right: BalanceView | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right
+  return left.currency === right.currency && left.totalBalance === right.totalBalance
+}
+
+/** Plan facts equal, ignoring the volatile probe read timestamp (plan and windows). */
+function samePlanFacts(left: PlanView | undefined, right: PlanView | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right
+  if (left.planName !== right.planName) return false
+  if (left.windows.length !== right.windows.length) return false
+  for (let index = 0; index < left.windows.length; index += 1) {
+    const a = left.windows[index]
+    const b = right.windows[index]
+    if (a === undefined || b === undefined) return a === b
+    if (a.key !== b.key || a.name !== b.name || a.percent !== b.percent || a.resetsAt !== b.resetsAt) return false
+  }
+  return true
+}
+
+/**
+ * Whether two snapshot states carry the same *facts*. Volatile probe read
+ * timestamps (`updatedAt` on the row, balance, and plan) are ignored: a
+ * provider that keeps returning identical facts must not rewrite the snapshot
+ * map, the persisted snapshots file, or the overview revision/ETag every
+ * poll. Extend this when a new wire fact is added to `ProviderSnapshotState`.
+ */
+export function providerSnapshotFactsEqual(left: ProviderSnapshotState, right: ProviderSnapshotState): boolean {
+  return left.provider === right.provider
+    && left.displayName === right.displayName
+    && left.credential === right.credential
+    && left.supported === right.supported
+    && left.balanceSupported === right.balanceSupported
+    && left.planSupported === right.planSupported
+    && left.source === right.source
+    && left.error === right.error
+    && left.balanceError === right.balanceError
+    && left.planError === right.planError
+    && sameBalanceFacts(left.balance, right.balance)
+    && samePlanFacts(left.plan, right.plan)
+}
+
 /** Structural equality for two configEditor entry snapshots (plain JSON data). */
 function configsEqual(
   left: Record<string, unknown> | undefined,
@@ -378,6 +442,8 @@ export class UsageService {
   private readonly probeBackoff = new Map<string, { failures: number; nextAt: number }>()
   /** Last snapshots document written; an unchanged document is not rewritten. */
   private lastPersistedSnapshots: string | undefined
+  /** Start instant of the last ledger write attempt; enforces the flush floor. */
+  private lastFlushAt = 0
 
   /**
    * Bumped on every document-visible mutation: ledger fold, persisted merge,
@@ -405,10 +471,17 @@ export class UsageService {
   /** Invalidates in-flight credential-status reads that predate a credential write. */
   private credentialStatusGeneration = 0
 
-  constructor(ctx: Context, options: UsageServiceOptions) {
+  /**
+   * @param ctx - host context.
+   * @param options - resolved plugin options.
+   * @param persistDir - ledger/snapshot directory override (tests only; the
+   *   live service always uses the DSH home). Kept as a narrow seam so
+   *   persistence tests never write into the user's real data directory.
+   */
+  constructor(ctx: Context, options: UsageServiceOptions, persistDir: string = join(dshHome(), 'dsh-usage-plus')) {
     this.ctx = ctx
     this.options = options
-    this.persistDir = join(dshHome(), 'dsh-usage-plus')
+    this.persistDir = persistDir
     this.ledgerPath = join(this.persistDir, 'usage-ledger.json')
     this.snapshotsPath = join(this.persistDir, 'provider-snapshots.json')
   }
@@ -828,37 +901,8 @@ export class UsageService {
         readFile(this.ledgerPath, 'utf8').catch(() => undefined),
         readFile(this.snapshotsPath, 'utf8').catch(() => undefined),
       ])
-      if (rawLedger !== undefined) {
-        const loaded = deserializeLedger(JSON.parse(rawLedger))
-        // Merge into (never replace) the live document: folds that landed
-        // during the read window must survive the load.
-        for (const [dayKey, providers] of Object.entries(loaded.days)) {
-          const atMs = new Date(dayKey + 'T12:00:00').getTime()
-          for (const [provider, models] of Object.entries(providers)) {
-            for (const [model, totals] of Object.entries(models)) {
-              foldUsage(this.ledger, atMs, provider, model, totals)
-            }
-          }
-        }
-        pruneLedger(this.ledger, localDateKey(Date.now()), this.options.retainDays)
-        this.lastPrune = { dayKey: localDateKey(Date.now()), retainDays: this.options.retainDays }
-        // Merged (and possibly pruned) history is document-visible: a cached
-        // overview assembled during the read window must be rebuilt.
-        this.bumpLedgerRevision()
-      }
-      if (rawSnapshots !== undefined) {
-        const parsed = JSON.parse(rawSnapshots) as { providers?: Record<string, ProviderSnapshotState> }
-        if (typeof parsed === 'object' && parsed !== null && typeof parsed.providers === 'object' && parsed.providers !== null) {
-          let loadedSnapshots = false
-          for (const [provider, snapshot] of Object.entries(parsed.providers)) {
-            if (typeof snapshot === 'object' && snapshot !== null && typeof snapshot.provider === 'string') {
-              this.snapshots.set(provider, snapshot)
-              loadedSnapshots = true
-            }
-          }
-          if (loadedSnapshots) this.bumpRevision()
-        }
-      }
+      if (rawLedger !== undefined) await this.mergePersistedLedger(rawLedger)
+      if (rawSnapshots !== undefined) this.mergePersistedSnapshots(rawSnapshots)
     } catch {
       // Corrupt or unreadable state starts fresh; the next flush rewrites it.
     } finally {
@@ -867,18 +911,95 @@ export class UsageService {
     }
   }
 
+  /**
+   * Merge one persisted ledger file into the live document. The file is only
+   * trusted after a shape check; an unreadable ledger is preserved beside the
+   * live path as `<name>.corrupt-<epoch>` instead of being silently overwritten
+   * by the next flush. Never throws.
+   */
+  private async mergePersistedLedger(raw: string): Promise<void> {
+    let loaded: UsageLedgerDocument
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (typeof parsed !== 'object' || parsed === null) throw new Error('unrecognized ledger document')
+      const days = (parsed as { days?: unknown }).days
+      if (typeof days !== 'object' || days === null || Array.isArray(days)) throw new Error('unrecognized ledger days')
+      loaded = deserializeLedger(parsed)
+    } catch {
+      await this.preserveUnreadableLedger()
+      return
+    }
+    // Merge into (never replace) the live document: folds that landed during
+    // the read window must survive the load.
+    for (const [dayKey, providers] of Object.entries(loaded.days)) {
+      const atMs = new Date(dayKey + 'T12:00:00').getTime()
+      for (const [provider, models] of Object.entries(providers)) {
+        for (const [model, totals] of Object.entries(models)) {
+          foldUsage(this.ledger, atMs, provider, model, totals)
+        }
+      }
+    }
+    pruneLedger(this.ledger, localDateKey(Date.now()), this.options.retainDays)
+    this.lastPrune = { dayKey: localDateKey(Date.now()), retainDays: this.options.retainDays }
+    // Merged (and possibly pruned) history is document-visible: a cached
+    // overview assembled during the read window must be rebuilt.
+    this.bumpLedgerRevision()
+  }
+
+  /**
+   * Move an unreadable ledger aside so its bytes survive the next flush. A
+   * locked or cross-device file falls back to a best-effort copy; preservation
+   * failure must never block startup, so both failures are swallowed.
+   */
+  private async preserveUnreadableLedger(): Promise<void> {
+    const target = `${this.ledgerPath}.corrupt-${Date.now()}`
+    try {
+      await rename(this.ledgerPath, target)
+      return
+    } catch {
+      // Fall through to a copy: rename can fail for a locked source.
+    }
+    try {
+      await copyFile(this.ledgerPath, target)
+    } catch {
+      // Best-effort only.
+    }
+  }
+
+  private mergePersistedSnapshots(raw: string): void {
+    const parsed = JSON.parse(raw) as { providers?: Record<string, ProviderSnapshotState> }
+    if (typeof parsed !== 'object' || parsed === null || typeof parsed.providers !== 'object' || parsed.providers === null) return
+    let loadedSnapshots = false
+    for (const [provider, snapshot] of Object.entries(parsed.providers)) {
+      if (typeof snapshot === 'object' && snapshot !== null && typeof snapshot.provider === 'string') {
+        this.snapshots.set(provider, snapshot)
+        loadedSnapshots = true
+      }
+    }
+    if (loadedSnapshots) this.bumpRevision()
+  }
+
+  /**
+   * Arm one debounced ledger flush. The delay is the burst debounce or the
+   * remaining flush floor, whichever is later, so an active session cannot
+   * rewrite the full ledger document on every 3 s window. Exactly one timer is
+   * ever pending; folds that land while it runs are covered by the write that
+   * follows (and reschedule afterwards when the write already started).
+   */
   private scheduleFlush(): void {
     if (this.flushTimer !== undefined || this.disposed) return
+    const delay = nextFlushDelayMs(Date.now(), this.lastFlushAt)
     this.flushTimer = setTimeout(() => {
       this.flushTimer = undefined
       void this.flushLedger()
-    }, FLUSH_DEBOUNCE_MS)
+    }, delay)
   }
 
   /**
    * Queue one ledger flush behind the previous one. Debounce and stop-time
    * flushes serialize here, so two `writeJsonAtomic` calls can never run
-   * concurrently on the same path.
+   * concurrently on the same path. `stop()` calls this directly, so the final
+   * flush is never delayed by the floor.
    */
   private flushLedger(): Promise<void> {
     const next = this.flushChain.then(() => this.writeLedgerOnce())
@@ -891,6 +1012,10 @@ export class UsageService {
     // racing the load window would otherwise clobber history with a partial
     // document.
     if (!this.loaded) return
+    // Record the attempt instant (not the completion): the floor spaces write
+    // starts apart even when a slow fsync lets the next timer fire meanwhile.
+    this.lastFlushAt = Date.now()
+
     try {
       await mkdir(dirname(this.ledgerPath), { recursive: true })
       await writeJsonAtomic(this.ledgerPath, this.ledger)
@@ -1043,7 +1168,9 @@ export class UsageService {
         // Registry hiccups degrade to an empty list; the next poll retries.
       }
     }
-    return [...routes].map(([id, displayName]) => ({ id, displayName }))
+    // One provider adapter means one probe endpoint, one snapshot, one row:
+    // the DeepSeek catalog key and live route must not be probed twice a cycle.
+    return dedupeProviderAliasRoutes([...routes].map(([id, displayName]) => ({ id, displayName })))
   }
 
   private async probeRoute(route: ProviderRoute, adapter: NonNullable<ReturnType<typeof adapterFor>>): Promise<void> {
@@ -1053,13 +1180,17 @@ export class UsageService {
       // Nothing to probe with (oauth grant, no credential): retained facts
       // would never refresh again, so the row resets to its credential
       // state instead of presenting stale data as current.
-      this.snapshots.set(route.id, {
+      const next: ProviderSnapshotState = {
         provider: route.id,
         displayName: route.displayName || adapter.displayName,
         credential: credential.kind,
         supported: true,
         updatedAt: Date.now(),
-      })
+      }
+      // An unchanged credential state is not a data change: keep the previous
+      // object so the snapshots file, overview revision, and ETag stay put.
+      if (previous !== undefined && providerSnapshotFactsEqual(previous, next)) return
+      this.snapshots.set(route.id, next)
       this.bumpRevision()
       return
     }
@@ -1104,6 +1235,13 @@ export class UsageService {
     const plan = await runProbe('plan')
     if (plan !== undefined) snapshot.plan = plan as PlanView
     else if (previous?.plan !== undefined) snapshot.plan = previous.plan
+    if (previous !== undefined && providerSnapshotFactsEqual(previous, snapshot)) {
+      // Identical facts (only the probe read stamps moved): keep the previous
+      // object so the snapshot file and the revision-derived ETag stay stable.
+      // Backoff still advances — a repeated failure must keep backing off.
+      this.recordProbeOutcome(route.id, snapshot.balanceError !== undefined || snapshot.planError !== undefined)
+      return
+    }
     this.snapshots.set(route.id, snapshot)
     this.bumpRevision()
     // One half failing is enough to back this provider off; a success in
@@ -1188,16 +1326,24 @@ export class UsageService {
 
   /**
    * Replace one external source's rows, bumping the revision only when the
-   * map actually changed (a disabled/idle source must not invalidate the
-   * cached overview on every poll).
+   * facts actually changed. A disabled/idle source and an unchanged quota
+   * response must not invalidate the cached overview (and its ETag) or rewrite
+   * the snapshots file every poll; the probe read timestamps are ignored for
+   * this comparison.
    */
   private replaceExternalSnapshotsChecked(source: 'cpamc' | 'volcano', rows: readonly ProviderSnapshotState[]): void {
     const prefix = `${source}:`
-    let previousRows = 0
-    for (const id of this.snapshots.keys()) {
-      if (id.startsWith(prefix)) previousRows += 1
+    const existing: ProviderSnapshotState[] = []
+    for (const [id, snapshot] of this.snapshots) {
+      if (id.startsWith(prefix)) existing.push(snapshot)
     }
-    if (previousRows === 0 && rows.length === 0) return
+    if (existing.length === 0 && rows.length === 0) return
+    const unchanged = existing.length === rows.length
+      && existing.every((snapshot, index) => {
+        const next = rows[index]
+        return next !== undefined && providerSnapshotFactsEqual(snapshot, next)
+      })
+    if (unchanged) return
     replaceExternalSnapshots(this.snapshots, source, rows)
     this.bumpRevision()
   }

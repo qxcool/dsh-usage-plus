@@ -40,6 +40,13 @@ export interface PlanParse {
 export interface ProviderAdapter {
   /** Provider route keys this adapter serves. */
   ids: readonly string[]
+  /**
+   * The route id to keep when several live routes resolve to this adapter.
+   * One adapter means one probe endpoint, so an alias must not be probed or
+   * rendered twice; the preferred id is the one sessions and the composer
+   * `current` route carry (the live registry id), not the catalog key.
+   */
+  preferredId?: string
   /** Fallback display name when the LLM runtime has none. */
   displayName: string
   balance?: {
@@ -110,6 +117,10 @@ function bearer(apiKey: string): Record<string, string> {
  */
 const DEEPSEEK: ProviderAdapter = {
   ids: ['deepseek', 'deepseek-official'],
+  // `deepseek-official` is the live route sessions carry; `deepseek` is only
+  // the configurable-catalog key. Probing/rendering both would hit the same
+  // balance endpoint twice per cycle and emit two identical overview rows.
+  preferredId: 'deepseek-official',
   displayName: 'DeepSeek',
   balance: {
     build: ({ apiKey }) => ({ url: 'https://api.deepseek.com/user/balance', headers: bearer(apiKey) }),
@@ -423,6 +434,33 @@ export const PROVIDER_ADAPTERS: readonly ProviderAdapter[] = [
 /** Find the adapter serving a provider route key, if any. */
 export function adapterFor(provider: string): ProviderAdapter | undefined {
   return PROVIDER_ADAPTERS.find((adapter) => adapter.ids.includes(provider))
+}
+
+/**
+ * Keep one route per adapter when several live routes resolve to the same
+ * probe endpoint (the `deepseek` catalog key and the `deepseek-official` live
+ * route share the DeepSeek balance probe). The adapter's `preferredId` wins
+ * regardless of registry order; otherwise the first occurrence wins. Routes
+ * without an adapter are never collapsed. Pure: preserves input order of the
+ * kept routes and returns a new array.
+ */
+export function dedupeProviderAliasRoutes<T extends { id: string }>(routes: readonly T[]): T[] {
+  const keptIndex = new Map<ProviderAdapter, number>()
+  routes.forEach((route, index) => {
+    const adapter = adapterFor(route.id)
+    if (adapter === undefined) return
+    const current = keptIndex.get(adapter)
+    if (current === undefined) {
+      keptIndex.set(adapter, index)
+      return
+    }
+    // A later alias is kept only when it is the adapter's canonical live id.
+    if (adapter.preferredId === route.id) keptIndex.set(adapter, index)
+  })
+  return routes.filter((route, index) => {
+    const adapter = adapterFor(route.id)
+    return adapter === undefined || keptIndex.get(adapter) === index
+  })
 }
 
 /**

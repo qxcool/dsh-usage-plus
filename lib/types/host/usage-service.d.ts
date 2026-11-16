@@ -36,6 +36,13 @@ export declare function formatMoney(currency: string, totalBalance: string): str
  */
 export declare function probeBackoffDelayMs(failures: number): number;
 /**
+ * Delay before the next debounced ledger flush. The burst debounce is the
+ * lower bound; a write that started less than the minimum interval ago pushes
+ * the next one out so the full-document fsync rewrite cannot run continuously
+ * during an active session. Pure: unit-tested directly, no timer involved.
+ */
+export declare function nextFlushDelayMs(nowMs: number, lastFlushAtMs: number): number;
+/**
  * Drop overview rows no surface renders: the wire document otherwise carries
  * every catalog provider the runtime knows (40+ empty rows ≈ 6 KiB per poll).
  * A row survives when it carries a fact (plan/balance/error), a configured
@@ -95,6 +102,14 @@ export declare function readEntryConfig(ctx: Context, id: string): Record<string
  * an intentional disabled/status result still atomically replaces them.
  */
 export declare function replaceExternalSnapshots(snapshots: Map<string, ProviderSnapshotState>, source: 'cpamc' | 'volcano', rows: readonly ProviderSnapshotState[]): void;
+/**
+ * Whether two snapshot states carry the same *facts*. Volatile probe read
+ * timestamps (`updatedAt` on the row, balance, and plan) are ignored: a
+ * provider that keeps returning identical facts must not rewrite the snapshot
+ * map, the persisted snapshots file, or the overview revision/ETag every
+ * poll. Extend this when a new wire fact is added to `ProviderSnapshotState`.
+ */
+export declare function providerSnapshotFactsEqual(left: ProviderSnapshotState, right: ProviderSnapshotState): boolean;
 export declare class UsageService {
     private readonly ctx;
     private options;
@@ -125,6 +140,8 @@ export declare class UsageService {
     private readonly probeBackoff;
     /** Last snapshots document written; an unchanged document is not rewritten. */
     private lastPersistedSnapshots;
+    /** Start instant of the last ledger write attempt; enforces the flush floor. */
+    private lastFlushAt;
     /**
      * Bumped on every document-visible mutation: ledger fold, persisted merge,
      * prune, settings/retention change, composer/current change, probe result,
@@ -150,7 +167,14 @@ export declare class UsageService {
     private credentialStatusInFlight;
     /** Invalidates in-flight credential-status reads that predate a credential write. */
     private credentialStatusGeneration;
-    constructor(ctx: Context, options: UsageServiceOptions);
+    /**
+     * @param ctx - host context.
+     * @param options - resolved plugin options.
+     * @param persistDir - ledger/snapshot directory override (tests only; the
+     *   live service always uses the DSH home). Kept as a narrow seam so
+     *   persistence tests never write into the user's real data directory.
+     */
+    constructor(ctx: Context, options: UsageServiceOptions, persistDir?: string);
     /** Start the listeners, load persisted state, and arm the first poll. */
     start(): void;
     /**
@@ -246,11 +270,33 @@ export declare class UsageService {
      */
     private totalsFrom;
     private loadPersisted;
+    /**
+     * Merge one persisted ledger file into the live document. The file is only
+     * trusted after a shape check; an unreadable ledger is preserved beside the
+     * live path as `<name>.corrupt-<epoch>` instead of being silently overwritten
+     * by the next flush. Never throws.
+     */
+    private mergePersistedLedger;
+    /**
+     * Move an unreadable ledger aside so its bytes survive the next flush. A
+     * locked or cross-device file falls back to a best-effort copy; preservation
+     * failure must never block startup, so both failures are swallowed.
+     */
+    private preserveUnreadableLedger;
+    private mergePersistedSnapshots;
+    /**
+     * Arm one debounced ledger flush. The delay is the burst debounce or the
+     * remaining flush floor, whichever is later, so an active session cannot
+     * rewrite the full ledger document on every 3 s window. Exactly one timer is
+     * ever pending; folds that land while it runs are covered by the write that
+     * follows (and reschedule afterwards when the write already started).
+     */
     private scheduleFlush;
     /**
      * Queue one ledger flush behind the previous one. Debounce and stop-time
      * flushes serialize here, so two `writeJsonAtomic` calls can never run
-     * concurrently on the same path.
+     * concurrently on the same path. `stop()` calls this directly, so the final
+     * flush is never delayed by the floor.
      */
     private flushLedger;
     private writeLedgerOnce;
@@ -291,8 +337,10 @@ export declare class UsageService {
     private probeExternalSources;
     /**
      * Replace one external source's rows, bumping the revision only when the
-     * map actually changed (a disabled/idle source must not invalidate the
-     * cached overview on every poll).
+     * facts actually changed. A disabled/idle source and an unchanged quota
+     * response must not invalidate the cached overview (and its ETag) or rewrite
+     * the snapshots file every poll; the probe read timestamps are ignored for
+     * this comparison.
      */
     private replaceExternalSnapshotsChecked;
     /**

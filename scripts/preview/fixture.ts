@@ -239,7 +239,11 @@ function windowSummary(from: string, to: string, specs: ProviderSpec[], perProvi
 /** Plan windows for the current route: 5h near two thirds, week warning, month fresh. */
 function planProviders(now: number): ProviderSnapshotView[] {
   const stamp = now - 90_000
-  const at = (offsetMs: number): string => new Date(now + offsetMs).toISOString()
+  // Reset instants are wall-clock: the UI prints relative copy ("2 小时后重置"),
+  // so anchoring them to the pinned `now` would read "即将重置" forever once the
+  // pinned date is in the past.
+  const resetBase = Date.now()
+  const at = (offsetMs: number): string => new Date(resetBase + offsetMs).toISOString()
   return [
     {
       provider: 'opencode-go',

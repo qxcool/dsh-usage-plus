@@ -1,6 +1,7 @@
 {
   "meta": {
-    "title": "Usage Statistics",
-    "description": "5-hour / weekly / monthly plan-quota strip for the conversation model, token ledger and balances, and external quota sources (CPAMC, Volcano Ark) configured on the Plugins page."
+    "title": "Usage statistics",
+    "description": "Real token usage and the current model's official coding-plan quota, on this device. Open it at Plugins → Installed plugins → dsh-usage-plus: the Overview tab shows today's tokens with a vs-yesterday comparator, a 26-week activity heatmap, account quota rings, a 30-day provider trend and per-day history; the Plan quotas and Settings tabs list every configured quota source and plugin option. The current model's 5-hour / weekly / monthly windows appear as the compact Quota pill in the composer dock; open it for per-window bars and reset times. Usage is aggregated locally from session token counts. Quota and balance facts are read only from providers you configured — official plan APIs, CPAMC (loopback or allow-listed hosts) and Volcano Ark — so no message content leaves the machine. Optional CPAMC / Volcano secrets are stored in the DSH credential vault (or read from CPAMC_MANAGEMENT_KEY / VOLC_ACCESSKEY / VOLC_SECRETKEY) and never appear in configuration or logs. Disabling the plugin stops all polling and removes the page and pill; the local ledger file stays on disk. Limitations: a provider without an official quota API shows no pill and no estimated percentages, device-wide totals are not session data, and the ledger counts only usage recorded while the plugin is enabled.",
+    "detail": "docs/DETAIL.md"
   }
 }

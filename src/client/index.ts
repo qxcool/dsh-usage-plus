@@ -1,7 +1,7 @@
 /**
- * dsh-usage browser half — Plugins page (plugins.item) over the `usage-plus`
- * profile entry, plus the composer plan strip. Config reads/writes go through
- * `ctx.configForms` (DSH 0.1.7+); probing stays on the host.
+ * dsh-usage browser half — bundle configuration page (`plugins.bundle.config`)
+ * over the `usage-plus` profile entry, plus the composer plan strip. Config
+ * reads/writes go through `ctx.configForms`; probing stays on the host.
  * @module dsh-usage-plus/client
  */
 
@@ -10,6 +10,9 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+// Types-only: merges the Plugins-page slot contract (`plugins.bundle.config` and
+// its `PluginConfigViewProps` owner props) into SlotMap.
+import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import { createUsageStore, type UsageStoreInstance } from './usage-store.ts'
 import { UsageSectionCard, type UsageConfigForm, type UsageSectionFace, type UsageSettings } from './UsageSectionCard.tsx'
 import { PlanUsageStrip, reportDiag, type PlanUsageStripProps } from './PlanUsageStrip.tsx'
@@ -37,8 +40,8 @@ type OverviewPollResult =
 /** Hard ceiling for one usage API call; a stalled host must not pile up requests. */
 const USAGE_FETCH_TIMEOUT_MS = 20_000
 
-/** Plugins-page order among official / third-party item cards. */
-const PAGE_ORDER = 40
+/** Package name; also the key of the bundle's `plugins.bundle.config` page. */
+const PACKAGE_NAME = 'dsh-usage-plus'
 
 /** Composer-strip poll cadence (one shared interval for every strip). */
 const STRIP_POLL_MS = 30_000
@@ -118,32 +121,28 @@ export type { UsageSectionProps, UsageSectionFace } from './UsageSectionCard.tsx
 export type { UsageUiState } from './usage-store.ts'
 export type { UsageSettings }
 
-// Fallback SlotMap rows when conversation package types are unavailable
-// in the standalone SDK dependency set.
+// SlotMap row for the composer dock, whose owning Web UI package
+// (`dsh-client-ui-conversation`) is not a devDependency of this standalone SDK
+// project. The Plugins-page rows (the bundle configuration page and the other
+// detail slots) come from the installed
+// `@deepseek-ai/dsh-client-ui-plugin-manager/client` type import above, so this
+// file declares only the missing dock slot.
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
     /**
      * Composer bottom dock — below the input card, beside official StatsPills
-     * and ContextMeter (DSH 0.1.7+ moved context/usage chrome here).
+     * and ContextMeter.
      */
     'conversation.composer.dock': {
       kind: 'list'
       scope: 'session'
     }
-    /**
-     * Official / third-party configuration page on the Plugins sidebar.
-     * @see @deepseek-ai/dsh-client-ui-plugin-manager README — Configuration pages
-     */
-    'plugins.item': {
-      kind: 'list'
-      scope: 'root'
-    }
   }
 }
 
 /**
- * Client plugin body: register dictionaries, the Plugins-page card (while the
- * Host serves `usage-plus`), and the composer plan strip.
+ * Client plugin body: register dictionaries, the bundle's configuration page,
+ * and the composer plan strip.
  */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => {
@@ -156,6 +155,24 @@ export function apply(ctx: ClientContext): void {
 
   // Shared form for the usage-plus profile entry (revision-fenced writes).
   const settingsForm = ctx.configForms.get(USAGE_ENTRY_ID) as UsageConfigForm
+
+  // The bundle configuration page registers unconditionally so its dashboard is
+  // always reachable, but the settings form only writes while the Host still
+  // serves the `usage-plus` entry.
+  let formServed = false
+  ctx.effect(() => ctx.configForms.whileServed([USAGE_ENTRY_ID], (served) => {
+    formServed = served.has(USAGE_ENTRY_ID)
+    return () => {
+      formServed = false
+    }
+  }), 'dsh-usage-plus: served form')
+
+  const settings: UsageConfigForm = {
+    getSnapshot: () => settingsForm.getSnapshot(),
+    subscribe: (listener) => settingsForm.subscribe(listener),
+    set: (field, value) => (formServed ? settingsForm.set(field, value) : Promise.resolve(false)),
+    mutate: (ops, expectedRevision) => (formServed ? settingsForm.mutate(ops, expectedRevision) : Promise.resolve(false)),
+  }
 
   const store: UsageStoreInstance = createUsageStore().create()
 
@@ -316,40 +333,32 @@ export function apply(ctx: ClientContext): void {
     store,
     poll,
     refresh,
-    settings: settingsForm,
+    settings,
     setCredential,
     clearCredential,
     startStripPolling,
   })
 
-  // Register the configuration page only while the Host serves this entry.
-  // @see @deepseek-ai/dsh-client-ui-settings README — whileServed
-  // @see @deepseek-ai/dsh-client-ui-plugin-manager README — plugins.item
-  ctx.effect(() => ctx.configForms.whileServed([USAGE_ENTRY_ID], () => {
+  // Bundle configuration page (DSH 0.2.2): the Plugins page renders the keyed
+  // `plugins.bundle.config` slot on this bundle's detail page, between the
+  // description and the rows. The page draws its own title, icon, and crumb,
+  // so the component starts with the route identity and owns both the
+  // dashboard and the settings form.
+  ctx.effect(() => ctx.slots.inject('plugins.bundle.config', () => {
     try {
-      return ctx.slots.inject('plugins.item', () => {
-        try {
-          const unregister = ctx.slots.register({
-            name: 'plugins.item',
-            id: USAGE_ENTRY_ID,
-            order: PAGE_ORDER,
-            label: () => ctx.locale.bind(NS)('usage.title'),
-            locale: NS,
-            inject: face,
-          }, UsageSectionCard)
-          return () => {
-            unregister()
-          }
-        } catch (error) {
-          console.error('[dsh-usage-plus] plugins.item registration failed:', error)
-          return () => {}
-        }
-      })
+      const unregister = ctx.slots.register({
+        name: 'plugins.bundle.config',
+        key: PACKAGE_NAME,
+        inject: face,
+      }, UsageSectionCard)
+      return () => {
+        unregister()
+      }
     } catch (error) {
-      console.error('[dsh-usage-plus] plugins.item inject failed:', error)
+      console.error('[dsh-usage-plus] plugins.bundle.config registration failed:', error)
       return () => {}
     }
-  }), 'dsh-usage-plus: plugins page')
+  }), 'dsh-usage-plus: bundle config')
 
   // Plan quota ring on the composer bottom dock (same row as official
   // StatsPills + ContextMeter). Do not seat on conversation.input.right —

@@ -1,6 +1,11 @@
 import { type ReactNode } from 'react';
 import type { UsageStoreInstance } from './usage-store.ts';
 import { currentPlanProvider } from '../core/plan-match.ts';
+/**
+ * Report a state change to the host diagnostic log. Identical `strip-state`
+ * keys are throttled for five minutes (the strip re-renders on every shared
+ * poll); error and registration kinds are always forwarded.
+ */
 export declare function reportDiag(kind: string, key: string): void;
 /** Keyed projection hook from session-scope standard kit (`ui-session`). */
 export type UseProjection = (key: string) => unknown;

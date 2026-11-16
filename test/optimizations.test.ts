@@ -3,14 +3,19 @@
  * probe retry backoff. These guard the browser half's data contract, so they
  * assert what must SURVIVE the trim, not just what it drops.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
+import { existsSync } from 'node:fs'
+import { mkdtemp, rm } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { emptyTotals, type ProviderSnapshotState, type ProviderSnapshotView, type UsageLedgerDocument, type UsageOverviewView, type UsageTokenTotals } from '../src/core/types.ts'
 import { foldUsage, localDateKey, summarizeDays, summarizeDayTotals, summarizeProviderTotals } from '../src/core/ledger.ts'
+import { dedupeProviderAliasRoutes } from '../src/core/adapters.ts'
 import { jsonEtag } from '../src/host/http.ts'
 import { makeUsageOverviewRoute, requestEtagMatches } from '../src/host/routes.ts'
-import { probeBackoffDelayMs, selectOverviewProviders, UsageService, type UsageServiceOptions } from '../src/host/usage-service.ts'
+import { nextFlushDelayMs, probeBackoffDelayMs, providerSnapshotFactsEqual, selectOverviewProviders, UsageService, type UsageServiceOptions } from '../src/host/usage-service.ts'
 
 /** A provider row with the defaults a catalog-only route would carry. */
 function row(overrides: Partial<ProviderSnapshotView>): ProviderSnapshotView {
@@ -530,6 +535,302 @@ describe('revision-cached overview', () => {
       expect(second.body()).toBe('')
     } finally {
       await service.stop()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v0.3.1 host perf/reliability batch
+// ---------------------------------------------------------------------------
+
+describe('providerSnapshotFactsEqual', () => {
+  function snapshot(overrides: Partial<ProviderSnapshotState> = {}): ProviderSnapshotState {
+    return {
+      provider: 'deepseek-official',
+      displayName: 'DeepSeek',
+      credential: 'api-key',
+      supported: true,
+      balanceSupported: true,
+      planSupported: true,
+      balance: { currency: 'CNY', totalBalance: '1.00', updatedAt: 1 },
+      plan: { planName: 'pro', windows: [{ key: '5h', percent: 10, resetsAt: '2026-11-16T02:00:00.000Z' }], updatedAt: 1 },
+      updatedAt: 1,
+      ...overrides,
+    }
+  }
+
+  it('ignores the volatile probe read timestamps', () => {
+    expect(providerSnapshotFactsEqual(
+      snapshot(),
+      snapshot({
+        updatedAt: 999,
+        balance: { currency: 'CNY', totalBalance: '1.00', updatedAt: 999 },
+        plan: { planName: 'pro', windows: [{ key: '5h', percent: 10, resetsAt: '2026-11-16T02:00:00.000Z' }], updatedAt: 999 },
+      }),
+    )).toBe(true)
+  })
+
+  it('detects every real fact change', () => {
+    const base = snapshot()
+    const changed: Array<Partial<ProviderSnapshotState>> = [
+      { provider: 'deepseek' },
+      { displayName: 'DeepSeek Official' },
+      { credential: 'env' },
+      { supported: false },
+      { balanceSupported: undefined },
+      { planSupported: undefined },
+      { balance: { currency: 'USD', totalBalance: '1.00', updatedAt: 1 } },
+      { balance: { currency: 'CNY', totalBalance: '2.00', updatedAt: 1 } },
+      { plan: { planName: 'pro', windows: [{ key: '5h', percent: 11, resetsAt: '2026-11-16T02:00:00.000Z' }], updatedAt: 1 } },
+      { plan: { windows: [{ key: '5h', percent: 10 }], updatedAt: 1 } },
+      { balanceError: 'HTTP 401' },
+      { planError: 'HTTP 500' },
+      { source: 'cpamc' },
+    ]
+    for (const override of changed) {
+      expect(providerSnapshotFactsEqual(base, snapshot(override)), JSON.stringify(override)).toBe(false)
+    }
+  })
+})
+
+describe('nextFlushDelayMs', () => {
+  it('uses the burst debounce when no write is recent', () => {
+    expect(nextFlushDelayMs(1_000_000, 0)).toBe(3_000)
+  })
+
+  it('enforces the minimum interval between writes', () => {
+    expect(nextFlushDelayMs(1_000_000, 1_000_000)).toBe(20_000)
+    expect(nextFlushDelayMs(1_012_000, 1_000_000)).toBe(8_000)
+  })
+
+  it('falls back to the debounce once the floor has elapsed', () => {
+    expect(nextFlushDelayMs(1_030_000, 1_000_000)).toBe(3_000)
+  })
+
+  it('caps the wait when the wall clock jumped backwards', () => {
+    expect(nextFlushDelayMs(500_000, 1_000_000)).toBe(20_000)
+  })
+})
+
+describe('dedupeProviderAliasRoutes', () => {
+  it('keeps one route for the DeepSeek catalog/live aliases', () => {
+    expect(dedupeProviderAliasRoutes([
+      { id: 'deepseek-official', displayName: 'DeepSeek' },
+      { id: 'deepseek', displayName: 'DeepSeek' },
+    ]).map((route) => route.id)).toEqual(['deepseek-official'])
+  })
+
+  it('prefers the canonical live id even when it is listed later', () => {
+    expect(dedupeProviderAliasRoutes([
+      { id: 'deepseek', displayName: 'DeepSeek' },
+      { id: 'deepseek-official', displayName: 'DeepSeek' },
+    ]).map((route) => route.id)).toEqual(['deepseek-official'])
+  })
+
+  it('keeps the alias when the canonical route is absent', () => {
+    expect(dedupeProviderAliasRoutes([{ id: 'deepseek' }]).map((route) => route.id)).toEqual(['deepseek'])
+  })
+
+  it('keeps unrelated providers in their original order', () => {
+    expect(dedupeProviderAliasRoutes([
+      { id: 'openai-codex' },
+      { id: 'deepseek' },
+      { id: 'opencode-go' },
+      { id: 'deepseek-official' },
+    ]).map((route) => route.id)).toEqual(['openai-codex', 'opencode-go', 'deepseek-official'])
+  })
+})
+
+interface ProbeInternals extends PerfServiceInternals {
+  lastPersistedSnapshots: string | undefined
+  lastFlushAt: number
+  loadPersisted(): Promise<void>
+  writeLedgerOnce(): Promise<void>
+}
+
+interface ProbeResponse {
+  ok: boolean
+  status: number
+  body: unknown
+}
+
+interface ProbeHarness {
+  service: UsageService
+  internals: ProbeInternals
+  respondWith(response: ProbeResponse): void
+  fetchCalls(): number
+  restoreGlobals(): void
+}
+
+/** A service whose real poll loop runs against a stubbed provider HTTP endpoint. */
+function probeHarness(input: { routes: Array<{ id: string; name: string }>; persistDir: string }): ProbeHarness {
+  const state: { response: ProbeResponse; calls: number } = {
+    response: { ok: true, status: 200, body: { balance_infos: [{ currency: 'CNY', total_balance: '1.00' }] } },
+    calls: 0,
+  }
+  vi.stubGlobal('fetch', async () => {
+    state.calls += 1
+    return {
+      ok: state.response.ok,
+      status: state.response.status,
+      json: async () => state.response.body,
+    } as unknown as Response
+  })
+  const ctx = {
+    get: (name: string) => {
+      if (name === 'llm') return { listProviders: () => input.routes, listConfigurableProviders: () => [] }
+      if (name === 'credentials') {
+        return {
+          readRecord: async () => ({ kind: 'api-key', key: 'test-key' }),
+          resolve: async () => undefined,
+          describe: async () => ({ configured: false }),
+        }
+      }
+      return undefined
+    },
+    on: () => () => {},
+  } as unknown as Context
+  const service = new UsageService(ctx, PERF_OPTIONS, input.persistDir)
+  const internals = service as unknown as ProbeInternals
+  internals.current = { provider: input.routes[0]?.id, model: 'model-1', source: 'live' }
+  return {
+    service,
+    internals,
+    respondWith: (response) => { state.response = response },
+    fetchCalls: () => state.calls,
+    restoreGlobals: () => vi.unstubAllGlobals(),
+  }
+}
+
+describe('no-op probe cycles', () => {
+  it('keeps the snapshot object, revision, ETag and snapshots file when probe facts are unchanged', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-usage-probe-'))
+    const harness = probeHarness({ routes: [{ id: 'deepseek-official', name: 'DeepSeek' }], persistDir: dir })
+    const snapshotsFile = join(dir, 'provider-snapshots.json')
+    try {
+      await harness.internals.loadPersisted()
+      await harness.service.pollNow()
+      const first = harness.internals.snapshots.get('deepseek-official')
+      const firstRevision = harness.internals.revision
+      const firstStamp = first?.updatedAt
+      expect(harness.fetchCalls()).toBe(1)
+      expect(first?.balance?.totalBalance).toBe('1.00')
+      expect(existsSync(snapshotsFile)).toBe(true)
+      expect(harness.internals.lastPersistedSnapshots).toBeDefined()
+
+      // Remove the persisted file: a no-op cycle must not write it back.
+      await rm(snapshotsFile, { force: true })
+      const etagBefore = (await harness.service.overviewPayload()).etag
+      await harness.service.pollNow()
+      expect(harness.fetchCalls()).toBe(2)
+      expect(harness.internals.snapshots.get('deepseek-official')).toBe(first)
+      expect(harness.internals.snapshots.get('deepseek-official')?.updatedAt).toBe(firstStamp)
+      expect(harness.internals.revision).toBe(firstRevision)
+      expect(existsSync(snapshotsFile)).toBe(false)
+      expect((await harness.service.overviewPayload()).etag).toBe(etagBefore)
+
+      // A real fact change still updates the snapshot, revision and ETag.
+      harness.respondWith({ ok: true, status: 200, body: { balance_infos: [{ currency: 'CNY', total_balance: '2.00' }] } })
+      await harness.service.pollNow()
+      expect(harness.internals.revision).toBeGreaterThan(firstRevision)
+      expect(harness.internals.snapshots.get('deepseek-official')?.balance?.totalBalance).toBe('2.00')
+      expect(existsSync(snapshotsFile)).toBe(true)
+      expect((await harness.service.overviewPayload()).etag).not.toBe(etagBefore)
+
+      // A new failure is a real change; repeating the identical failure is not.
+      harness.respondWith({ ok: false, status: 401, body: { message: 'bad key' } })
+      await harness.service.pollNow()
+      const failureRevision = harness.internals.revision
+      expect(harness.internals.snapshots.get('deepseek-official')?.balanceError).toContain('HTTP 401')
+      await harness.service.pollNow()
+      expect(harness.internals.revision).toBe(failureRevision)
+      expect(harness.internals.snapshots.get('deepseek-official')?.balanceError).toContain('HTTP 401')
+    } finally {
+      harness.restoreGlobals()
+      await harness.service.stop()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('probes the DeepSeek alias family once and emits one provider row', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-usage-alias-'))
+    const harness = probeHarness({
+      routes: [{ id: 'deepseek-official', name: 'DeepSeek' }, { id: 'deepseek', name: 'DeepSeek' }],
+      persistDir: dir,
+    })
+    try {
+      await harness.internals.loadPersisted()
+      // A pre-upgrade snapshot map could still carry the alias row.
+      harness.internals.snapshots.set('deepseek', {
+        provider: 'deepseek',
+        displayName: 'DeepSeek',
+        credential: 'api-key',
+        supported: true,
+      })
+      await harness.service.pollNow()
+      expect(harness.fetchCalls()).toBe(1)
+      expect(harness.internals.snapshots.has('deepseek')).toBe(false)
+      const document = await harness.service.overview()
+      const rows = document.providers.filter((provider) => provider.provider === 'deepseek' || provider.provider === 'deepseek-official')
+      expect(rows.map((provider) => provider.provider)).toEqual(['deepseek-official'])
+    } finally {
+      harness.restoreGlobals()
+      await harness.service.stop()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('ledger flush floor', () => {
+  it('spaces writes by the minimum interval and still flushes on stop', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-11-16T10:00:00.000Z'))
+      const { service, internals } = perfHarness()
+      const writes: number[] = []
+      const probeInternals = internals as unknown as ProbeInternals
+      // Stand in for the real write: mark the write start instant the service
+      // uses for the floor, then record the call.
+      probeInternals.writeLedgerOnce = async () => {
+        probeInternals.lastFlushAt = Date.now()
+        writes.push(Date.now())
+      }
+      const session = { id: 'session-flush' }
+      const fold = (): void => {
+        internals.onSessionEvent(session, {
+          type: 'request/header',
+          data: { header: { config: { provider: 'provider-a', model: 'model-1' } } },
+        })
+        internals.onSessionEvent(session, {
+          type: 'assistant/message',
+          data: { usage: { inputTokens: 1, outputTokens: 1 } },
+        })
+      }
+
+      fold()
+      expect(writes).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(2_999)
+      expect(writes).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(writes).toHaveLength(1)
+      const firstWriteAt = writes[0] as number
+
+      // A fold just after a write waits out the floor, not the 3 s debounce.
+      fold()
+      await vi.advanceTimersByTimeAsync(19_000)
+      expect(writes).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(writes).toHaveLength(2)
+      expect((writes[1] as number) - firstWriteAt).toBe(20_000)
+
+      // stop() flushes immediately even inside the floor window.
+      fold()
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(writes).toHaveLength(2)
+      await service.stop()
+      expect(writes).toHaveLength(3)
+    } finally {
+      vi.useRealTimers()
     }
   })
 })

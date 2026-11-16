@@ -28,8 +28,8 @@
      ramp as the fallback and a neutral blue last. */
   --u-accent: var(--dsw-alias-brand-primary-new-colorprimary-new-color, var(--dsw-static-deepseek-450, #4f6bff));
   --u-good: var(--dsw-alias-state-success-primary, #2eb88a);
-  --u-warn: var(--dsw-alias-state-warning-primary, #d9930f);
-  --u-bad: var(--dsw-alias-state-danger-primary, #d93843);
+  --u-warn: var(--dsw-alias-state-warn-primary, #d9930f);
+  --u-bad: var(--dsw-alias-state-error-primary, #d93843);
   --u-mono: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   --u-ease: cubic-bezier(0.2, 0, 0, 1);
   /* 26-week activity grid: compact GitHub-style cells on the 4px scale. */
@@ -57,6 +57,10 @@
   gap: 20px;
   color: inherit;
   min-width: 0;
+  /* The Plugins page caps its content column at 960px, so layout breakpoints
+     follow the section's own width instead of the window's. */
+  container-type: inline-size;
+  container-name: usage;
 }
 
 .pageHead {
@@ -1755,13 +1759,26 @@
   padding: 16px;
   border: 1px solid var(--dsw-alias-border-l3, var(--u-line-2));
   border-radius: 14px;
-  background: var(--dsw-specific-menu, var(--dsw-alias-bg-elevated, #1e1e1e));
-  box-shadow: var(--dsw-elevation-prominent, 0 12px 32px rgb(0 0 0 / 32%));
+  background: var(--dsw-specific-menu, #1e1e1e);
+  -webkit-backdrop-filter: var(--dsw-menu-backdrop-filter, blur(40px) saturate(150%));
+  backdrop-filter: var(--dsw-menu-backdrop-filter, blur(40px) saturate(150%));
+  box-shadow: var(--dsw-elevation-panel, var(--dsw-elevation-prominent, 0 12px 32px rgb(0 0 0 / 32%)));
   color: var(--dsw-alias-label-primary, inherit);
   font-size: 12.5px;
   line-height: 1.5;
   cursor: default;
   animation: u-pop-in 140ms var(--u-ease);
+}
+
+/*
+ * The 0.2.2 menu surface is intentionally translucent and relies on a backdrop
+ * filter. Without backdrop-filter support the chat behind it would show
+ * through, so fall back to the near-opaque group-header fill (or a solid panel).
+ */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .quotaMeterPanel {
+    background: var(--dsw-alias-menu-group-header-fill, var(--dsw-alias-bg-layer-3, #24262b));
+  }
 }
 
 /* Programmatic focus (open) must not paint a ring; the panel is not a tab stop
@@ -1883,7 +1900,24 @@
 /* Responsive                                                         */
 /* ------------------------------------------------------------------ */
 
-@media (max-width: 1180px) {
+/* Container queries: the Plugins page and the bundle detail page cap their
+   content column (960px), so the section collapses on its own width rather
+   than the window's: the 12-column dashboard holds down to ~900px, then the
+   7/5 pairs stack, then everything goes single-column at 720px. The 520px
+   cell-size media query stays viewport-based because it sets variables on the
+   container element itself. */
+
+/* Narrower than the 12-column dashboard's comfort zone (the real Plugins page
+   caps content at 960px): the heatmap plus its side rail and the quota rings
+   each keep the full width, while the 30-day/provider pair stays side by side. */
+@container usage (max-width: 1000px) {
+  .cellHeatmap,
+  .cellQuota {
+    grid-column: span 12;
+  }
+}
+
+@container usage (max-width: 900px) {
   .cockpit {
     grid-template-columns: repeat(6, minmax(0, 1fr));
   }
@@ -1920,7 +1954,7 @@
   }
 }
 
-@media (max-width: 900px) {
+@container usage (max-width: 900px) {
   .historyGrid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1938,7 +1972,7 @@
   }
 }
 
-@media (max-width: 720px) {
+@container usage (max-width: 720px) {
   .pageHead {
     flex-direction: column;
     align-items: stretch;

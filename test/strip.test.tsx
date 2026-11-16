@@ -15,6 +15,10 @@ import { sessionRouteFrom } from '../src/client/session-route.ts'
 import { emptyTotals, type ProviderSnapshotView, type UsageOverviewView } from '../src/core/types.ts'
 import styles from '../src/client/usage.module.css'
 
+// The strip resolves copy from document.documentElement.lang at call time; pin
+// zh here so the Chinese assertions below are stable (non-zh falls back to en).
+document.documentElement.lang = 'zh'
+
 interface FakeStore {
   subscribe: (listener: () => void) => () => void
   getSnapshot: () => { snapshot: UsageOverviewView | null }
@@ -209,6 +213,24 @@ describe('PlanUsageStrip per-session route', () => {
     expect(host.querySelector('[role="dialog"]')).toBeNull()
     expect(document.activeElement).toBe(trigger)
     root.unmount()
+  })
+
+  it('falls back to English for non-Chinese document languages', async () => {
+    const previous = document.documentElement.lang
+    document.documentElement.lang = 'ja-JP'
+    try {
+      const snapshot = overview({
+        current: { provider: 'opencode-go', model: 'glm-5.3-flash', source: 'live' },
+      })
+      const { root, host } = mount(createElement(PlanUsageStrip, { store: fakeStore(snapshot) as never }))
+      await flush()
+      expect(host.textContent).toContain('Quota')
+      expect(host.textContent).toContain('5h 41.0%')
+      expect(host.textContent).not.toContain('额度')
+      root.unmount()
+    } finally {
+      document.documentElement.lang = previous
+    }
   })
 
   it('parses session route views with next set', () => {

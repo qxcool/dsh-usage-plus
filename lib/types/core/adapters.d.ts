@@ -34,6 +34,13 @@ export interface PlanParse {
 export interface ProviderAdapter {
     /** Provider route keys this adapter serves. */
     ids: readonly string[];
+    /**
+     * The route id to keep when several live routes resolve to this adapter.
+     * One adapter means one probe endpoint, so an alias must not be probed or
+     * rendered twice; the preferred id is the one sessions and the composer
+     * `current` route carry (the live registry id), not the catalog key.
+     */
+    preferredId?: string;
     /** Fallback display name when the LLM runtime has none. */
     displayName: string;
     balance?: {
@@ -53,6 +60,17 @@ export interface ProviderAdapter {
 export declare const PROVIDER_ADAPTERS: readonly ProviderAdapter[];
 /** Find the adapter serving a provider route key, if any. */
 export declare function adapterFor(provider: string): ProviderAdapter | undefined;
+/**
+ * Keep one route per adapter when several live routes resolve to the same
+ * probe endpoint (the `deepseek` catalog key and the `deepseek-official` live
+ * route share the DeepSeek balance probe). The adapter's `preferredId` wins
+ * regardless of registry order; otherwise the first occurrence wins. Routes
+ * without an adapter are never collapsed. Pure: preserves input order of the
+ * kept routes and returns a new array.
+ */
+export declare function dedupeProviderAliasRoutes<T extends {
+    id: string;
+}>(routes: readonly T[]): T[];
 /**
  * Whether a provider route belongs to the official DeepSeek family: the only
  * family with a spend price book and a settings-section-owned env credential

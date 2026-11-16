@@ -300,13 +300,13 @@ export const en: Record<UsageKey, string> = {
 export type UsageKey = keyof typeof zh
 
 /**
- * Active dictionary, picked by the document language at call time. The
- * section resolves its copy the same tiny way the pet's DOM-injected surface
- * does (the settings section has no framework locale seat of its own).
+ * Active dictionary, picked by the document language at call time. Chinese
+ * locales get the zh dictionary; every other language falls back to English
+ * (the package's source dictionary is zh, but English is the shared fallback).
  */
 export function dictionary(): Record<UsageKey, string> {
   const lang = typeof document !== 'undefined' ? document.documentElement.lang : 'zh'
-  return lang.toLowerCase().startsWith('en') ? en : zh
+  return lang.toLowerCase().startsWith('zh') ? zh : en
 }
 
 /** Translate a key with optional `{name}` template params; missing keys degrade to the key. */
