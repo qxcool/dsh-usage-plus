@@ -6,7 +6,7 @@ import type { ExternalCredentialTarget } from '../core/types.ts'
 import { asJsonObject, readJsonBody, writeJson, writeText } from './http.ts'
 import { isLoopbackRequest } from './loopback.ts'
 import { exportCsv, exportFilename, resolveExportDays, resolveExportFormat } from './export.ts'
-import { resolveRangeDays, type UsageService } from './usage-service.ts'
+import { resolveRangeDays, type ExternalSourceTestDraft, type UsageService } from './usage-service.ts'
 import { localDateKey } from '../core/ledger.ts'
 import { dshHome } from '../dsh-home.ts'
 
@@ -161,9 +161,35 @@ export function makeUsageDayRoute(service: UsageService): WebRoute {
 }
 
 /**
+ * Read the unsaved Settings draft carried by a connection-test request. Only
+ * known fields with bounded string/number shapes are accepted; the values are
+ * used for this one probe and never stored.
+ */
+function readTestDraft(value: unknown): ExternalSourceTestDraft {
+  const draft = asJsonObject(value)
+  if (draft === undefined) return {}
+  const text = (key: string, max: number): string | undefined => {
+    const candidate = draft[key]
+    return typeof candidate === 'string' && candidate.length <= max ? candidate : undefined
+  }
+  const flag = (key: string): boolean | undefined => typeof draft[key] === 'boolean' ? draft[key] as boolean : undefined
+  return {
+    cpamcEnabled: flag('cpamcEnabled'),
+    cpamcBaseURL: text('cpamcBaseURL', 2048),
+    cpamcAllowedHosts: text('cpamcAllowedHosts', 2048),
+    cpamcManagementKey: text('cpamcManagementKey', 4096),
+    volcanoEnabled: flag('volcanoEnabled'),
+    volcanoAccessKeyId: text('volcanoAccessKeyId', 4096),
+    volcanoSecretAccessKey: text('volcanoSecretAccessKey', 4096),
+    customPlans: text('customPlans', 60 * 1024),
+  }
+}
+
+/**
  * Loopback-fenced external-source connection test used by the Settings
- * "test connection" button. Returns only probe facts and hints; no secret
- * value ever crosses the wire.
+ * "test connection" button. The optional draft lets the probe use the values
+ * currently typed into the form instead of the saved config; returns only
+ * probe facts and hints, never a secret value.
  */
 export function makeUsageTestRoute(service: UsageService): WebRoute {
   return {
@@ -178,7 +204,7 @@ export function makeUsageTestRoute(service: UsageService): WebRoute {
         writeJson(res, 405, { ok: false, error: 'method not allowed' })
         return
       }
-      const body = asJsonObject(await readJsonBody(req, { objectOnly: true, maxBytes: 4 * 1024 }))
+      const body = asJsonObject(await readJsonBody(req, { objectOnly: true, maxBytes: 64 * 1024 }))
       const target = body?.target === 'cpamc' || body?.target === 'volcano' || body?.target === 'custom' ? body.target : undefined
       const planId = target === 'custom' && typeof body?.id === 'string' && /^[a-z0-9][a-z0-9-]{0,31}$/.test(body.id) ? body.id : undefined
       if (body === undefined || target === undefined) {
@@ -189,7 +215,7 @@ export function makeUsageTestRoute(service: UsageService): WebRoute {
         writeJson(res, 400, { ok: false, error: 'invalid plan id' })
         return
       }
-      const result = await service.testExternalSource(target, planId)
+      const result = await service.testExternalSource(target, planId, readTestDraft(body?.config))
       writeJson(res, 200, result, { 'cache-control': 'no-store' })
     },
   }

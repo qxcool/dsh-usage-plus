@@ -876,9 +876,74 @@ describe('alert settings and data health', () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe('/api/dsh-usage-plus/test')
     expect(init.method).toBe('POST')
-    expect(JSON.parse(String(init.body))).toEqual({ target: 'cpamc' })
+    expect(JSON.parse(String(init.body))).toEqual({
+      target: 'cpamc',
+      config: {
+        cpamcEnabled: true,
+        cpamcBaseURL: 'http://127.0.0.1:8317',
+        cpamcAllowedHosts: '',
+      },
+    })
     expect(host.textContent).toContain('连接成功：2 个账号')
     expect(host.textContent).toContain('78%')
+  })
+
+  it('tests the CPAMC fields typed into the form before Save', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ target: 'cpamc', ok: true, latencyMs: 11, accounts: 1, windows: [{ key: '5h', percent: 12 }] }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const calls: Array<ReadonlyArray<{ op: string; path: readonly string[]; value?: unknown }>> = []
+    const { host, root: mounted } = mount(overview(), {
+      settingsValue: {
+        enabled: true,
+        pollIntervalSec: 60,
+        bubbleMode: 'always',
+        alertsEnabled: true,
+        dailyCostLimitCny: 0,
+        planAlertPercent: 0,
+        balanceAlertCny: 0,
+        alertCooldownMinutes: 60,
+        cpamcEnabled: true,
+        cpamcBaseURL: 'http://127.0.0.1:8317',
+        cpamcAllowedHosts: '',
+        volcanoEnabled: false,
+        platformUsageEnabled: true,
+        costEstimateEnabled: true,
+        customPlans: '',
+      },
+      onMutate: (ops) => calls.push(ops),
+    })
+    root = mounted
+    await flush()
+    pressTab(host, '设置')
+
+    setInputValue(host.querySelector<HTMLInputElement>('[data-dsh-part="cpamc-url"]')!, 'https://api.example.com')
+    setInputValue(host.querySelector<HTMLInputElement>('[data-dsh-part="cpamc-allowed-hosts"]')!, 'api.example.com')
+    setInputValue(host.querySelector<HTMLInputElement>('[data-dsh-part="cpamc-token"]')!, 'fresh-management-key')
+
+    const button = host.querySelector<HTMLButtonElement>('[data-dsh-part="cpamc-test"] button')
+    await act(async () => {
+      button?.click()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+
+    // The unsaved draft is what the probe sees, and nothing was persisted.
+    expect(calls).toHaveLength(0)
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body)) as {
+      target: string
+      config: Record<string, unknown>
+    }
+    expect(body.target).toBe('cpamc')
+    expect(body.config).toMatchObject({
+      cpamcEnabled: true,
+      cpamcBaseURL: 'https://api.example.com',
+      cpamcAllowedHosts: 'api.example.com',
+      cpamcManagementKey: 'fresh-management-key',
+    })
+    expect(host.textContent).toContain('连接成功')
   })
 
   it('shows the CPAMC hint when the test fails', async () => {

@@ -102,8 +102,28 @@ describe('external test route', () => {
     const out = response()
     await route.handler(request('/api/dsh-usage-plus/test', 'POST', { target: 'cpamc' }), out.res)
     expect(out.status()).toBe(200)
-    expect(service.testExternalSource).toHaveBeenCalledWith('cpamc', undefined)
+    expect(service.testExternalSource).toHaveBeenCalledWith('cpamc', undefined, {})
     expect(JSON.parse(out.body())).toEqual(result)
+  })
+
+  it('forwards the unsaved draft config so a test can run before Save', async () => {
+    const out = response()
+    await route.handler(request('/api/dsh-usage-plus/test', 'POST', {
+      target: 'cpamc',
+      config: {
+        cpamcEnabled: true,
+        cpamcBaseURL: 'https://api.example.com',
+        cpamcAllowedHosts: 'api.example.com',
+        cpamcManagementKey: 'draft-key',
+      },
+    }), out.res)
+    expect(out.status()).toBe(200)
+    expect(service.testExternalSource).toHaveBeenCalledWith('cpamc', undefined, {
+      cpamcEnabled: true,
+      cpamcBaseURL: 'https://api.example.com',
+      cpamcAllowedHosts: 'api.example.com',
+      cpamcManagementKey: 'draft-key',
+    })
   })
 })
 
@@ -147,6 +167,49 @@ describe('CPAMC test probes', () => {
       expect(result.accounts).toBe(1)
       expect(result.windows?.[0]).toMatchObject({ key: '5h', percent: 42 })
       expect(result.latencyMs).toBeGreaterThanOrEqual(0)
+    })
+  })
+
+  it('uses the unsaved draft URL and token before Save', async () => {
+    // No env token: the draft key alone must authenticate the probe.
+    const calls: Array<{ url: string; headers: Record<string, string> }> = []
+    let call = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: RequestInit) => {
+      call += 1
+      calls.push({ url: String(input), headers: (init?.headers ?? {}) as Record<string, string> })
+      if (call === 1) {
+        return new Response(JSON.stringify({
+          auth_files: [{ auth_index: 'a1', provider: 'codex', email: 'user@example.com' }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({
+        status_code: 200,
+        body: JSON.stringify({
+          rate_limit: { primary_window: { used_percent: 42, limit_window_seconds: 18000, reset_at: 1_765_000_000 } },
+        }),
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
+    await withService({ cpamcBaseURL: 'http://127.0.0.1:9999' }, async (service) => {
+      const result = await service.testExternalSource('cpamc', undefined, {
+        cpamcEnabled: true,
+        cpamcBaseURL: 'http://127.0.0.1:8317',
+        cpamcAllowedHosts: '',
+        cpamcManagementKey: 'draft-key',
+      })
+      expect(result.ok).toBe(true)
+      expect(calls[0]?.url).toBe('http://127.0.0.1:8317/v0/management/auth-files')
+      expect(calls[0]?.headers['x-management-key']).toBe('draft-key')
+    })
+  })
+
+  it('honours a draft-disabled switch instead of the saved state', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    await withService({ cpamcEnabled: true }, async (service) => {
+      const result = await service.testExternalSource('cpamc', undefined, { cpamcEnabled: false })
+      expect(result.ok).toBe(false)
+      expect(result.error).toContain('CPAMC 未启用')
+      expect(fetchMock).not.toHaveBeenCalled()
     })
   })
 

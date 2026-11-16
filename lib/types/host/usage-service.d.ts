@@ -63,6 +63,22 @@ export interface UsageOverviewPayload {
 }
 /** External sources the Settings page can test on demand. */
 export type ExternalTestTarget = 'cpamc' | 'volcano' | 'custom';
+/**
+ * Unsaved Settings draft values used for one connection test. The browser
+ * sends them with the loopback-only test request so a test sees exactly what is
+ * typed instead of the previously saved config; nothing here is persisted, and
+ * secret fields are used only for the probe (never echoed in the result).
+ */
+export interface ExternalSourceTestDraft {
+    cpamcEnabled?: boolean;
+    cpamcBaseURL?: string;
+    cpamcAllowedHosts?: string;
+    cpamcManagementKey?: string;
+    volcanoEnabled?: boolean;
+    volcanoAccessKeyId?: string;
+    volcanoSecretAccessKey?: string;
+    customPlans?: string;
+}
 /** Result of one external-source connection test (no secrets cross the wire). */
 export interface UsageExternalTestResult {
     target: ExternalTestTarget;
@@ -282,7 +298,7 @@ export declare class UsageService {
      * for the Settings "test connection" button. Never throws: transport errors
      * and configuration mistakes both come back as `ok: false` plus a hint.
      */
-    testExternalSource(target: ExternalTestTarget, planId?: string): Promise<UsageExternalTestResult>;
+    testExternalSource(target: ExternalTestTarget, planId?: string, draft?: ExternalSourceTestDraft): Promise<UsageExternalTestResult>;
     /** Actionable CPAMC hint for one probe failure message. */
     private cpamcTestHint;
     /** Actionable hint for one custom-plan probe failure. */

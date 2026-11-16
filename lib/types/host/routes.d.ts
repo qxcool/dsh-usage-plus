@@ -33,8 +33,9 @@ export declare function makeUsageExportRoute(service: UsageService): WebRoute;
 export declare function makeUsageDayRoute(service: UsageService): WebRoute;
 /**
  * Loopback-fenced external-source connection test used by the Settings
- * "test connection" button. Returns only probe facts and hints; no secret
- * value ever crosses the wire.
+ * "test connection" button. The optional draft lets the probe use the values
+ * currently typed into the form instead of the saved config; returns only
+ * probe facts and hints, never a secret value.
  */
 export declare function makeUsageTestRoute(service: UsageService): WebRoute;
 /**

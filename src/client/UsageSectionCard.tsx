@@ -1753,14 +1753,17 @@ function SettingsRow(props: {
     .map((provider) => ({ ...provider, id: provider.provider.startsWith('custom:') ? provider.provider.slice(7) : provider.provider }))
   const cpamcOn = draft.cpamcEnabled
   const volcanoOn = draft.volcanoEnabled
+  // Unsaved secret inputs, so "test connection" can probe what is typed before
+  // the user saves the credential. They never leave this component otherwise.
+  const credentialDrafts = useRef<{ cpamc: string; volcanoAk: string; volcanoSk: string }>({ cpamc: '', volcanoAk: '', volcanoSk: '' })
 
-  const testSource = (target: 'cpamc' | 'volcano' | 'custom', id?: string): void => {
+  const testSource = (target: 'cpamc' | 'volcano' | 'custom', id?: string, config?: Record<string, unknown>): void => {
     if (sourceTest?.busy === true) return
     setSourceTest({ target, id, busy: true })
     void fetch('/api/dsh-usage-plus/test', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(id === undefined ? { target } : { target, id }),
+      body: JSON.stringify({ target, ...(id === undefined ? {} : { id }), ...(config === undefined ? {} : { config }) }),
     })
       .then(async (response) => {
         const payload = await response.json().catch(() => undefined) as UsageSourceTestResult | undefined
@@ -1954,6 +1957,7 @@ function SettingsRow(props: {
             <span>{t('usage.config.cpamcUrl')}</span>
             <input
               type="text"
+              data-dsh-part="cpamc-url"
               value={draft.cpamcBaseURL}
               disabled={disabled || saving || !cpamcOn}
               placeholder={t('usage.config.cpamcUrl.placeholder')}
@@ -1963,7 +1967,7 @@ function SettingsRow(props: {
           <span className={styles.settingHint}>{t('usage.config.cpamcUrlHint')}</span>
           <label className={styles.settingRow}>
             <span>{t('usage.config.cpamcAllowedHosts')}</span>
-            <input type="text" value={draft.cpamcAllowedHosts} disabled={disabled || saving || !cpamcOn} placeholder="cli.example.com" onChange={(event) => { edit('cpamcAllowedHosts', event.target.value) }} />
+            <input type="text" data-dsh-part="cpamc-allowed-hosts" value={draft.cpamcAllowedHosts} disabled={disabled || saving || !cpamcOn} placeholder="cli.example.com" onChange={(event) => { edit('cpamcAllowedHosts', event.target.value) }} />
           </label>
           <span className={styles.settingHint}>{t('usage.config.cpamcHostsHint')}</span>
           {cpamcOn && !isCpamcLoopbackUrl(draft.cpamcBaseURL, draft.cpamcAllowedHosts) && (
@@ -1971,10 +1975,12 @@ function SettingsRow(props: {
           )}
           <SecretField
             label={t('usage.config.cpamcToken')}
+            dataPart="cpamc-token"
             configured={credentials?.cpamc === true}
             disabled={disabled || !cpamcOn}
             onSave={(secret) => setCredential('cpamc', secret)}
             onClear={() => clearCredential('cpamc')}
+            onDraft={(value) => { credentialDrafts.current.cpamc = value }}
           />
           <span className={styles.settingHint}>{t('usage.config.cpamcTokenHint')}</span>
           <div className={styles.sourceTest} data-dsh-part="cpamc-test">
@@ -1982,7 +1988,12 @@ function SettingsRow(props: {
               type="button"
               className={styles.refreshBtn}
               disabled={disabled || saving || sourceTest?.busy === true}
-              onClick={() => testSource('cpamc')}
+              onClick={() => testSource('cpamc', undefined, {
+                cpamcEnabled: draft.cpamcEnabled,
+                cpamcBaseURL: draft.cpamcBaseURL,
+                cpamcAllowedHosts: draft.cpamcAllowedHosts,
+                ...(credentialDrafts.current.cpamc.trim() === '' ? {} : { cpamcManagementKey: credentialDrafts.current.cpamc }),
+              })}
             >
               {sourceTest?.busy === true && sourceTest.target === 'cpamc' ? t('usage.config.testing') : t('usage.config.test')}
             </button>
@@ -1995,6 +2006,7 @@ function SettingsRow(props: {
           {sourceTest?.target === 'cpamc' && sourceTest.busy === false && sourceTest.result?.hint !== undefined && (
             <span className={styles.settingHint} data-dsh-part="cpamc-test-hint">{sourceTest.result.hint}</span>
           )}
+          <span className={styles.settingHint} data-dsh-part="cpamc-test-draft-hint">{t('usage.config.testDraftHint')}</span>
           {cpamc !== undefined && (
             <span className={cpamc.error !== undefined ? styles.settingWarn : styles.settingHint}>
               {cpamc.displayName}
@@ -2017,6 +2029,7 @@ function SettingsRow(props: {
             disabled={disabled || !volcanoOn}
             onSave={(secret) => setCredential('volcano.ak', secret)}
             onClear={() => clearCredential('volcano.ak')}
+            onDraft={(value) => { credentialDrafts.current.volcanoAk = value }}
           />
           <SecretField
             label={t('usage.config.volcanoSk')}
@@ -2024,6 +2037,7 @@ function SettingsRow(props: {
             disabled={disabled || !volcanoOn}
             onSave={(secret) => setCredential('volcano.sk', secret)}
             onClear={() => clearCredential('volcano.sk')}
+            onDraft={(value) => { credentialDrafts.current.volcanoSk = value }}
           />
           {volcano !== undefined && (
             <span className={volcano.error !== undefined ? styles.settingWarn : styles.settingHint}>
@@ -2092,7 +2106,7 @@ function SettingsRow(props: {
                             type="button"
                             className={styles.refreshBtn}
                             disabled={disabled || saving || sourceTest?.busy === true}
-                            onClick={() => testSource('custom', plan.id)}
+                            onClick={() => testSource('custom', plan.id, { customPlans: draft.customPlans })}
                           >
                             {busy ? t('usage.config.testing') : t('usage.config.test')}
                           </button>
@@ -2265,15 +2279,24 @@ function SelectMenu(props: {
   )
 }
 
-function SecretField(props: {  label: string
+function SecretField(props: {
+  label: string
+  /** Optional `data-dsh-part` stamped on the input for tests/screenshots. */
+  dataPart?: string
   configured: boolean
   disabled: boolean
   onSave: (value: string) => Promise<void>
   onClear: () => Promise<void>
+  /** Notifies the parent of the unsaved value so "test connection" can use it. */
+  onDraft?: (value: string) => void
 }): ReactNode {
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | undefined>()
+  const updateDraft = (value: string): void => {
+    setDraft(value)
+    props.onDraft?.(value)
+  }
   const save = (): void => {
     const value = draft.trim()
     if (value === '' || busy || props.disabled) return
@@ -2281,6 +2304,7 @@ function SecretField(props: {  label: string
     setError(undefined)
     void props.onSave(value).then(() => {
       setDraft('')
+      props.onDraft?.('')
       setBusy(false)
     }, (err: unknown) => {
       setBusy(false)
@@ -2293,6 +2317,7 @@ function SecretField(props: {  label: string
     setError(undefined)
     void props.onClear().then(() => {
       setDraft('')
+      props.onDraft?.('')
       setBusy(false)
     }, (err: unknown) => {
       setBusy(false)
@@ -2312,12 +2337,13 @@ function SecretField(props: {  label: string
       <div className={styles.secretControls}>
         <input
           type="password"
+          data-dsh-part={props.dataPart}
           autoComplete="off"
           spellCheck={false}
           placeholder={props.configured ? t('usage.config.secret.replace') : t('usage.config.secret.placeholder')}
           value={draft}
           disabled={props.disabled || busy}
-          onChange={(event) => { setDraft(event.target.value) }}
+          onChange={(event) => { updateDraft(event.target.value) }}
           onKeyDown={(event) => { if (event.key === 'Enter') save() }}
         />
         <button type="button" className={styles.refreshBtn} disabled={props.disabled || busy || draft.trim() === ''} onClick={save}>

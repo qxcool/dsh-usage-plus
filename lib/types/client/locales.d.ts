@@ -227,6 +227,7 @@ export declare const zh: {
     'usage.config.testOkPlain': string;
     'usage.config.testFailed': string;
     'usage.config.testNeedsRestart': string;
+    'usage.config.testDraftHint': string;
     'usage.config.cpamcAllowedHosts': string;
     'usage.config.volcano': string;
     'usage.config.volcanoAk': string;

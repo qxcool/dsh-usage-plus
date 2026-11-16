@@ -166,6 +166,23 @@ export interface UsageOverviewPayload {
 /** External sources the Settings page can test on demand. */
 export type ExternalTestTarget = 'cpamc' | 'volcano' | 'custom'
 
+/**
+ * Unsaved Settings draft values used for one connection test. The browser
+ * sends them with the loopback-only test request so a test sees exactly what is
+ * typed instead of the previously saved config; nothing here is persisted, and
+ * secret fields are used only for the probe (never echoed in the result).
+ */
+export interface ExternalSourceTestDraft {
+  cpamcEnabled?: boolean
+  cpamcBaseURL?: string
+  cpamcAllowedHosts?: string
+  cpamcManagementKey?: string
+  volcanoEnabled?: boolean
+  volcanoAccessKeyId?: string
+  volcanoSecretAccessKey?: string
+  customPlans?: string
+}
+
 /** Result of one external-source connection test (no secrets cross the wire). */
 export interface UsageExternalTestResult {
   target: ExternalTestTarget
@@ -437,6 +454,12 @@ export function replaceExternalSnapshots(
   for (const row of rows) snapshots.set(row.provider, row)
 }
 
+/** A trimmed draft string when it has content, else the saved fallback. */
+function nonEmptyOr(value: string | undefined, fallback: string): string {
+  const trimmed = value?.trim()
+  return trimmed !== undefined && trimmed !== '' ? trimmed : fallback
+}
+
 /** Balance facts equal, ignoring the volatile probe read timestamp. */
 function sameBalanceFacts(left: BalanceView | undefined, right: BalanceView | undefined): boolean {
   if (left === undefined || right === undefined) return left === right
@@ -688,11 +711,13 @@ export class UsageService {
    * for the Settings "test connection" button. Never throws: transport errors
    * and configuration mistakes both come back as `ok: false` plus a hint.
    */
-  async testExternalSource(target: ExternalTestTarget, planId?: string): Promise<UsageExternalTestResult> {
+  async testExternalSource(target: ExternalTestTarget, planId?: string, draft: ExternalSourceTestDraft = {}): Promise<UsageExternalTestResult> {
     const started = Date.now()
     try {
       if (target === 'custom') {
-        const config = this.customPlanConfig()
+        const config = draft.customPlans === undefined
+          ? this.customPlanConfig()
+          : parseCustomPlans(draft.customPlans)
         const entries = planId === undefined ? config.entries : config.entries.filter((entry) => entry.id === planId)
         if (entries.length === 0) {
           return {
@@ -720,11 +745,15 @@ export class UsageService {
         return { target, ok: true, latencyMs, accounts: 1, windows: result.windows.slice(0, 3) }
       }
       if (target === 'cpamc') {
+        const cpamcEnabled = draft.cpamcEnabled ?? this.options.cpamcEnabled
+        const cpamcBaseURL = nonEmptyOr(draft.cpamcBaseURL, this.options.cpamcBaseURL)
+        const cpamcAllowedHosts = draft.cpamcAllowedHosts ?? this.options.cpamcAllowedHosts
+        const draftKey = draft.cpamcManagementKey?.trim()
         const rows = await probeCpamc({
-          enabled: this.options.cpamcEnabled,
-          baseURL: this.options.cpamcBaseURL,
-          managementKey: await this.resolveEnv(this.options.cpamcManagementKeyEnv),
-          allowedHosts: this.options.cpamcAllowedHosts,
+          enabled: cpamcEnabled,
+          baseURL: cpamcBaseURL,
+          managementKey: draftKey !== undefined && draftKey !== '' ? draftKey : await this.resolveEnv(this.options.cpamcManagementKeyEnv),
+          allowedHosts: cpamcAllowedHosts,
         })
         const latencyMs = Date.now() - started
         if (rows.length === 0) {
@@ -733,14 +762,17 @@ export class UsageService {
         const first = rows[0]
         const error = first?.planError ?? first?.error
         if (error !== undefined) {
-          return { target, ok: false, latencyMs, error, hint: this.cpamcTestHint(error) }
+          return { target, ok: false, latencyMs, error, hint: this.cpamcTestHint(error, cpamcBaseURL, cpamcAllowedHosts) }
         }
         return { target, ok: true, latencyMs, accounts: rows.length, windows: first?.plan?.windows.slice(0, 3) ?? [] }
       }
+      const volcanoEnabled = draft.volcanoEnabled ?? this.options.volcanoEnabled
+      const draftAk = draft.volcanoAccessKeyId?.trim()
+      const draftSk = draft.volcanoSecretAccessKey?.trim()
       const rows = await probeVolcano({
-        enabled: this.options.volcanoEnabled,
-        accessKeyId: await this.resolveEnv(this.options.volcanoAccessKeyEnv),
-        secretAccessKey: await this.resolveEnv(this.options.volcanoSecretKeyEnv),
+        enabled: volcanoEnabled,
+        accessKeyId: draftAk !== undefined && draftAk !== '' ? draftAk : await this.resolveEnv(this.options.volcanoAccessKeyEnv),
+        secretAccessKey: draftSk !== undefined && draftSk !== '' ? draftSk : await this.resolveEnv(this.options.volcanoSecretKeyEnv),
       })
       const latencyMs = Date.now() - started
       if (rows.length === 0) {
@@ -764,7 +796,7 @@ export class UsageService {
   }
 
   /** Actionable CPAMC hint for one probe failure message. */
-  private cpamcTestHint(error: string): string {
+  private cpamcTestHint(error: string, baseURL: string = this.options.cpamcBaseURL, allowedHosts: string = this.options.cpamcAllowedHosts ?? ''): string {
     const text = error.toLowerCase()
     if (text.includes('missing management token')) {
       return '填写 CPAMC Management Token（CPAMC 配置里的 management key），或设置环境变量 CPAMC_MANAGEMENT_KEY。'
@@ -780,11 +812,11 @@ export class UsageService {
     }
     if (text.includes('econnrefused') || text.includes('enotfound') || text.includes('eai_again')
       || text.includes('timed out') || text.includes('fetch failed') || text.includes('cert')) {
-      const allowed = String(this.options.cpamcAllowedHosts ?? '')
+      const allowed = allowedHosts
         .split(',')
         .map((host) => host.trim())
         .filter((host) => host !== '')
-      const loopback = /^https?:\/\/(localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?\/?$/i.test(this.options.cpamcBaseURL)
+      const loopback = /^https?:\/\/(localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?\/?$/i.test(baseURL)
       const suggestion = loopback && allowed.length > 0
         ? `当前管理地址是回环地址但本机端口未监听；若 CPAMC 部署在 ${allowed[0]}，请把管理地址改为 https://${allowed[0]}。`
         : ''

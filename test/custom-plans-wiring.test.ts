@@ -155,7 +155,7 @@ describe('custom plan test route', () => {
     const ok = response()
     await route.handler(request({ target: 'custom', id: 'my-plan' }), ok.res)
     expect(ok.status()).toBe(200)
-    expect(service.testExternalSource).toHaveBeenCalledWith('custom', 'my-plan')
+    expect(service.testExternalSource).toHaveBeenCalledWith('custom', 'my-plan', {})
     expect(JSON.parse(ok.body())).toMatchObject({ target: 'custom', id: 'my-plan', ok: true })
 
     const bad = response()
