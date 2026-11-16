@@ -4,6 +4,7 @@ import { buildHeatmapGrid } from '../src/core/heatmap.ts'
 import { currentPlanProvider, orderedPlanWindows, planTabProviders } from '../src/core/plan-match.ts'
 import { readEntryConfig, replaceExternalSnapshots } from '../src/host/usage-service.ts'
 import { emptyTotals, type UsageOverviewView } from '../src/core/types.ts'
+import { cacheHitText, formatCny, formatExact, formatTokens, formatUsd } from '../src/client/format.ts'
 
 function overview(partial?: Partial<UsageOverviewView>): UsageOverviewView {
   return {
@@ -220,5 +221,34 @@ describe('26-week heatmap', () => {
     expect(today?.tokens).toBe(100)
     expect(today?.level).toBeGreaterThan(0)
     expect(grid.cells[0]!.date <= grid.cells[6]!.date).toBe(true)
+  })
+})
+
+describe('number formatting honesty', () => {
+  it('uses the official compact K/M/B conventions', () => {
+    expect(formatTokens(0)).toBe('0')
+    expect(formatTokens(999)).toBe('999')
+    expect(formatTokens(12_345)).toBe('12.3k')
+    expect(formatTokens(1_234_567)).toBe('1.2M')
+    expect(formatTokens(999_960)).toBe('1M')
+    expect(formatTokens(999_960_000)).toBe('1B')
+  })
+
+  it('never rounds a partial cache hit up to 100%', () => {
+    expect(cacheHitText(999_600, 1_000_000)).toBe('99.9%')
+    expect(cacheHitText(99_999, 100_000)).toBe('99.9%')
+    expect(cacheHitText(1_000, 1_000)).toBe('100%')
+    expect(cacheHitText(0, 1_000)).toBe('0.0%')
+    expect(cacheHitText(0, 0)).toBe('—')
+  })
+
+  it('keeps CNY/USD explicit and never invents a priced zero', () => {
+    expect(formatCny(0, 42)).toBe('—')
+    expect(formatCny(0, 0)).toBe('¥0.00')
+    expect(formatCny(0.004, 10)).toBe('<¥0.01')
+    expect(formatCny(1.23, 10)).toBe('¥1.23')
+    expect(formatUsd(0.42)).toBe('$0.42')
+    expect(formatUsd(0)).toBe('<$0.01')
+    expect(formatExact(12_345)).toContain('12')
   })
 })

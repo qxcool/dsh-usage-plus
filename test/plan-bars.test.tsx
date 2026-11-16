@@ -15,7 +15,7 @@ import { createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { UsageSectionCard, type UsageSectionFace } from '../src/client/UsageSectionCard.tsx'
 import { apply } from '../src/client/index.ts'
-import { emptyTotals, type ProviderSnapshotView, type UsageAlert, type UsageHealth, type UsageOverviewView } from '../src/core/types.ts'
+import { emptyTotals, type ProviderSnapshotView, type UsageAlert, type UsageCostEstimate, type UsageDayDetail, type UsageHealth, type UsageOverviewView, type UsagePlatformView, type UsageTokenTotals } from '../src/core/types.ts'
 import { createUsageStore } from '../src/client/usage-store.ts'
 import { exportRequestPath, overviewRequestPath, type UsageRangeDays } from '../src/client/usage-api.ts'
 import styles from '../src/client/usage.module.css'
@@ -404,6 +404,229 @@ function healthy(): UsageHealth {
     probes: { lastAttemptAt: now - 20_000, lastSuccessAt: now - 25_000, failing: ['kimi-coding'] },
   }
 }
+
+function totals(partial: Partial<UsageTokenTotals>): UsageTokenTotals {
+  return { ...emptyTotals(), ...partial }
+}
+
+function dayDetail(): UsageDayDetail {
+  return {
+    date: '2026-11-16',
+    totals: totals({ inputTokens: 1_000_000, outputTokens: 200_000, cacheReadTokens: 30_000, calls: 42, cost: 1.23 }),
+    providers: [
+      {
+        provider: 'opencode-go',
+        totals: totals({ inputTokens: 1_000_000, outputTokens: 200_000, cacheReadTokens: 30_000, calls: 42, cost: 1.23 }),
+        models: [{ model: 'glm-4.6', totals: totals({ inputTokens: 600_000, outputTokens: 120_000, cacheReadTokens: 30_000, calls: 21, cost: 0.61 }) }],
+      },
+    ],
+  }
+}
+
+describe('v0.6.0 heatmap navigation, platform reconcile and USD estimate', () => {
+  let root: Root | undefined
+  afterEach(() => {
+    cleanup()
+    root?.unmount()
+    root = undefined
+    vi.unstubAllGlobals()
+  })
+
+  it('fetches the day route on cell click, opens the detail panel, switches metric and closes', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url)
+      if (target.includes('/day?')) {
+        return new Response(JSON.stringify(dayDetail()), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response('{}', { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { host, root: mounted } = mount(overview())
+    root = mounted
+    await flush()
+
+    const grid = host.querySelector('[data-dsh-part="heatmap-grid"]')
+    expect(grid?.getAttribute('role')).toBe('grid')
+    const cells = [...host.querySelectorAll<HTMLButtonElement>('[data-dsh-part="heatmap-cell"]:not([data-future])')]
+    expect(cells.length).toBeGreaterThan(7)
+    expect(cells[0]?.getAttribute('role')).toBe('gridcell')
+    expect(cells[0]?.getAttribute('aria-label')).toContain('次调用')
+    // Future cells are disabled and labelled as such.
+    for (const future of host.querySelectorAll<HTMLButtonElement>('[data-future="yes"]')) {
+      expect(future.disabled).toBe(true)
+      expect(future.getAttribute('aria-label')).toContain('未来日期')
+    }
+
+    act(() => {
+      cells[0]?.click()
+    })
+    await flush()
+    const dayUrl = fetchMock.mock.calls.map(([url]) => String(url)).find((url) => url.includes('/day?'))
+    expect(dayUrl).toContain('/api/dsh-usage-plus/day?date=')
+    const panel = host.querySelector('[data-dsh-part="day-detail"]')
+    expect(panel).not.toBeNull()
+    expect(panel?.getAttribute('data-day-state')).toBe('ready')
+    expect(panel?.textContent).toContain('opencode-go (completions)')
+    expect(panel?.textContent).toContain('glm-4.6')
+    expect(panel?.getAttribute('data-day-date')).toBe(cells[0]?.getAttribute('data-date'))
+
+    const metric = panel?.querySelector('[data-dsh-part="day-metric"]')
+    expect(metric?.textContent).toBe('1.2M')
+    const callsToggle = [...host.querySelectorAll<HTMLButtonElement>('[data-dsh-part="heatmap-card"] button')]
+      .find((button) => button.textContent === '调用')
+    expect(callsToggle?.getAttribute('aria-pressed')).toBe('false')
+    act(() => {
+      callsToggle?.click()
+    })
+    await flush()
+    expect(callsToggle?.getAttribute('aria-pressed')).toBe('true')
+    expect(panel?.querySelector('[data-dsh-part="day-metric"]')?.textContent).toBe('42')
+
+    const close = [...host.querySelectorAll<HTMLButtonElement>('[data-dsh-part="day-detail"] button')]
+      .find((button) => button.textContent === '关闭')
+    act(() => {
+      close?.click()
+    })
+    await flush()
+    expect(host.querySelector('[data-dsh-part="day-detail"]')).toBeNull()
+  })
+
+  it('shows loading/error and empty states for the day drill-down', async () => {
+    let attempts = 0
+    const fetchMock = vi.fn(async () => {
+      attempts += 1
+      if (attempts === 1) return new Response('{}', { status: 500 })
+      return new Response(JSON.stringify({ ...dayDetail(), totals: emptyTotals(), providers: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { host, root: mounted } = mount(overview())
+    root = mounted
+    await flush()
+    const cell = host.querySelector<HTMLButtonElement>('[data-dsh-part="heatmap-cell"]:not([data-future])')
+    act(() => {
+      cell?.click()
+    })
+    await flush()
+    const panel = host.querySelector('[data-dsh-part="day-detail"]')
+    expect(panel?.getAttribute('data-day-state')).toBe('error')
+    expect(panel?.textContent).toContain('当日明细读取失败')
+
+    const retry = [...(panel?.querySelectorAll<HTMLButtonElement>('button') ?? [])].find((button) => button.textContent === '重试')
+    act(() => {
+      retry?.click()
+    })
+    await flush()
+    expect(host.querySelector('[data-dsh-part="day-detail"]')?.getAttribute('data-day-state')).toBe('empty')
+    expect(host.querySelector('[data-dsh-part="day-detail"]')?.textContent).toContain('该日无用量')
+  })
+
+  it('renders the platform reconcile strip in ready/error states and hides it when unavailable', async () => {
+    const ready = overview()
+    ready.platform = {
+      status: 'ready',
+      currency: 'CNY',
+      monthCost: 128.42,
+      localMonthCost: 119.87,
+      coverage: 0.86,
+      delta: 8.55,
+      updatedAt: Date.now(),
+    } satisfies UsagePlatformView
+    const first = mount(ready)
+    root = first.root
+    await flush()
+    const strip = first.host.querySelector('[data-dsh-part="platform-strip"]')
+    expect(strip?.getAttribute('data-platform-status')).toBe('ready')
+    expect(strip?.textContent).toContain('官方本月 ¥128.42 · 本地 ¥119.87')
+    expect(strip?.textContent).toContain('覆盖 86%')
+    expect(strip?.textContent).toContain('差异 +¥8.55')
+    first.root.unmount()
+    root = undefined
+
+    const failed = overview()
+    failed.platform = { status: 'error', currency: 'CNY', updatedAt: 1, error: '401 unauthorized' }
+    const second = mount(failed)
+    root = second.root
+    await flush()
+    const errorStrip = second.host.querySelector('[data-dsh-part="platform-strip"]')
+    expect(errorStrip?.getAttribute('data-platform-status')).toBe('error')
+    expect(errorStrip?.textContent).toContain('官方平台对账暂不可用')
+    expect(errorStrip?.textContent).toContain('401 unauthorized')
+    second.root.unmount()
+    root = undefined
+
+    const hidden = overview()
+    hidden.platform = { status: 'unavailable', currency: 'CNY', updatedAt: 1 }
+    const third = mount(hidden)
+    root = third.root
+    await flush()
+    expect(third.host.querySelector('[data-dsh-part="platform-strip"]')).toBeNull()
+  })
+
+  it('labels the USD reference estimate and its unpriced calls without mixing currencies', async () => {
+    const priced = overview()
+    priced.costEstimate = {
+      currency: 'USD',
+      amount: 0.42,
+      pricedCalls: 6_234,
+      totalCalls: 6_270,
+      pricedModels: 12,
+      totalModels: 15,
+      source: 'models.dev',
+    } satisfies UsageCostEstimate
+    const first = mount(priced)
+    root = first.root
+    await flush()
+    const line = first.host.querySelector('[data-dsh-part="usd-estimate"]')
+    expect(line?.getAttribute('data-usd-priced')).toBe('yes')
+    expect(line?.textContent).toContain('≈$0.42 USD 参考 · 已定价 12/15 模型')
+    expect(line?.textContent).toContain('另有 36 次调用未定价')
+    first.root.unmount()
+    root = undefined
+
+    const unpriced = overview()
+    unpriced.costEstimate = {
+      currency: 'USD',
+      pricedCalls: 0,
+      totalCalls: 6_270,
+      pricedModels: 0,
+      totalModels: 15,
+      source: 'models.dev',
+    } satisfies UsageCostEstimate
+    const second = mount(unpriced)
+    root = second.root
+    await flush()
+    const none = second.host.querySelector('[data-dsh-part="usd-estimate"]')
+    expect(none?.getAttribute('data-usd-priced')).toBe('no')
+    expect(none?.textContent).toContain('USD 参考：暂无可定价模型')
+    expect(none?.textContent).toContain('6270 次调用未定价')
+  })
+
+  it('never rounds a partial cache hit up to 100%', async () => {
+    const snapshot = overview()
+    // 999_600 / 1_000_000 billed = 99.96% -> must display 99.9%, never 100%.
+    snapshot.usage.today.totals = totals({ cacheReadTokens: 999_600, inputTokens: 400, calls: 10 })
+    const first = mount(snapshot)
+    root = first.root
+    await flush()
+    const hero = first.host.querySelector('[data-dsh-part="hero"]')
+    expect(hero?.textContent).toContain('99.9%')
+    expect(hero?.textContent).not.toContain('100%')
+    first.root.unmount()
+    root = undefined
+
+    const exact = overview()
+    exact.usage.today.totals = totals({ cacheReadTokens: 1_000, inputTokens: 0, calls: 1 })
+    const second = mount(exact)
+    root = second.root
+    await flush()
+    expect(second.host.querySelector('[data-dsh-part="hero"]')?.textContent).toContain('100%')
+  })
+})
 
 describe('threshold alerts', () => {
   let root: Root | undefined

@@ -4,7 +4,7 @@ import type {} from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
 import { mountOnce } from './mount-once.ts'
 import { UsageService, type UsageServiceOptions } from './host/usage-service.ts'
-import { makeUsageClientDiagRoute, makeUsageCredentialsRoute, makeUsageExportRoute, makeUsageOverviewRoute, makeUsageRefreshRoute, makeUsageTestRoute } from './host/routes.ts'
+import { makeUsageClientDiagRoute, makeUsageCredentialsRoute, makeUsageDayRoute, makeUsageExportRoute, makeUsageOverviewRoute, makeUsageRefreshRoute, makeUsageTestRoute } from './host/routes.ts'
 
 export const name = 'dsh-usage-plus'
 export const inject = ['webServer', 'configEditor']
@@ -45,6 +45,10 @@ export interface Config {
   balanceAlertCny?: number
   /** Minutes before the same alert kind/provider/window may bubble again. */
   alertCooldownMinutes?: number
+  /** Read official DeepSeek platform billing for the reconcile strip (internal API). */
+  platformUsageEnabled?: boolean
+  /** Estimate non-DeepSeek/global cost from the models.dev price book (USD reference). */
+  costEstimateEnabled?: boolean
   cpamcEnabled?: boolean
   cpamcBaseURL?: string
   cpamcManagementKeyEnv?: string
@@ -71,6 +75,8 @@ export const Config = z.object({
   planAlertPercent: z.number().min(0).max(100).default(0).volatile(),
   balanceAlertCny: z.number().min(0).max(1_000_000_000).default(0).volatile(),
   alertCooldownMinutes: z.number().min(1).max(1440).default(60).volatile(),
+  platformUsageEnabled: z.boolean().default(true).volatile(),
+  costEstimateEnabled: z.boolean().default(true).volatile(),
   cpamcEnabled: z.boolean().default(false).volatile(),
   cpamcBaseURL: z.string().default('http://127.0.0.1:8317').volatile(),
   cpamcManagementKeyEnv: z.string().default('CPAMC_MANAGEMENT_KEY').volatile(),
@@ -87,6 +93,8 @@ export interface ResolvedConfig extends UsageServiceOptions {
   planAlertPercent: number
   balanceAlertCny: number
   alertCooldownMinutes: number
+  platformUsageEnabled: boolean
+  costEstimateEnabled: boolean
 }
 
 /** Shared cosmokit volatile-reference brand (Cordis re-exports the type only). */
@@ -123,6 +131,8 @@ export function resolveConfig(input?: Record<string, unknown> | Config): Resolve
     planAlertPercent: typeof config.planAlertPercent === 'number' ? config.planAlertPercent : 0,
     balanceAlertCny: typeof config.balanceAlertCny === 'number' ? config.balanceAlertCny : 0,
     alertCooldownMinutes: typeof config.alertCooldownMinutes === 'number' ? config.alertCooldownMinutes : 60,
+    platformUsageEnabled: config.platformUsageEnabled ?? true,
+    costEstimateEnabled: config.costEstimateEnabled ?? true,
     cpamcEnabled: config.cpamcEnabled ?? false,
     cpamcBaseURL: config.cpamcBaseURL ?? 'http://127.0.0.1:8317',
     cpamcManagementKeyEnv: config.cpamcManagementKeyEnv ?? 'CPAMC_MANAGEMENT_KEY',
@@ -159,7 +169,7 @@ export const apply = mountOnce('dsh-usage-plus', (ctx: Context, input: Record<st
       const begin = (): void => {
         if (service !== next) return
         next.start()
-        const disposers = [makeUsageOverviewRoute(next), makeUsageRefreshRoute(next), makeUsageCredentialsRoute(next), makeUsageExportRoute(next), makeUsageTestRoute(next), makeUsageClientDiagRoute()]
+        const disposers = [makeUsageOverviewRoute(next), makeUsageRefreshRoute(next), makeUsageCredentialsRoute(next), makeUsageExportRoute(next), makeUsageTestRoute(next), makeUsageDayRoute(next), makeUsageClientDiagRoute()]
           .map((route) => ctx.webServer.register(route))
         disposeRoutes = () => {
           for (const dispose of disposers) {

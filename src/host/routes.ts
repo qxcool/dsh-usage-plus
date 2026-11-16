@@ -7,6 +7,7 @@ import { asJsonObject, readJsonBody, writeJson, writeText } from './http.ts'
 import { isLoopbackRequest } from './loopback.ts'
 import { exportCsv, exportFilename, resolveExportDays, resolveExportFormat } from './export.ts'
 import { resolveRangeDays, type UsageService } from './usage-service.ts'
+import { localDateKey } from '../core/ledger.ts'
 import { dshHome } from '../dsh-home.ts'
 
 export const USAGE_API_PREFIX = '/api/dsh-usage-plus'
@@ -120,6 +121,41 @@ export function makeUsageExportRoute(service: UsageService): WebRoute {
         return
       }
       writeText(res, 200, exportCsv(document.entries), { ...headers, 'content-type': 'text/csv; charset=utf-8' })
+    },
+  }
+}
+
+const DATE_KEY = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * Loopback-fenced per-day drill-down used by the Overview heatmap. Returns the
+ * ledger's provider/model rows for one local date (zeros for a day with no
+ * usage); future or malformed dates are client errors.
+ */
+export function makeUsageDayRoute(service: UsageService): WebRoute {
+  return {
+    kind: 'exact',
+    path: USAGE_API_PREFIX + '/day',
+    handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+      if (!isLoopbackRequest(req)) {
+        writeJson(res, 403, { ok: false, error: 'forbidden: loopback-only' })
+        return
+      }
+      if (req.method !== 'GET') {
+        writeJson(res, 405, { ok: false, error: 'method not allowed' })
+        return
+      }
+      const date = requestQuery(req).get('date') ?? ''
+      if (!DATE_KEY.test(date)) {
+        writeJson(res, 400, { ok: false, error: 'invalid date' })
+        return
+      }
+      const detail = service.dayDetail(date)
+      if (detail.date > localDateKey(Date.now())) {
+        writeJson(res, 400, { ok: false, error: 'future date' })
+        return
+      }
+      writeJson(res, 200, detail, { 'cache-control': 'no-store' })
     },
   }
 }

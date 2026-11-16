@@ -52,8 +52,13 @@ function overview(partial?: Partial<UsageOverviewView>): UsageOverviewView {
 
 /** Mimic ui-session keyed projection hook: returns the value directly. */
 function projectionOf(value: unknown): { useProjection: (key: string) => unknown } {
+  return projections({ modelSelection: value })
+}
+
+/** Projection stub for several official session keys at once. */
+function projections(values: Record<string, unknown>): { useProjection: (key: string) => unknown } {
   return {
-    useProjection: (key: string) => (key === 'modelSelection' ? value : undefined),
+    useProjection: (key: string) => values[key],
   }
 }
 
@@ -258,6 +263,105 @@ describe('PlanUsageStrip per-session route', () => {
     const second = mount(createElement(PlanUsageStrip, { store: fakeStore(unrelated) as never }))
     await flush()
     expect(second.host.querySelector('[data-dsh-part="quota-alert-dot"]')).toBeNull()
+    second.root.unmount()
+  })
+
+  it('shows this-session tokens, cache hit, context occupancy and DeepSeek cost in the popover', async () => {
+    const snapshot = overview({
+      current: { provider: 'deepseek-official', model: 'deepseek-v4.1-flash', source: 'live' },
+      providers: [
+        provider({
+          provider: 'deepseek-official',
+          displayName: 'DeepSeek',
+          planSupported: true,
+          plan: { updatedAt: 1, windows: [{ key: '5h', percent: 20 }, { key: 'week', percent: 12 }] },
+        }),
+      ],
+    })
+    const { root, host } = mount(createElement(PlanUsageStrip, {
+      store: fakeStore(snapshot) as never,
+      ...projections({
+        tokenUsage: {
+          uncachedInputTokens: 1_240_000,
+          outputTokens: 860_000,
+          cacheReadTokens: 37_600_000,
+          cacheWriteTokens: 230_000,
+        },
+        contextPressure: { pressureTokens: 92_000, projectedTokens: 96_500, contextWindow: 128_000 },
+      }),
+    }))
+    await flush()
+
+    const trigger = host.querySelector<HTMLButtonElement>('[data-dsh-part="quota-meter"] button')
+    expect(trigger?.getAttribute('aria-haspopup')).toBe('dialog')
+    expect(trigger?.getAttribute('aria-expanded')).toBe('false')
+    act(() => {
+      trigger?.click()
+    })
+    await flush()
+    expect(trigger?.getAttribute('aria-expanded')).toBe('true')
+
+    const summary = host.querySelector('[data-dsh-part="session-summary"]')
+    expect(summary).not.toBeNull()
+    const row = (name: string): string => summary?.querySelector(`[data-session-row="${name}"]`)?.textContent ?? ''
+    // billed = 1.24M uncached + 37.6M cache read + 0.23M cache write + 0.86M output
+    expect(row('tokens')).toContain('39.9M')
+    // cache hit uses input+cacheRead+cacheWrite (96.2%), not output.
+    expect(row('cache')).toContain('96.2%')
+    // projectedTokens differs from the exact sample, so the estimate carries ~.
+    expect(row('context')).toContain('~75%')
+    // Positive CNY estimate for the DeepSeek route, never ¥0.00.
+    expect(row('cost')).toContain('≈¥')
+    expect(row('cost')).toMatch(/≈¥\d/)
+    expect(row('cost')).not.toContain('¥0.00')
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+    await flush()
+    expect(host.querySelector('[role="dialog"]')).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+    root.unmount()
+  })
+
+  it('marks session cost unknown for a non-DeepSeek route and hides the summary without projections', async () => {
+    const nonDeepseek = overview({
+      current: { provider: 'opencode-go', model: 'glm-5.3-flash', source: 'live' },
+      providers: [provider({
+        provider: 'opencode-go',
+        displayName: 'opencode-go',
+        planSupported: true,
+        plan: { updatedAt: 1, windows: [{ key: '5h', percent: 41 }] },
+      })],
+    })
+    const first = mount(createElement(PlanUsageStrip, {
+      store: fakeStore(nonDeepseek) as never,
+      ...projections({ tokenUsage: { uncachedInputTokens: 1_000, outputTokens: 2_000 } }),
+    }))
+    await flush()
+    const trigger = first.host.querySelector<HTMLButtonElement>('[data-dsh-part="quota-meter"] button')
+    act(() => {
+      trigger?.click()
+    })
+    await flush()
+    const costRow = first.host.querySelector('[data-session-row="cost"]')
+    expect(costRow?.textContent).toContain('—')
+    first.root.unmount()
+
+    // No projections (older kit / tests that only stub modelSelection): no section.
+    const plain = overview()
+    const second = mount(createElement(PlanUsageStrip, {
+      store: fakeStore(plain) as never,
+      ...projectionOf({ lastUsed: { provider: 'opencode-go', model: 'glm-5.3-flash' }, next: null }),
+    }))
+    await flush()
+    const plainTrigger = second.host.querySelector<HTMLButtonElement>('[data-dsh-part="quota-meter"] button')
+    act(() => {
+      plainTrigger?.click()
+    })
+    await flush()
+    expect(second.host.querySelector('[role="dialog"]')).not.toBeNull()
+    expect(second.host.querySelector('[data-dsh-part="session-summary"]')).toBeNull()
     second.root.unmount()
   })
 

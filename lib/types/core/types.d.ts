@@ -179,6 +179,56 @@ export interface UsageHealth {
         failing: string[];
     };
 }
+/**
+ * Official DeepSeek platform (billing console) facts plus the local ledger's
+ * DeepSeek-only month cost, for the overview reconcile strip. Optional: the
+ * platform endpoint is internal and may be unavailable/signed out.
+ */
+export interface UsagePlatformView {
+    status: 'ready' | 'unavailable' | 'error';
+    currency: 'CNY';
+    /** Official current-month spend in CNY. */
+    monthCost?: number;
+    /** Official lifetime spend in CNY (get_user_summary total_costs). */
+    cumulativeCost?: number;
+    /** Same month from the local ledger, DeepSeek routes only (CNY). */
+    localMonthCost?: number;
+    /** Fraction 0..1 of official active days with local ledger coverage. */
+    coverage?: number;
+    /** `monthCost - localMonthCost` (positive = official charges more). */
+    delta?: number;
+    /** Official per-day spend for the current month, when the API returns it. */
+    days?: Array<{
+        date: string;
+        cost: number;
+    }>;
+    updatedAt: number;
+    /** Human message when status is `error`; never contains credentials. */
+    error?: string;
+}
+/**
+ * USD reference estimate for the selected window from the models.dev price
+ * book. Deliberately separate from the CNY DeepSeek ledger cost so currencies
+ * are never mixed; priced/unpriced counts keep the number honest.
+ */
+export interface UsageCostEstimate {
+    currency: 'USD';
+    /** Estimated spend in USD; undefined when no bucket could be priced. */
+    amount?: number;
+    pricedCalls: number;
+    totalCalls: number;
+    pricedModels: number;
+    totalModels: number;
+    source: 'models.dev';
+    /** Epoch ms the price book was fetched. */
+    priceBookUpdatedAt?: number;
+}
+/** One day's drill-down: totals plus per-provider/per-model rows. */
+export interface UsageDayDetail {
+    date: string;
+    totals: UsageTokenTotals;
+    providers: UsageProviderSummary[];
+}
 /** The overview the browser section renders. */
 export interface UsageOverviewView {
     updatedAt: number;
@@ -187,6 +237,10 @@ export interface UsageOverviewView {
     alerts?: UsageAlert[];
     /** Ledger/probe health for the data-health section; optional for older Hosts. */
     health?: UsageHealth;
+    /** Official DeepSeek platform reconcile facts; optional for older Hosts. */
+    platform?: UsagePlatformView;
+    /** USD reference estimate for the selected window; optional. */
+    costEstimate?: UsageCostEstimate;
     /** The provider the pet bubble and the header highlight; `source` says how it was picked. */
     current: {
         provider?: string;

@@ -1,9 +1,12 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { UsageStoreInstance } from './usage-store.ts'
-import type { PlanWindowView } from '../core/types.ts'
+import type { PlanWindowView, UsageTokenTotals } from '../core/types.ts'
 import { currentPlanProvider, orderedPlanWindows, planSourceLabelKey, type PlanRouteOverride } from '../core/plan-match.ts'
+import { isDeepSeekProviderRoute } from '../core/adapters.ts'
+import { deepseekModelSpend } from '../core/pricing.ts'
 import { sessionRouteFrom, type SessionSelectionView } from './session-route.ts'
 import { formatPlanReset, t } from './locales.ts'
+import { cacheHitText, formatCost, formatTokens } from './format.ts'
 import styles from './usage.module.css'
 
 /** Last strip-state key and instant, for the five-minute diagnostic throttle. */
@@ -36,6 +39,29 @@ export function reportDiag(kind: string, key: string): void {
 
 /** Keyed projection hook from session-scope standard kit (`ui-session`). */
 export type UseProjection = (key: string) => unknown
+
+/** Official `tokenUsage` projection fields we read (durable session totals). */
+export interface SessionTokenUsage {
+  uncachedInputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+}
+
+/** Official `contextPressure` projection fields we read. */
+export interface SessionContextPressure {
+  /** Last provider prompt size (exact sample). */
+  pressureTokens?: number
+  /** Pressure plus signed surface movement since the sample. */
+  projectedTokens?: number
+  /** Route capacity, when the newest request carried one. */
+  contextWindow?: number
+}
+
+/** Billed-input denominator: uncached input + cache read + cache write. */
+function billedInputOf(usage: SessionTokenUsage): number {
+  return (usage.uncachedInputTokens ?? 0) + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0)
+}
 
 export interface PlanUsageStripProps {
   store: UsageStoreInstance
@@ -149,6 +175,14 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
     ? useProjection('modelSelection')
     : undefined) as SessionSelectionView | undefined
   const override = routeOverride(selection)
+  // Both keys are host-plane projections always mounted in this profile, but
+  // guard anyway (older kits / tests pass a stub that returns undefined).
+  const tokenUsage = (useProjection !== undefined
+    ? useProjection('tokenUsage')
+    : undefined) as SessionTokenUsage | undefined
+  const contextPressure = (useProjection !== undefined
+    ? useProjection('contextPressure')
+    : undefined) as SessionContextPressure | undefined
 
   // Shared poller lifecycle: the client entry multiplexes one interval and
   // one document-listener set across every live strip instance.
@@ -252,6 +286,45 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
   // daily-cost alert is surfaced in the Overview banner instead.
   const providerAlert = snapshot.alerts?.find((alert) => alert.provider === provider.provider)
 
+  // ---- this-session summary (official projections) ---------------------
+  const billedInput = tokenUsage === undefined ? 0 : billedInputOf(tokenUsage)
+  const billedTokens = billedInput + (tokenUsage?.outputTokens ?? 0)
+  const sessionCacheHit = tokenUsage === undefined ? null : cacheHitText(tokenUsage.cacheReadTokens ?? 0, billedInput)
+  const projected = contextPressure?.projectedTokens
+  const capacity = contextPressure?.contextWindow
+  const occupancy = typeof projected === 'number' && typeof capacity === 'number' && capacity > 0
+    ? Math.min(100, Math.round((projected / capacity) * 100))
+    : null
+  // `~` marks the projected figure (pressure + surface movement) as estimated;
+  // it is omitted when it equals the exact last-prompt sample.
+  const occupancyEstimated = occupancy !== null
+    && typeof contextPressure?.pressureTokens === 'number'
+    && projected !== contextPressure.pressureTokens
+  const sessionProvider = override?.provider ?? snapshot.current.provider
+  const sessionModel = override?.model ?? snapshot.current.model
+  const sessionPriced = tokenUsage !== undefined
+    && billedTokens > 0
+    && sessionProvider !== undefined
+    && isDeepSeekProviderRoute(sessionProvider)
+    && sessionModel !== undefined
+    && sessionModel !== ''
+  const sessionTotals: UsageTokenTotals = {
+    inputTokens: tokenUsage?.uncachedInputTokens ?? 0,
+    outputTokens: tokenUsage?.outputTokens ?? 0,
+    cacheReadTokens: tokenUsage?.cacheReadTokens ?? 0,
+    cacheWriteTokens: tokenUsage?.cacheWriteTokens ?? 0,
+    reasoningTokens: 0,
+    calls: 0,
+    cost: 0,
+  }
+  const sessionCost = sessionPriced ? deepseekModelSpend(sessionModel, sessionTotals, Date.now()) : null
+  const sessionCostText = sessionCost === null
+    ? '—'
+    : sessionCost < 0.01
+      ? '<¥0.01'
+      : `≈${formatCost(sessionCost)}`
+  const showSessionSummary = tokenUsage !== undefined || contextPressure !== undefined
+
   return (
     <span ref={rootRef} className={`${styles.quotaMeter} ${level}`} data-dsh-plugin="usage-plus" data-dsh-part="quota-meter" data-usage-plus-rev="4">
       <button
@@ -330,6 +403,40 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
               )
             })}
           </div>
+          {showSessionSummary && (
+            <div className={styles.sessionSummary} data-dsh-part="session-summary" role="group" aria-label={t('usage.session.title')}>
+              <div className={styles.sessionHead}>
+                <span className={styles.sessionTitle}>{t('usage.session.title')}</span>
+                <span className={styles.scopeChip}>{t('usage.scope.session')}</span>
+              </div>
+              <div className={styles.sessionRow} data-session-row="tokens">
+                <span className={styles.sessionLabel}>{t('usage.session.tokens')}</span>
+                <span
+                  className={`${styles.sessionValue} ${styles.mono}`}
+                  title={tokenUsage === undefined ? undefined : `${billedTokens.toLocaleString()} Tokens`}
+                >
+                  {tokenUsage === undefined ? '—' : formatTokens(billedTokens)}
+                </span>
+              </div>
+              <div className={styles.sessionRow} data-session-row="cache">
+                <span className={styles.sessionLabel}>{t('usage.session.cacheHit')}</span>
+                <span className={`${styles.sessionValue} ${styles.mono}`}>{sessionCacheHit ?? '—'}</span>
+              </div>
+              <div className={styles.sessionRow} data-session-row="context">
+                <span className={styles.sessionLabel}>{t('usage.session.context')}</span>
+                <span className={`${styles.sessionValue} ${styles.mono}`}>
+                  {occupancy === null ? '—' : `${occupancyEstimated ? '~' : ''}${occupancy}%`}
+                </span>
+              </div>
+              <div className={styles.sessionRow} data-session-row="cost">
+                <span className={styles.sessionLabel}>{t('usage.session.cost')}</span>
+                <span className={`${styles.sessionValue} ${styles.mono}`}>{sessionCostText}</span>
+              </div>
+              <span className={styles.sessionHint}>
+                {sessionCostText === '—' ? t('usage.session.hintPlain') : t('usage.session.hint')}
+              </span>
+            </div>
+          )}
         </div>
       )}
     </span>

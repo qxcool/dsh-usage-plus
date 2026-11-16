@@ -31,3 +31,8 @@ export function overviewRequestPath(days: UsageRangeDays): string {
 export function exportRequestPath(format: 'csv' | 'json', days: UsageRangeDays): string {
   return `/api/dsh-usage-plus/export?format=${format}&days=${days}`
 }
+
+/** The per-day drill-down path (heatmap navigation). */
+export function dayRequestPath(date: string): string {
+  return `/api/dsh-usage-plus/day?date=${encodeURIComponent(date)}`
+}

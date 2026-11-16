@@ -1,5 +1,62 @@
 import z from "@deepseek-ai/schemastery";
 import { Context } from "@deepseek-ai/cordis";
+//#region src/core/types.d.ts
+/**
+ * Official DeepSeek platform (billing console) facts plus the local ledger's
+ * DeepSeek-only month cost, for the overview reconcile strip. Optional: the
+ * platform endpoint is internal and may be unavailable/signed out.
+ */
+interface UsagePlatformView {
+  status: 'ready' | 'unavailable' | 'error';
+  currency: 'CNY';
+  /** Official current-month spend in CNY. */
+  monthCost?: number;
+  /** Official lifetime spend in CNY (get_user_summary total_costs). */
+  cumulativeCost?: number;
+  /** Same month from the local ledger, DeepSeek routes only (CNY). */
+  localMonthCost?: number;
+  /** Fraction 0..1 of official active days with local ledger coverage. */
+  coverage?: number;
+  /** `monthCost - localMonthCost` (positive = official charges more). */
+  delta?: number;
+  /** Official per-day spend for the current month, when the API returns it. */
+  days?: Array<{
+    date: string;
+    cost: number;
+  }>;
+  updatedAt: number;
+  /** Human message when status is `error`; never contains credentials. */
+  error?: string;
+}
+//#endregion
+//#region src/core/pricing-book.d.ts
+/** One model price row, USD per 1M tokens. */
+interface PriceRow {
+  /** Cache-miss (uncached) input. */
+  miss: number;
+  /** Input served from the provider prompt cache. */
+  hit: number;
+  /** Cache-write input; falls back to `miss` when the catalog has no separate price. */
+  write: number;
+  /** Output (reasoning included). */
+  out: number;
+}
+/** Lookup tables normalized from one models.dev catalog. */
+interface PriceBookLookups {
+  /** Normalized `${provider}/${model}` (lowercase) → price row. */
+  rows: Record<string, PriceRow>;
+  /** Short model name (after the last `/`) → row keys carrying it. */
+  byShortName: Record<string, string[]>;
+  /** Canonical model id (`provider/model`, lowercase) → row keys mapped to it. */
+  byCanonical: Record<string, string[]>;
+}
+/** A normalized price book plus the fetch instant (the on-disk cache shape). */
+interface PriceBook extends PriceBookLookups {
+  /** Epoch ms of the catalog fetch that produced this book. */
+  fetchedAt: number;
+  source: 'models.dev';
+}
+//#endregion
 //#region src/host/usage-service.d.ts
 /** Poll-loop and announce options; re-applied live on settings change. */
 interface UsageServiceOptions {
@@ -16,6 +73,16 @@ interface UsageServiceOptions {
   balanceAlertCny?: number;
   /** Minutes between alert bubbles for the same episode key. Default 60. */
   alertCooldownMinutes?: number;
+  /** Read official DeepSeek platform billing for the reconcile strip. */
+  platformUsageEnabled?: boolean;
+  /** Estimate USD cost from the models.dev price book. */
+  costEstimateEnabled?: boolean;
+  /** Test seam: pre-built price book (avoids the network). */
+  priceBook?: PriceBook;
+  /** Test seam: replace the models.dev catalog fetch. */
+  priceBookFetcher?: () => Promise<PriceBook | undefined>;
+  /** Test seam: replace the official platform fetch. */
+  platformFetcher?: (ctx: Context) => Promise<UsagePlatformView>;
   /**
    * Filesystem-fact health cache TTL in ms. Default 2000; tests set 0 to make
    * corrupt-file/backfill-status changes visible immediately.
@@ -67,6 +134,10 @@ interface Config {
   balanceAlertCny?: number;
   /** Minutes before the same alert kind/provider/window may bubble again. */
   alertCooldownMinutes?: number;
+  /** Read official DeepSeek platform billing for the reconcile strip (internal API). */
+  platformUsageEnabled?: boolean;
+  /** Estimate non-DeepSeek/global cost from the models.dev price book (USD reference). */
+  costEstimateEnabled?: boolean;
   cpamcEnabled?: boolean;
   cpamcBaseURL?: string;
   cpamcManagementKeyEnv?: string;
@@ -92,6 +163,8 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
   planAlertPercent: z<number, number, "volatile-defined">;
   balanceAlertCny: z<number, number, "volatile-defined">;
   alertCooldownMinutes: z<number, number, "volatile-defined">;
+  platformUsageEnabled: z<boolean, boolean, "volatile-defined">;
+  costEstimateEnabled: z<boolean, boolean, "volatile-defined">;
   cpamcEnabled: z<boolean, boolean, "volatile-defined">;
   cpamcBaseURL: z<string, string, "volatile-defined">;
   cpamcManagementKeyEnv: z<string, string, "volatile-defined">;
@@ -109,6 +182,8 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
   planAlertPercent: z<number, number, "volatile-defined">;
   balanceAlertCny: z<number, number, "volatile-defined">;
   alertCooldownMinutes: z<number, number, "volatile-defined">;
+  platformUsageEnabled: z<boolean, boolean, "volatile-defined">;
+  costEstimateEnabled: z<boolean, boolean, "volatile-defined">;
   cpamcEnabled: z<boolean, boolean, "volatile-defined">;
   cpamcBaseURL: z<string, string, "volatile-defined">;
   cpamcManagementKeyEnv: z<string, string, "volatile-defined">;
@@ -124,6 +199,8 @@ interface ResolvedConfig extends UsageServiceOptions {
   planAlertPercent: number;
   balanceAlertCny: number;
   alertCooldownMinutes: number;
+  platformUsageEnabled: boolean;
+  costEstimateEnabled: boolean;
 }
 /**
  * Snapshot loader Config (volatile refs or plain values) into a plain partial.

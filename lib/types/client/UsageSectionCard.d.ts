@@ -14,6 +14,7 @@ import { type ReactNode } from 'react';
 import type { UsageStoreInstance } from './usage-store.ts';
 import type { ExternalCredentialTarget } from '../core/types.ts';
 import { type UsageRangeDays } from './usage-api.ts';
+export { formatExact, formatTokens } from './format.ts';
 /** The settings fields this section edits (staged Save via configForms.mutate). */
 export interface UsageSettings {
     enabled?: boolean;
@@ -34,6 +35,10 @@ export interface UsageSettings {
     cpamcManagementKeyEnv?: string;
     cpamcAllowedHosts?: string;
     volcanoEnabled?: boolean;
+    /** v0.6.0: read official DeepSeek platform billing for the reconcile strip. */
+    platformUsageEnabled?: boolean;
+    /** v0.6.0: estimate USD from the models.dev price book. */
+    costEstimateEnabled?: boolean;
 }
 /**
  * Subset of `ctx.configForms.get(entryId)` used by this page.
@@ -84,8 +89,6 @@ export interface UsageSectionProps extends UsageSectionFace {
      */
     view?: 'summary' | 'page';
 }
-/** Compact token count: 12345 -> 12.3k, 1234567 -> 1.23M. */
-export declare function formatTokens(value: number): string;
 /** The section component; the slot merges the face into these props. */
 export declare function UsageSectionCard(props: UsageSectionProps): ReactNode;
 //# sourceMappingURL=UsageSectionCard.d.ts.map

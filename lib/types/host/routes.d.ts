@@ -26,6 +26,12 @@ export declare function makeUsageOverviewRoute(service: UsageService): WebRoute;
  */
 export declare function makeUsageExportRoute(service: UsageService): WebRoute;
 /**
+ * Loopback-fenced per-day drill-down used by the Overview heatmap. Returns the
+ * ledger's provider/model rows for one local date (zeros for a day with no
+ * usage); future or malformed dates are client errors.
+ */
+export declare function makeUsageDayRoute(service: UsageService): WebRoute;
+/**
  * Loopback-fenced external-source connection test used by the Settings
  * "test connection" button. Returns only probe facts and hints; no secret
  * value ever crosses the wire.

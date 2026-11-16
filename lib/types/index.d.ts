@@ -37,6 +37,10 @@ export interface Config {
     balanceAlertCny?: number;
     /** Minutes before the same alert kind/provider/window may bubble again. */
     alertCooldownMinutes?: number;
+    /** Read official DeepSeek platform billing for the reconcile strip (internal API). */
+    platformUsageEnabled?: boolean;
+    /** Estimate non-DeepSeek/global cost from the models.dev price book (USD reference). */
+    costEstimateEnabled?: boolean;
     cpamcEnabled?: boolean;
     cpamcBaseURL?: string;
     cpamcManagementKeyEnv?: string;
@@ -62,6 +66,8 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     planAlertPercent: z<number, number, "volatile-defined">;
     balanceAlertCny: z<number, number, "volatile-defined">;
     alertCooldownMinutes: z<number, number, "volatile-defined">;
+    platformUsageEnabled: z<boolean, boolean, "volatile-defined">;
+    costEstimateEnabled: z<boolean, boolean, "volatile-defined">;
     cpamcEnabled: z<boolean, boolean, "volatile-defined">;
     cpamcBaseURL: z<string, string, "volatile-defined">;
     cpamcManagementKeyEnv: z<string, string, "volatile-defined">;
@@ -79,6 +85,8 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     planAlertPercent: z<number, number, "volatile-defined">;
     balanceAlertCny: z<number, number, "volatile-defined">;
     alertCooldownMinutes: z<number, number, "volatile-defined">;
+    platformUsageEnabled: z<boolean, boolean, "volatile-defined">;
+    costEstimateEnabled: z<boolean, boolean, "volatile-defined">;
     cpamcEnabled: z<boolean, boolean, "volatile-defined">;
     cpamcBaseURL: z<string, string, "volatile-defined">;
     cpamcManagementKeyEnv: z<string, string, "volatile-defined">;
@@ -94,6 +102,8 @@ export interface ResolvedConfig extends UsageServiceOptions {
     planAlertPercent: number;
     balanceAlertCny: number;
     alertCooldownMinutes: number;
+    platformUsageEnabled: boolean;
+    costEstimateEnabled: boolean;
 }
 /**
  * Snapshot loader Config (volatile refs or plain values) into a plain partial.

@@ -15,13 +15,15 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { TokenUsage } from '@deepseek-ai/dsh-llm'
 import { dshHome } from '../dsh-home.ts'
 import { adapterFor, dedupeProviderAliasRoutes, isDeepSeekProviderRoute, probeHalfAllowed, providerErrorMessage } from '../core/adapters.ts'
+import { estimateUsd, fetchPriceBook, isPriceBookFresh, loadPriceBook, savePriceBook, type PriceBook } from '../core/pricing-book.ts'
+import { fetchPlatformUsage } from './platform-usage.ts'
 import type { BalanceParse, PlanParse } from '../core/adapters.ts'
 import { deepseekModelSpend, deepseekPeriodAt } from '../core/pricing.ts'
 import { createLedgerDocument, deserializeLedger, foldUsage, ledgerDayKeys, localDateKey, pruneLedger, summarizeLedgerUsage, totalTokens } from '../core/ledger.ts'
 import type { LedgerUsageSummary } from '../core/ledger.ts'
 import { currentPlanProvider } from '../core/plan-match.ts'
-import type { BalanceView, CredentialKind, ExternalCredentialStatus, ExternalCredentialTarget, PlanView, ProviderSnapshotState, ProviderSnapshotView, UsageAlert, UsageHealth, UsageLedgerDocument, UsageOverviewView, UsageTokenTotals } from '../core/types.ts'
-import { emptyTotals } from '../core/types.ts'
+import type { BalanceView, CredentialKind, ExternalCredentialStatus, ExternalCredentialTarget, PlanView, ProviderSnapshotState, ProviderSnapshotView, UsageAlert, UsageCostEstimate, UsageDayDetail, UsageHealth, UsageLedgerDocument, UsageOverviewView, UsagePlatformView, UsageProviderSummary, UsageTokenTotals } from '../core/types.ts'
+import { addTotals, emptyTotals } from '../core/types.ts'
 import { alertKey, evaluateAlerts } from './alerts.ts'
 import { probeCpamc, probeVolcano } from './external-sources.ts'
 import { jsonEtag } from './http.ts'
@@ -71,6 +73,16 @@ export interface UsageServiceOptions {
   balanceAlertCny?: number
   /** Minutes between alert bubbles for the same episode key. Default 60. */
   alertCooldownMinutes?: number
+  /** Read official DeepSeek platform billing for the reconcile strip. */
+  platformUsageEnabled?: boolean
+  /** Estimate USD cost from the models.dev price book. */
+  costEstimateEnabled?: boolean
+  /** Test seam: pre-built price book (avoids the network). */
+  priceBook?: PriceBook
+  /** Test seam: replace the models.dev catalog fetch. */
+  priceBookFetcher?: () => Promise<PriceBook | undefined>
+  /** Test seam: replace the official platform fetch. */
+  platformFetcher?: (ctx: Context) => Promise<UsagePlatformView>
   /**
    * Filesystem-fact health cache TTL in ms. Default 2000; tests set 0 to make
    * corrupt-file/backfill-status changes visible immediately.
@@ -133,6 +145,8 @@ const ROUTE_CACHE_TTL_MS = 5_000
 const CREDENTIAL_STATUS_TTL_MS = 5_000
 /** Data-health TTL: keeps stat/readdir/backfill reads off every warm poll. */
 const HEALTH_CACHE_TTL_MS = 2_000
+const PLATFORM_TTL_MS = 120_000
+const PLATFORM_RETRY_MS = 60_000
 
 /** TTL for configEditor entry snapshots a document read depends on (baseURL). */
 const CONFIG_CACHE_TTL_MS = 5_000
@@ -577,6 +591,16 @@ export class UsageService {
   private probeAttemptAt: number | null = null
   /** Last successful probe instant, surfaced in `health.probes`. */
   private probeSuccessAt: number | null = null
+  /** Official DeepSeek platform facts (best-effort, network-backed). */
+  private platformView: UsagePlatformView | undefined
+  /** Signature of the last platform payload, so polls only bump on real change. */
+  private platformSignature: string | undefined
+  private platformFetchedAt = 0
+  private platformInFlight: Promise<void> | undefined
+  /** models.dev catalog used for USD reference estimates. */
+  private priceBook: PriceBook | undefined
+  private priceBookFetchedAt = 0
+  private priceBookInFlight: Promise<void> | undefined
 
   /**
    * @param ctx - host context.
@@ -606,6 +630,8 @@ export class UsageService {
         // loadPersisted and maybeBackfill both swallow their own failures.
       })
     this.rearmPoll(2_000)
+    void this.refreshPlatformTruth()
+    void this.refreshPriceBook()
   }
 
   /**
@@ -627,6 +653,11 @@ export class UsageService {
     this.healthCache = undefined
     this.alertEpisodes.clear()
     this.alertBubbleAt.clear()
+    this.platformView = undefined
+    this.platformSignature = undefined
+    this.platformInFlight = undefined
+    this.priceBook = undefined
+    this.priceBookInFlight = undefined
     return this.flushLedger()
   }
 
@@ -737,6 +768,126 @@ export class UsageService {
       return '无法连接火山方舟 OpenAPI，检查本机网络与代理设置。'
     }
     return '检查 VOLC_ACCESSKEY / VOLC_SECRETKEY 是否完整、是否开通 Coding Plan。'
+  }
+
+  dayDetail(date: string): UsageDayDetail {
+    const totals = emptyTotals()
+    const providers: UsageProviderSummary[] = []
+    const day = this.ledger.days[date]
+    if (day !== undefined) {
+      for (const [provider, models] of Object.entries(day)) {
+        const providerTotals = emptyTotals()
+        const modelRows: Array<{ model: string; totals: UsageTokenTotals }> = []
+        for (const [model, modelTotals] of Object.entries(models)) {
+          addTotals(providerTotals, modelTotals)
+          modelRows.push({ model, totals: modelTotals })
+        }
+        modelRows.sort((left, right) => totalTokens(right.totals) - totalTokens(left.totals))
+        providers.push({ provider, totals: providerTotals, models: modelRows })
+        addTotals(totals, providerTotals)
+      }
+      providers.sort((left, right) => totalTokens(right.totals) - totalTokens(left.totals))
+    }
+    return { date, totals, providers }
+  }
+
+  /**
+   * Refresh the official platform facts in the background. Network-backed and
+   * fully best-effort: failure keeps the previous view (or none) and never
+   * blocks a poll cycle.
+   */
+  private refreshPlatformTruth(): void {
+    if (this.disposed || this.options.platformUsageEnabled !== true || this.platformInFlight !== undefined) return
+    if (Date.now() - this.platformFetchedAt < PLATFORM_TTL_MS) return
+    const fetcher = this.options.platformFetcher ?? ((ctx: Context) => fetchPlatformUsage(ctx))
+    this.platformInFlight = Promise.resolve()
+      .then(() => fetcher(this.ctx))
+      .then((view) => {
+        if (this.disposed) return
+        this.platformFetchedAt = Date.now()
+        this.platformView = view
+        const signature = JSON.stringify({ ...view, updatedAt: 0 })
+        if (signature !== this.platformSignature) {
+          this.platformSignature = signature
+          this.bumpRevision()
+        }
+      })
+      .catch(() => {
+        // Best effort; the next poll retries after the TTL.
+      })
+      .finally(() => {
+        this.platformInFlight = undefined
+      })
+  }
+
+  /**
+   * Load the cached models.dev price book and refresh it when stale. The fetch
+   * is background-only so a slow catalog never delays a poll.
+   */
+  private refreshPriceBook(): void {
+    if (this.disposed || this.options.costEstimateEnabled !== true || this.priceBookInFlight !== undefined) return
+    const fetcher = this.options.priceBookFetcher ?? (() => fetchPriceBook())
+    this.priceBookInFlight = (async () => {
+      if (this.priceBook === undefined) {
+        if (this.options.priceBook !== undefined) {
+          this.priceBook = this.options.priceBook
+          this.priceBookFetchedAt = this.options.priceBook.fetchedAt
+        } else {
+          const loaded = await loadPriceBook(this.persistDir)
+          if (this.disposed) return
+          if (loaded !== undefined) {
+            this.priceBook = loaded
+            this.priceBookFetchedAt = loaded.fetchedAt
+            this.bumpRevision()
+          }
+        }
+      }
+      if (this.priceBook !== undefined && isPriceBookFresh(this.priceBook)) return
+      const fetched = await fetcher()
+      if (this.disposed || fetched === undefined) return
+      this.priceBook = fetched
+      this.priceBookFetchedAt = fetched.fetchedAt
+      this.bumpRevision()
+      void savePriceBook(this.persistDir, fetched)
+    })()
+      .catch(() => {
+        // Best effort; retry on a later poll.
+      })
+      .finally(() => {
+        this.priceBookInFlight = undefined
+      })
+  }
+
+  /**
+   * Attach the local-side compare facts to the official platform view: the
+   * DeepSeek-only month cost from our ledger, coverage of official active days,
+   * and the signed delta. Currencies stay CNY on both sides.
+   */
+  private enrichPlatformView(view: UsagePlatformView): UsagePlatformView {
+    const month = localDateKey(Date.now()).slice(0, 7)
+    let localMonthCost = 0
+    const coveredDays = new Set<string>()
+    for (const [date, dayProviders] of Object.entries(this.ledger.days)) {
+      if (!date.startsWith(month)) continue
+      for (const [provider, models] of Object.entries(dayProviders)) {
+        if (!isDeepSeekProviderRoute(provider)) continue
+        for (const totals of Object.values(models)) {
+          localMonthCost += totals.cost
+          if (totals.calls > 0 || totalTokens(totals) > 0) coveredDays.add(date)
+        }
+      }
+    }
+    const officialDays = (view.days ?? []).filter((day) => day.cost > 0)
+    const coverage = officialDays.length === 0
+      ? undefined
+      : officialDays.filter((day) => coveredDays.has(day.date)).length / officialDays.length
+    const enriched: UsagePlatformView = {
+      ...view,
+      localMonthCost: Math.round(localMonthCost * 100) / 100,
+    }
+    if (coverage !== undefined) enriched.coverage = Math.round(coverage * 1000) / 1000
+    if (view.monthCost !== undefined) enriched.delta = Math.round((view.monthCost - localMonthCost) * 100) / 100
+    return enriched
   }
 
   /**
@@ -879,11 +1030,17 @@ export class UsageService {
       alerts = []
     }
     const baseURL = this.current.provider !== undefined ? this.piAiProfile(this.current.provider)?.baseURL : undefined
+    const platform = this.platformView === undefined ? undefined : this.enrichPlatformView(this.platformView)
+    const costEstimate = this.options.costEstimateEnabled === true && this.priceBook !== undefined
+      ? estimateUsd(usage.range, this.priceBook)
+      : undefined
     return {
       updatedAt: Date.now(),
       providers,
       alerts,
       health,
+      ...(platform !== undefined ? { platform } : {}),
+      ...(costEstimate !== undefined ? { costEstimate } : {}),
       current: {
         ...this.current,
         ...(typeof baseURL === 'string' && baseURL.trim() !== '' ? { baseURL: baseURL.trim() } : {}),
@@ -1613,6 +1770,8 @@ export class UsageService {
         }
         if (droppedSnapshots) this.bumpRevision()
         await this.probeExternalSources()
+        void this.refreshPlatformTruth()
+        void this.refreshPriceBook()
         if (this.disposed) return
         await this.persistSnapshots()
         this.announceCurrent()

@@ -7,7 +7,8 @@
  * @module @linxin666/dsh-usage/host/usage-service
  */
 import type { Context } from '@deepseek-ai/cordis';
-import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotState, ProviderSnapshotView, UsageOverviewView, UsageTokenTotals } from '../core/types.ts';
+import { type PriceBook } from '../core/pricing-book.ts';
+import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotState, ProviderSnapshotView, UsageDayDetail, UsageOverviewView, UsagePlatformView, UsageTokenTotals } from '../core/types.ts';
 import { type LedgerExportDocument } from './export.ts';
 /** Source tag the plugin stamps onto pet announcements. */
 export declare const USAGE_ANNOUNCE_SOURCE = "dsh-usage-plus";
@@ -26,6 +27,16 @@ export interface UsageServiceOptions {
     balanceAlertCny?: number;
     /** Minutes between alert bubbles for the same episode key. Default 60. */
     alertCooldownMinutes?: number;
+    /** Read official DeepSeek platform billing for the reconcile strip. */
+    platformUsageEnabled?: boolean;
+    /** Estimate USD cost from the models.dev price book. */
+    costEstimateEnabled?: boolean;
+    /** Test seam: pre-built price book (avoids the network). */
+    priceBook?: PriceBook;
+    /** Test seam: replace the models.dev catalog fetch. */
+    priceBookFetcher?: () => Promise<PriceBook | undefined>;
+    /** Test seam: replace the official platform fetch. */
+    platformFetcher?: (ctx: Context) => Promise<UsagePlatformView>;
     /**
      * Filesystem-fact health cache TTL in ms. Default 2000; tests set 0 to make
      * corrupt-file/backfill-status changes visible immediately.
@@ -232,6 +243,16 @@ export declare class UsageService {
     private probeAttemptAt;
     /** Last successful probe instant, surfaced in `health.probes`. */
     private probeSuccessAt;
+    /** Official DeepSeek platform facts (best-effort, network-backed). */
+    private platformView;
+    /** Signature of the last platform payload, so polls only bump on real change. */
+    private platformSignature;
+    private platformFetchedAt;
+    private platformInFlight;
+    /** models.dev catalog used for USD reference estimates. */
+    private priceBook;
+    private priceBookFetchedAt;
+    private priceBookInFlight;
     /**
      * @param ctx - host context.
      * @param options - resolved plugin options.
@@ -262,6 +283,24 @@ export declare class UsageService {
     private cpamcTestHint;
     /** Actionable Volcano hint for one probe failure message. */
     private volcanoTestHint;
+    dayDetail(date: string): UsageDayDetail;
+    /**
+     * Refresh the official platform facts in the background. Network-backed and
+     * fully best-effort: failure keeps the previous view (or none) and never
+     * blocks a poll cycle.
+     */
+    private refreshPlatformTruth;
+    /**
+     * Load the cached models.dev price book and refresh it when stale. The fetch
+     * is background-only so a slow catalog never delays a poll.
+     */
+    private refreshPriceBook;
+    /**
+     * Attach the local-side compare facts to the official platform view: the
+     * DeepSeek-only month cost from our ledger, coverage of official active days,
+     * and the signed delta. Currencies stay CNY on both sides.
+     */
+    private enrichPlatformView;
     /**
      * Assemble the overview document the browser section renders.
      * @param days - trend window (one of `ALLOWED_RANGE_DAYS`); default 30.

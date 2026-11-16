@@ -10,7 +10,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { emptyTotals, type ProviderSnapshotState, type ProviderSnapshotView, type UsageLedgerDocument, type UsageOverviewView, type UsageTokenTotals } from '../src/core/types.ts'
+import { emptyTotals, type ProviderSnapshotState, type ProviderSnapshotView, type UsageLedgerDocument, type UsageOverviewView, type UsagePlatformView, type UsageTokenTotals } from '../src/core/types.ts'
 import { foldUsage, localDateKey, summarizeDays, summarizeDayTotals, summarizeProviderTotals } from '../src/core/ledger.ts'
 import { dedupeProviderAliasRoutes } from '../src/core/adapters.ts'
 import { jsonEtag } from '../src/host/http.ts'
@@ -962,6 +962,117 @@ describe('overview range windows', () => {
 // ---------------------------------------------------------------------------
 // v0.5.0 alerts/health wiring: the idle 304 cache must survive volatile health
 // ---------------------------------------------------------------------------
+
+describe('platform reconcile and USD estimate wiring', () => {
+  const summary = (providers: Array<{ provider: string; models: Array<{ model: string; totals: UsageTokenTotals }> }>) => ({
+    from: localDateKey(Date.now()),
+    to: localDateKey(Date.now()),
+    totals: emptyTotals(),
+    providers: providers.map((entry) => ({ ...entry, totals: entry.models.reduce((acc, model) => {
+      for (const key of Object.keys(acc) as Array<keyof UsageTokenTotals>) acc[key] += model.totals[key]
+      return acc
+    }, emptyTotals()) })),
+  })
+
+  it('attaches local month cost, coverage and delta to the official platform facts', async () => {
+    const today = localDateKey(Date.now())
+    const month = today.slice(0, 7)
+    const yesterday = localDateKey(new Date(`${today}T12:00:00`).getTime() - 86_400_000)
+    const ledger: UsageLedgerDocument = {
+      version: 1,
+      days: {
+        [today]: { 'deepseek-official': { 'deepseek-chat': { ...emptyTotals(), inputTokens: 10, calls: 1, cost: 0.4 } } },
+        [yesterday]: { 'deepseek-official': { 'deepseek-chat': { ...emptyTotals(), inputTokens: 10, calls: 1, cost: 0.1 } } },
+      },
+    }
+    const platform: UsagePlatformView = {
+      status: 'ready',
+      currency: 'CNY',
+      monthCost: 1.0,
+      cumulativeCost: 12.5,
+      updatedAt: 1,
+      days: [{ date: today, cost: 0.4 }, { date: yesterday, cost: 0.6 }],
+    }
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-usage-platform-'))
+    const service = new UsageService({
+      get: () => undefined,
+      on: () => () => {},
+    } as unknown as Context, {
+      ...PERF_OPTIONS,
+      platformUsageEnabled: true,
+      platformFetcher: async () => platform,
+    }, dir)
+    try {
+      await (service as unknown as { loadPersisted(): Promise<void> }).loadPersisted()
+      ;(service as unknown as { ledger: UsageLedgerDocument }).ledger = ledger
+      await service.refresh()
+      const document = await service.overview()
+      expect(document.platform?.status).toBe('ready')
+      // Only the ledger's DeepSeek routes count toward the local month total.
+      expect(document.platform?.localMonthCost).toBeCloseTo(0.5)
+      expect(document.platform?.delta).toBeCloseTo(0.5)
+      // Yesterday is covered, today is covered as well: 2/2 official days.
+      expect(document.platform?.coverage).toBe(1)
+      expect(month).toHaveLength(7)
+    } finally {
+      await service.stop()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('estimates USD from a price book over the selected window and marks unpriced calls', async () => {
+    const book = {
+      rows: {
+        'provider-a/model-1': { miss: 0.1, hit: 0.02, write: 0.1, out: 0.2 },
+        'provider-b/model-1': { miss: 0.1, hit: 0.02, write: 0.1, out: 0.2 },
+      },
+      byShortName: {},
+      byCanonical: {},
+      fetchedAt: Date.now(),
+      source: 'models.dev' as const,
+    }
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-usage-usd-'))
+    const service = new UsageService({
+      get: () => undefined,
+      on: () => () => {},
+    } as unknown as Context, {
+      ...PERF_OPTIONS,
+      costEstimateEnabled: true,
+      priceBookFetcher: async () => book,
+    }, dir)
+    try {
+      await service.refresh()
+      ;(service as unknown as { ledger: UsageLedgerDocument }).ledger = buildPerfLedger(30)
+      const document = await service.overview()
+      expect(document.costEstimate?.currency).toBe('USD')
+      expect(document.costEstimate?.source).toBe('models.dev')
+      expect(document.costEstimate?.pricedModels).toBeGreaterThan(0)
+    } finally {
+      await service.stop()
+      // The catalog cache write is fire-and-forget; let it land before removing.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      await rm(dir, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('omits platform and costEstimate when the features are disabled', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-usage-off-'))
+    const service = new UsageService({ get: () => undefined, on: () => () => {} } as unknown as Context, {
+      ...PERF_OPTIONS,
+      platformUsageEnabled: false,
+      costEstimateEnabled: false,
+      platformFetcher: async () => summary([]) as unknown as UsagePlatformView,
+    }, dir)
+    try {
+      const document = await service.overview()
+      expect(document.platform).toBeUndefined()
+      expect(document.costEstimate).toBeUndefined()
+    } finally {
+      await service.stop()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
 
 describe('overview alerts and health wiring', () => {
   it('carries alerts/health on every document and keeps the idle ETag stable across probe instants', async () => {

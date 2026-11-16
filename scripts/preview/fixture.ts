@@ -19,9 +19,11 @@
 import type {
   ProviderSnapshotView,
   UsageAlert,
+  UsageCostEstimate,
   UsageDaySummary,
   UsageHealth,
   UsageOverviewView,
+  UsagePlatformView,
   UsageProviderSummary,
   UsageTokenTotals,
   UsageWindowSummary,
@@ -334,6 +336,10 @@ export interface FixtureOptions {
    * omits `overview.health`).
    */
   health?: 'ready' | 'warning' | 'missing'
+  /** Official platform reconcile fixture. Defaults to `ready` for `rich`. */
+  platform?: 'ready' | 'error' | 'unavailable' | 'none'
+  /** USD reference estimate fixture. Defaults to `priced` for `rich`. */
+  costEstimate?: 'priced' | 'unpriced' | 'none'
 }
 
 /** Build the whole overview the section and the strip both consume. */
@@ -455,6 +461,42 @@ export function buildOverview(options: FixtureOptions = {}): UsageOverviewView {
       },
     }
 
+  const platformMode = options.platform ?? (variant === 'rich' ? 'ready' : 'none')
+  const platform: UsagePlatformView | undefined = platformMode === 'none' || platformMode === 'unavailable'
+    ? (platformMode === 'unavailable' ? { status: 'unavailable', currency: 'CNY', updatedAt: wallNow } : undefined)
+    : platformMode === 'error'
+      ? {
+        status: 'error',
+        currency: 'CNY',
+        updatedAt: wallNow,
+        error: 'platform API returned 401 (re-login in DeepSeek web)',
+      }
+      : {
+        status: 'ready',
+        currency: 'CNY',
+        monthCost: 128.42,
+        cumulativeCost: 1_842.9,
+        localMonthCost: 119.87,
+        coverage: 0.86,
+        delta: 8.55,
+        days: dateKeys.slice(-30).map((date, index) => ({ date, cost: (index + 1) * 0.42 })),
+        updatedAt: wallNow - 60_000,
+      }
+
+  const estimateMode = options.costEstimate ?? (variant === 'rich' ? 'priced' : 'none')
+  const costEstimate: UsageCostEstimate | undefined = estimateMode === 'none'
+    ? undefined
+    : {
+      currency: 'USD',
+      source: 'models.dev',
+      priceBookUpdatedAt: wallNow - 3_600_000,
+      totalCalls: estimateMode === 'priced' ? 6_270 : 6_270,
+      totalModels: 15,
+      ...(estimateMode === 'priced'
+        ? { amount: 0.42, pricedCalls: 6_234, pricedModels: 12 }
+        : { pricedCalls: 0, pricedModels: 0 }),
+    }
+
   return {
     // Wall-clock on purpose: the header freshness dot is relative to render time.
     updatedAt: Date.now() - updatedAgoMs,
@@ -467,6 +509,8 @@ export function buildOverview(options: FixtureOptions = {}): UsageOverviewView {
       : { cpamc: true, volcanoAk: false, volcanoSk: false },
     ...(alerts.length > 0 ? { alerts } : {}),
     ...(health === undefined ? {} : { health }),
+    ...(platform === undefined ? {} : { platform }),
+    ...(costEstimate === undefined ? {} : { costEstimate }),
     usage: {
       today: { date: todayKey, totals: todayTotals, providers: todayRows },
       days: dayRows,

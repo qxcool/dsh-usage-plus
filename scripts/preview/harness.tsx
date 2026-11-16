@@ -16,6 +16,9 @@
  *   variant=rich|sparse       fixture shape, default rich
  *   alerts=0|1                threshold-alert fixture (default: on for rich)
  *   health=ready|warning|missing  data-health fixture (default ready)
+ *   platform=ready|error|unavailable|none  platform reconcile fixture
+ *   usd=priced|unpriced|none  USD estimate fixture
+ *   day=auto                  click the busiest heatmap cell after mount
  *   updated=fresh|stale       document age for the header freshness dot
  *                             (fresh = 8 s, stale = 10 min), default fresh
  *   open=1                    strip: open the quota popover on load
@@ -26,7 +29,7 @@ import { UsageSectionCard } from '../../src/client/UsageSectionCard.tsx'
 import { PlanUsageStrip } from '../../src/client/PlanUsageStrip.tsx'
 import { buildOverview } from './fixture.ts'
 import { DEFAULT_USAGE_RANGE_DAYS, isUsageRangeDays, type UsageRangeDays } from '../../src/client/usage-api.ts'
-import { addTotals, emptyTotals, type UsageOverviewView, type UsageProviderSummary, type UsageTokenTotals } from '../../src/core/types.ts'
+import { addTotals, emptyTotals, type UsageDayDetail, type UsageOverviewView, type UsageProviderSummary, type UsageTokenTotals } from '../../src/core/types.ts'
 import './theme.css'
 
 /**
@@ -55,6 +58,11 @@ const alertsParam = params.get('alerts')
 const alerts = alertsParam === '0' ? false : alertsParam === '1' ? true : undefined
 const healthParam = params.get('health')
 const health = healthParam === 'warning' || healthParam === 'missing' ? healthParam : 'ready'
+const platformParam = params.get('platform')
+const platform = platformParam === 'error' || platformParam === 'unavailable' || platformParam === 'none' ? platformParam : undefined
+const usdParam = params.get('usd')
+const costEstimate = usdParam === 'unpriced' || usdParam === 'none' ? usdParam : undefined
+const autoSelectDay = params.get('day') === 'auto'
 /** `updatedAt` is wall-clock (freshness dot); everything else hangs off FIXED_NOW. */
 const updatedAgoMs = params.get('updated') === 'stale' ? 10 * 60_000 : 8_000
 const openOnLoad = params.get('open') === '1'
@@ -62,16 +70,24 @@ const openOnLoad = params.get('open') === '1'
 document.documentElement.lang = lang
 document.documentElement.dataset.theme = theme
 
+/** Set after the fixture builds; lets the fetch stub answer heatmap day requests. */
+let fixtureRef: UsageOverviewView | null = null
+
 /**
  * The strip beacons its diagnostic state to a DSH host route that does not
  * exist under Vite, which would log a 404 on every capture. Answer those
- * beacons locally so the console only shows real problems.
+ * beacons locally (and synthesize day drill-downs) so the console only shows
+ * real problems.
  */
 const realFetch = window.fetch.bind(window)
 window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
   if (url.includes('/api/dsh-usage-plus/')) {
-    return Promise.resolve(new Response('{"ok":true}', {
+    const parsed = new URL(url, window.location.origin)
+    const body = parsed.pathname.endsWith('/day') && fixtureRef !== null
+      ? JSON.stringify(dayDetailFor(fixtureRef, parsed.searchParams.get('date') ?? ''))
+      : '{"ok":true}'
+    return Promise.resolve(new Response(body, {
       status: 200,
       headers: { 'content-type': 'application/json' },
     }))
@@ -133,6 +149,24 @@ function windowFor(view: UsageOverviewView, days: UsageRangeDays, retain = retai
 }
 
 /**
+ * Synthetic per-day drill-down for the heatmap: the fixture's provider/model
+ * split scaled to the selected day's totals (the same harness-only trick as
+ * `windowFor`).
+ */
+function dayDetailFor(view: UsageOverviewView, date: string): UsageDayDetail {
+  const row = view.usage.days.find((day) => day.date === date)
+  const totals = row?.totals ?? emptyTotals()
+  const base = view.usage.range
+  const baseTotal = base === undefined ? 0 : totalOf(base.totals)
+  const factor = baseTotal > 0 ? totalOf(totals) / baseTotal : 0
+  return {
+    date,
+    totals,
+    providers: (base?.providers ?? []).map((provider) => scaleProvider(provider, factor)),
+  }
+}
+
+/**
  * Fake `EngineStoreInstance` backed by one mutable snapshot: `useSyncExternalStore`
  * gets a stable subscribe/getSnapshot pair, and `setRangeDays` (wired into the
  * face below) re-derives the window so the picker is interactive in the harness.
@@ -181,7 +215,8 @@ function createFakeSettings() {
   }
 }
 
-const fixture = buildOverview({ now: FIXED_NOW, variant, updatedAgoMs, alerts, health })
+const fixture = buildOverview({ now: FIXED_NOW, variant, updatedAgoMs, alerts, health, platform, costEstimate })
+fixtureRef = fixture
 const store = createFakeStore(windowFor(fixture, initialRange))
 const settings = createFakeSettings()
 const face = {
@@ -206,13 +241,45 @@ function selectTab(name: string): void {
 function SectionPreview() {
   useEffect(() => {
     selectTab(tab)
-    document.documentElement.dataset.previewReady = '1'
+    if (!autoSelectDay) {
+      document.documentElement.dataset.previewReady = '1'
+      return
+    }
+    // Click the busiest retained cell once the heatmap paints, then let the
+    // drill-down fetch settle before the screenshot is taken.
+    window.setTimeout(() => {
+      const cells = [...document.querySelectorAll<HTMLButtonElement>('[data-dsh-part="heatmap-cell"]:not([data-future])')]
+      const busiest = cells.reduce<HTMLButtonElement | null>((best, cell) =>
+        best === null || Number(cell.dataset.level) > Number(best.dataset.level) ? cell : best, null)
+      busiest?.click()
+      window.setTimeout(() => {
+        document.documentElement.dataset.previewReady = '1'
+      }, 400)
+    }, 150)
   }, [])
   return (
     <div className="preview-frame" data-shot="section" style={{ width: `${width}px` }}>
       <UsageSectionCard {...face} view="page" />
     </div>
   )
+}
+
+/** Stub for the official session projections the composer popover reads. */
+function sessionProjections() {
+  const tokenUsage = {
+    uncachedInputTokens: 1_240_000,
+    outputTokens: 860_000,
+    cacheReadTokens: 37_600_000,
+    cacheWriteTokens: 230_000,
+  }
+  const contextPressure = { pressureTokens: 92_000, projectedTokens: 96_500, contextWindow: 128_000 }
+  return {
+    useProjection: (key: string): unknown => {
+      if (key === 'tokenUsage') return tokenUsage
+      if (key === 'contextPressure') return contextPressure
+      return undefined
+    },
+  }
 }
 
 function StripPreview() {
@@ -233,7 +300,7 @@ function StripPreview() {
       <div className="dock-row">
         <span className="dock-stat">⟳ 14 轮 384 步 · 97 tok/s</span>
         <span className="dock-stat">▤ 119M tok · 缓存命中 98%</span>
-        <PlanUsageStrip store={store} />
+        <PlanUsageStrip store={store} {...sessionProjections()} />
         <span className="dock-stat">◔ 52%</span>
       </div>
     </div>

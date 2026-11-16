@@ -9,6 +9,22 @@ import { currentPlanProvider } from '../core/plan-match.ts';
 export declare function reportDiag(kind: string, key: string): void;
 /** Keyed projection hook from session-scope standard kit (`ui-session`). */
 export type UseProjection = (key: string) => unknown;
+/** Official `tokenUsage` projection fields we read (durable session totals). */
+export interface SessionTokenUsage {
+    uncachedInputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+}
+/** Official `contextPressure` projection fields we read. */
+export interface SessionContextPressure {
+    /** Last provider prompt size (exact sample). */
+    pressureTokens?: number;
+    /** Pressure plus signed surface movement since the sample. */
+    projectedTokens?: number;
+    /** Route capacity, when the newest request carried one. */
+    contextWindow?: number;
+}
 export interface PlanUsageStripProps {
     store: UsageStoreInstance;
     /**

@@ -19,4 +19,6 @@ export declare function isUsageRangeDays(value: unknown): value is UsageRangeDay
 export declare function overviewRequestPath(days: UsageRangeDays): string;
 /** The export download path for one window and format. */
 export declare function exportRequestPath(format: 'csv' | 'json', days: UsageRangeDays): string;
+/** The per-day drill-down path (heatmap navigation). */
+export declare function dayRequestPath(date: string): string;
 //# sourceMappingURL=usage-api.d.ts.map

@@ -11,17 +11,20 @@
  * @module dsh-usage-plus/client/UsageSectionCard
  */
 
-import { memo, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import type { UsageStoreInstance } from './usage-store.ts'
 import { formatPlanReset, friendlyProbeError, isCpamcLoopbackUrl, t } from './locales.ts'
 import { PlanUsageStrip } from './PlanUsageStrip.tsx'
 import styles from './usage.module.css'
 import { isDeepSeekProviderRoute } from '../core/adapters.ts'
-import { buildHeatmapGrid } from '../core/heatmap.ts'
+import { buildHeatmapGrid, HEATMAP_WEEKS, type HeatmapCell } from '../core/heatmap.ts'
 import { currentPlanProvider, orderedPlanWindows, planSourceLabelKey, planTabProviders } from '../core/plan-match.ts'
 import { deepseekPeriodAt } from '../core/pricing.ts'
-import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotView, UsageAlert, UsageDaySummary, UsageHealth, UsageOverviewView, UsageProviderSummary, UsageTokenTotals } from '../core/types.ts'
-import { exportRequestPath, USAGE_RANGE_DAYS, type UsageRangeDays } from './usage-api.ts'
+import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotView, UsageAlert, UsageCostEstimate, UsageDayDetail, UsageDaySummary, UsageHealth, UsageOverviewView, UsagePlatformView, UsageProviderSummary, UsageTokenTotals } from '../core/types.ts'
+import { dayRequestPath, exportRequestPath, USAGE_RANGE_DAYS, type UsageRangeDays } from './usage-api.ts'
+import { cacheHitText, formatCost, formatCny, formatExact, formatTokens, formatUsd } from './format.ts'
+
+export { formatExact, formatTokens } from './format.ts'
 
 /** The settings fields this section edits (staged Save via configForms.mutate). */
 export interface UsageSettings {
@@ -43,6 +46,10 @@ export interface UsageSettings {
   cpamcManagementKeyEnv?: string
   cpamcAllowedHosts?: string
   volcanoEnabled?: boolean
+  /** v0.6.0: read official DeepSeek platform billing for the reconcile strip. */
+  platformUsageEnabled?: boolean
+  /** v0.6.0: estimate USD from the models.dev price book. */
+  costEstimateEnabled?: boolean
 }
 
 /**
@@ -116,18 +123,8 @@ const FRESH_WINDOW_MS = 30_000
 /** How many model sub-bars render under one provider bar. */
 const CHART_MODEL_CAP = 3
 
-/** Compact token count: 12345 -> 12.3k, 1234567 -> 1.23M. */
-export function formatTokens(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return '0'
-  if (value < 1000) return String(value)
-  if (value < 1_000_000) return trim(value / 1000) + 'k'
-  if (value < 1_000_000_000) return trim(value / 1_000_000) + 'M'
-  return trim(value / 1_000_000_000) + 'B'
-}
-
-function trim(value: number): string {
-  return value >= 100 ? String(Math.round(value)) : value.toFixed(value >= 10 ? 1 : 2).replace(/\.?0+$/, '')
-}
+/** One heatmap value metric; the intensity levels stay quartile-based. */
+type HeatmapMetric = 'tokens' | 'calls' | 'cost'
 
 function formatTime(ms: number): string {
   try {
@@ -143,11 +140,6 @@ function formatClock(ms: number): string {
   } catch {
     return ''
   }
-}
-
-/** Formatted CNY spend estimate (the only priced currency today). */
-function formatCost(cost: number): string {
-  return '¥' + cost.toFixed(2)
 }
 
 /** One percent reading, same format everywhere in the panel. */
@@ -427,8 +419,8 @@ function Stat(props: { label: string; value: string; hint?: string }): ReactNode
  * One ring gauge. The arc is drawn on a fixed viewBox so every ring in the
  * panel (hero cache hit, quota windows) shares one geometry.
  */
-function Ring(props: { percent: number | null; size: number; stroke: number; tone: string }): ReactNode {
-  const { percent, size, stroke, tone } = props
+function Ring(props: { percent: number | null; size: number; stroke: number; tone: string; valueText?: string }): ReactNode {
+  const { percent, size, stroke, tone, valueText } = props
   const radius = size / 2 - stroke / 2 - 1
   const circumference = 2 * Math.PI * radius
   const clamped = percent === null ? 0 : Math.min(100, Math.max(0, percent))
@@ -448,7 +440,7 @@ function Ring(props: { percent: number | null; size: number; stroke: number; ton
           />
         )}
       </svg>
-      <span className={`${styles.ringValue} ${styles.mono}`}>{percent === null ? '—' : `${Math.round(clamped)}%`}</span>
+      <span className={`${styles.ringValue} ${styles.mono}`}>{valueText ?? (percent === null ? '—' : `${Math.round(clamped)}%`)}</span>
     </span>
   )
 }
@@ -519,7 +511,7 @@ function HeroBand(props: {
         />
       </div>
       <div className={styles.heroRing}>
-        <Ring percent={props.hitRate} size={84} stroke={7} tone={hitTone} />
+        <Ring percent={props.hitRate} size={84} stroke={7} tone={hitTone} valueText={cacheHitText(props.cacheRead, props.billed)} />
         <span className={styles.heroRingLabel}>{t('usage.tokens.cacheHit')}</span>
         <span className={styles.heroRingHint}>
           {t('usage.tokens.cacheRatio', {
@@ -560,10 +552,189 @@ function monthRuns(labels: string[]): MonthRun[] {
     .filter((run) => run.span > 1)
 }
 
-const HeatmapCard = memo(function HeatmapCard(props: { days: UsageDaySummary[] }): ReactNode {
-  const { days } = props
+/** Quartile intensity, same thresholds as the core token levels (0.25/0.5/0.75). */
+function heatmapLevel(value: number, max: number): 0 | 1 | 2 | 3 | 4 {
+  if (value <= 0 || max <= 0) return 0
+  const ratio = value / max
+  if (ratio < 0.25) return 1
+  if (ratio < 0.5) return 2
+  if (ratio < 0.75) return 3
+  return 4
+}
+
+function heatmapMetricValue(cell: HeatmapCell, metric: HeatmapMetric): number {
+  if (metric === 'calls') return cell.totals.calls
+  if (metric === 'cost') return cell.totals.cost
+  return cell.tokens
+}
+
+/** What the compact day-panel summary leads with for the active metric. */
+function heatmapMetricText(metric: HeatmapMetric, totals: UsageTokenTotals): string {
+  if (metric === 'calls') return formatExact(totals.calls)
+  if (metric === 'cost') return formatCny(totals.cost, totals.calls)
+  return formatTokens(totalOf(totals))
+}
+
+/** Compact Tokens / Calls / Cost toggle that re-levels the heatmap. */
+function HeatmapMetricToggle(props: { metric: HeatmapMetric; onChange: (metric: HeatmapMetric) => void }): ReactNode {
+  return (
+    <div className={styles.rangeSeg} role="group" aria-label={t('usage.heatmap.metric')}>
+      {(['tokens', 'calls', 'cost'] as const).map((metric) => (
+        <button
+          key={metric}
+          type="button"
+          aria-pressed={props.metric === metric}
+          className={props.metric === metric ? `${styles.rangeBtn} ${styles.rangeBtnActive}` : styles.rangeBtn}
+          onClick={() => props.onChange(metric)}
+        >
+          {t(`usage.heatmap.metric.${metric}`)}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** The drill-down under the heatmap for one selected day. */
+function DayDetailPanel(props: {
+  date: string
+  state: 'loading' | 'ready' | 'error'
+  detail?: UsageDayDetail
+  error?: string
+  metric: HeatmapMetric
+  providers: ProviderSnapshotView[]
+  onClose: () => void
+  onRetry: () => void
+}): ReactNode {
+  const { date, state, detail, metric, providers, onClose, onRetry } = props
+  const nameOf = new Map(providers.map((provider) => [provider.provider, provider.displayName]))
+  const empty = detail === undefined || (detail.totals.calls === 0 && totalOf(detail.totals) === 0)
+  return (
+    <div
+      className={styles.dayPanel}
+      data-dsh-part="day-detail"
+      data-day-date={date}
+      data-day-state={state === 'ready' && empty ? 'empty' : state}
+      role="region"
+      aria-label={t('usage.heatmap.dayDetail', { date })}
+      aria-live="polite"
+    >
+      <div className={styles.dayHead}>
+        <span className={`${styles.dayTitle} ${styles.mono}`}>{date}</span>
+        <button type="button" className={styles.linkBtn} onClick={onClose}>{t('usage.heatmap.close')}</button>
+      </div>
+      {state === 'loading' && <span className={styles.muted}>{t('usage.heatmap.dayLoading')}</span>}
+      {state === 'error' && (
+        <div className={styles.dayError}>
+          <span>{t('usage.heatmap.dayError')}</span>
+          <button type="button" className={styles.linkBtn} onClick={onRetry}>{t('usage.retry')}</button>
+        </div>
+      )}
+      {state === 'ready' && detail !== undefined && (
+        empty
+          ? <span className={styles.muted}>{t('usage.heatmap.dayEmpty')}</span>
+          : (
+            <>
+              <div className={styles.daySummary}>
+                <span className={`${styles.dayMetricValue} ${styles.mono}`} data-dsh-part="day-metric">{heatmapMetricText(metric, detail.totals)}</span>
+                <span className={styles.dayMetricUnit}>{t(`usage.heatmap.metric.${metric}`)}</span>
+                <span className={styles.daySecondary}>
+                  {t('usage.heatmap.dayTotals', {
+                    tokens: formatTokens(totalOf(detail.totals)),
+                    calls: formatExact(detail.totals.calls),
+                    cost: formatCny(detail.totals.cost, detail.totals.calls),
+                  })}
+                </span>
+              </div>
+              <div className={styles.dayTable} data-dsh-part="day-providers">
+                <div className={`${styles.dayTableHead} ${styles.dayGrid}`} aria-hidden="true">
+                  <span>{t('usage.heatmap.colProvider')}</span>
+                  <span>{t('usage.tokens.total')}</span>
+                  <span>{t('usage.summary.calls')}</span>
+                  <span>{t('usage.summary.cost')}</span>
+                </div>
+                {detail.providers.map((provider) => (
+                  <div key={provider.provider} className={styles.dayProviderGroup} data-day-provider={provider.provider}>
+                    <div className={`${styles.dayRow} ${styles.dayGrid}`}>
+                      <span className={styles.dayName}>{nameOf.get(provider.provider) ?? provider.provider}</span>
+                      <span className={styles.mono}>{formatTokens(totalOf(provider.totals))}</span>
+                      <span className={styles.mono}>{formatExact(provider.totals.calls)}</span>
+                      <span className={styles.mono}>{formatCny(provider.totals.cost, provider.totals.calls)}</span>
+                    </div>
+                    {provider.models.slice(0, CHART_MODEL_CAP).map((model) => (
+                      <div key={model.model} className={`${styles.dayModelRow} ${styles.dayGrid}`}>
+                        <span className={styles.dayModelName}>{model.model}</span>
+                        <span className={styles.mono}>{formatTokens(totalOf(model.totals))}</span>
+                        <span className={styles.mono}>{formatExact(model.totals.calls)}</span>
+                        <span className={styles.mono}>{formatCny(model.totals.cost, model.totals.calls)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </>
+          )
+      )}
+    </div>
+  )
+}
+
+const HeatmapCard = memo(function HeatmapCard(props: { days: UsageDaySummary[]; providers: ProviderSnapshotView[] }): ReactNode {
+  const { days, providers } = props
   const grid = useMemo(() => buildHeatmapGrid(days), [days])
   const months = useMemo(() => monthRuns(grid.monthLabels), [grid])
+  const weeks = useMemo(
+    () => Array.from({ length: HEATMAP_WEEKS }, (_, week) => grid.cells.slice(week * 7, week * 7 + 7)),
+    [grid],
+  )
+  const [metric, setMetric] = useState<HeatmapMetric>('tokens')
+  const [selectedDate, setSelectedDate] = useState<string | null>(null)
+  const [retryToken, setRetryToken] = useState(0)
+  const [dayState, setDayState] = useState<{
+    status: 'idle' | 'loading' | 'ready' | 'error'
+    date?: string
+    detail?: UsageDayDetail
+    error?: string
+  }>({ status: 'idle' })
+  const gridRef = useRef<HTMLDivElement | null>(null)
+  const todayIndex = useMemo(() => grid.cells.findIndex((cell) => cell.isToday), [grid])
+  const lastEnabled = todayIndex >= 0 ? todayIndex : grid.cells.length - 1
+  const [focusIndex, setFocusIndex] = useState(() => (todayIndex >= 0 ? todayIndex : grid.cells.length - 1))
+  useEffect(() => {
+    setFocusIndex((current) => Math.min(current, lastEnabled))
+  }, [lastEnabled])
+
+  // One day drill-down read per selection; a stale response (or an unmount) is
+  // dropped so a fast second click never paints the previous day over it.
+  useEffect(() => {
+    if (selectedDate === null) {
+      setDayState({ status: 'idle' })
+      return undefined
+    }
+    const controller = new AbortController()
+    let live = true
+    setDayState({ status: 'loading', date: selectedDate })
+    fetch(dayRequestPath(selectedDate), { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`day ${response.status}`)
+        return (await response.json()) as UsageDayDetail
+      })
+      .then((detail) => {
+        if (live) setDayState({ status: 'ready', date: selectedDate, detail })
+      }, (error: unknown) => {
+        if (live) setDayState({ status: 'error', date: selectedDate, error: error instanceof Error ? error.message : String(error) })
+      })
+    return () => {
+      live = false
+      controller.abort()
+    }
+  }, [selectedDate, retryToken])
+
+  const levels = useMemo(() => {
+    const values = grid.cells.map((cell) => heatmapMetricValue(cell, metric))
+    const max = Math.max(0, ...values)
+    return { max, levels: values.map((value) => heatmapLevel(value, max)), values }
+  }, [grid, metric])
+
   const week = useMemo(() => {
     const recent = days.slice(-7)
     return {
@@ -581,13 +752,55 @@ const HeatmapCard = memo(function HeatmapCard(props: { days: UsageDaySummary[] }
     return { activeDays, busiest }
   }, [grid])
   const hasData = facts.activeDays > 0
+  const emptyMetric = metric === 'cost' && levels.max <= 0
+
+  const focusCell = (date: string): void => {
+    gridRef.current?.querySelector<HTMLButtonElement>(`button[data-date="${date}"]`)?.focus()
+  }
+
+  // Roving-tabindex keyboard grid: arrows move one day/week, Home/End jump to
+  // the retained range's ends, Escape clears the drill-down. Column-major DOM
+  // order means ±1 is a day and ±7 is a week.
+  const onGridKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+    const target = event.target
+    if (!(target instanceof HTMLButtonElement)) return
+    const index = grid.cells.findIndex((cell) => cell.date === target.dataset.date)
+    if (index < 0) return
+    let next = index
+    switch (event.key) {
+      case 'ArrowUp': next = index - 1; break
+      case 'ArrowDown': next = index + 1; break
+      case 'ArrowLeft': next = index - 7; break
+      case 'ArrowRight': next = index + 7; break
+      case 'Home': next = 0; break
+      case 'End': next = lastEnabled; break
+      case 'Escape':
+        if (selectedDate !== null) {
+          event.preventDefault()
+          setSelectedDate(null)
+        }
+        return
+      default:
+        return
+    }
+    event.preventDefault()
+    const clamped = Math.max(0, Math.min(lastEnabled, next))
+    const cell = grid.cells[clamped]
+    if (cell === undefined) return
+    setFocusIndex(clamped)
+    focusCell(cell.date)
+  }
+
   return (
     <section className={styles.card} data-dsh-part="heatmap-card">
-      <div className={styles.cardHead}>
+      <div className={`${styles.cardHead} ${styles.heatmapHead}`}>
         <div className={styles.cardHeadGroup}>
           <span className={styles.cardTitle}>{t('usage.heatmap')}</span>
         </div>
-        <span className={styles.cardMeta}>{t('usage.heatmap.weeks')}</span>
+        <div className={styles.heatmapTools}>
+          <span className={styles.cardMeta}>{t('usage.heatmap.weeks')}</span>
+          <HeatmapMetricToggle metric={metric} onChange={setMetric} />
+        </div>
       </div>
       <div className={styles.heatmapLayout}>
         <div className={styles.heatmapLeft}>
@@ -616,35 +829,70 @@ const HeatmapCard = memo(function HeatmapCard(props: { days: UsageDaySummary[] }
                   </span>
                 ))}
               </div>
-              <div className={styles.heatmapGrid} data-dsh-part="heatmap-grid">
-                {grid.cells.map((cell) => {
-                  const cost = cell.totals.cost > 0 ? ` · ${formatCost(cell.totals.cost)}` : ''
-                  return (
-                    <span
-                      key={cell.date}
-                      className={cell.isToday ? `${styles.heatmapCell} ${styles.heatmapToday}` : styles.heatmapCell}
-                      data-level={cell.level}
-                      title={t('usage.heatmap.day', {
-                        date: cell.date,
-                        tokens: formatTokens(cell.tokens),
-                        calls: t('usage.calls', { n: cell.totals.calls }),
-                        cost,
-                      })}
-                    />
-                  )
-                })}
+              <div
+                ref={gridRef}
+                className={styles.heatmapGrid}
+                data-dsh-part="heatmap-grid"
+                role="grid"
+                aria-label={t('usage.heatmap.gridLabel')}
+                onKeyDown={onGridKeyDown}
+              >
+                {weeks.map((cells, weekIndex) => (
+                  <div key={weekIndex} className={styles.heatmapRow} role="row">
+                    {cells.map((cell, dayIndex) => {
+                      const index = weekIndex * 7 + dayIndex
+                      const future = index > todayIndex
+                      const level = levels.levels[index] ?? 0
+                      const label = future
+                        ? t('usage.heatmap.future', { date: cell.date })
+                        : t('usage.heatmap.cellAria', {
+                          date: cell.date,
+                          tokens: formatTokens(cell.tokens),
+                          calls: formatExact(cell.totals.calls),
+                          cost: cell.totals.cost > 0 ? formatCost(cell.totals.cost) : '—',
+                        })
+                      return (
+                        <button
+                          key={cell.date}
+                          type="button"
+                          role="gridcell"
+                          className={[
+                            styles.heatmapCell,
+                            cell.isToday ? styles.heatmapToday : '',
+                            selectedDate === cell.date ? styles.heatmapSelected : '',
+                          ].filter(Boolean).join(' ')}
+                          data-dsh-part="heatmap-cell"
+                          data-date={cell.date}
+                          data-level={level}
+                          data-future={future ? 'yes' : undefined}
+                          disabled={future}
+                          aria-label={label}
+                          aria-selected={selectedDate === cell.date}
+                          title={label}
+                          tabIndex={future || index !== focusIndex ? -1 : 0}
+                          onFocus={() => setFocusIndex(index)}
+                          onClick={() => setSelectedDate((current) => (current === cell.date ? null : cell.date))}
+                        />
+                      )
+                    })}
+                  </div>
+                ))}
               </div>
             </div>
           </div>
           <div className={styles.heatmapLegend}>
             {hasData ? (
-              <>
-                <span>{t('usage.heatmap.less')}</span>
-                {[0, 1, 2, 3, 4].map((level) => (
-                  <span key={level} className={styles.heatmapCell} data-level={level} aria-hidden="true" />
-                ))}
-                <span>{t('usage.heatmap.more')}</span>
-              </>
+              emptyMetric ? (
+                <span className={styles.muted}>{t('usage.heatmap.costUnpriced')}</span>
+              ) : (
+                <>
+                  <span>{t('usage.heatmap.less')}</span>
+                  {[0, 1, 2, 3, 4].map((level) => (
+                    <span key={level} className={styles.heatmapCell} data-level={level} aria-hidden="true" />
+                  ))}
+                  <span>{t('usage.heatmap.more')}</span>
+                </>
+              )
             ) : (
               <span className={styles.muted}>{t('usage.heatmap.empty')}</span>
             )}
@@ -670,6 +918,18 @@ const HeatmapCard = memo(function HeatmapCard(props: { days: UsageDaySummary[] }
           </div>
         </div>
       </div>
+      {selectedDate !== null && (
+        <DayDetailPanel
+          date={selectedDate}
+          state={dayState.status === 'idle' ? 'loading' : dayState.status}
+          detail={dayState.detail}
+          error={dayState.error}
+          metric={metric}
+          providers={providers}
+          onClose={() => setSelectedDate(null)}
+          onRetry={() => setRetryToken((token) => token + 1)}
+        />
+      )}
     </section>
   )
 })
@@ -749,8 +1009,9 @@ const RangeCard = memo(function RangeCard(props: {
   providers: ProviderSnapshotView[]
   currentProvider?: string
   rangeDays: UsageRangeDays
+  costEstimate?: UsageCostEstimate
 }): ReactNode {
-  const { range, providers, currentProvider } = props
+  const { range, providers, currentProvider, costEstimate } = props
   const derived = useMemo(() => {
     const nameOf = new Map(providers.map((provider) => [provider.provider, provider.displayName]))
     const grandTotal = range === undefined ? 0 : totalOf(range.totals)
@@ -821,6 +1082,29 @@ const RangeCard = memo(function RangeCard(props: {
             <span>{range.from.slice(5)}</span>
             <span>{range.to.slice(5)}</span>
           </span>
+        </div>
+      )}
+      {costEstimate !== undefined && costEstimate.totalCalls > 0 && (
+        <div
+          className={styles.usdLine}
+          data-dsh-part="usd-estimate"
+          data-usd-priced={costEstimate.amount !== undefined ? 'yes' : 'no'}
+          title={`${costEstimate.source}${costEstimate.priceBookUpdatedAt !== undefined ? ` · ${new Date(costEstimate.priceBookUpdatedAt).toLocaleDateString()}` : ''}`}
+        >
+          <span className={`${styles.usdAmount} ${styles.mono}`}>
+            {costEstimate.amount !== undefined
+              ? t('usage.trend.usd', {
+                amount: formatUsd(costEstimate.amount),
+                priced: costEstimate.pricedModels,
+                total: costEstimate.totalModels,
+              })
+              : t('usage.trend.usdNone')}
+          </span>
+          {costEstimate.pricedCalls < costEstimate.totalCalls && (
+            <span className={styles.usdNote} data-dsh-part="usd-unpriced">
+              {t('usage.trend.usdUnpriced', { n: costEstimate.totalCalls - costEstimate.pricedCalls })}
+            </span>
+          )}
         </div>
       )}
     </section>
@@ -1179,6 +1463,58 @@ function HealthCard(props: { health?: UsageHealth; providers: ProviderSnapshotVi
 }
 
 // ---------------------------------------------------------------------------
+// Official platform reconcile (DeepSeek web account facts).
+// ---------------------------------------------------------------------------
+
+/**
+ * A quiet one-line reconcile of the official monthly spend against our local
+ * ledger. `unavailable` renders nothing; `error` keeps a muted hint so the
+ * surface never pretends the check passed.
+ */
+function PlatformStrip(props: { platform?: UsagePlatformView }): ReactNode {
+  const { platform } = props
+  if (platform === undefined || platform.status === 'unavailable') return null
+  if (platform.status === 'error') {
+    return (
+      <div className={styles.platformStrip} data-dsh-part="platform-strip" data-platform-status="error" role="status">
+        <span className={styles.platformTitle}>{t('usage.platform.title')}</span>
+        <span className={styles.muted}>{t('usage.platform.error', { error: platform.error ?? t('usage.platform.unknown') })}</span>
+        <span className={styles.platformHint}>{t('usage.platform.retry')}</span>
+      </div>
+    )
+  }
+  const cny = (value: number | undefined): string => (typeof value === 'number' ? formatCost(value) : '—')
+  const coverage = typeof platform.coverage === 'number'
+    ? Math.round(Math.min(1, Math.max(0, platform.coverage)) * 100)
+    : undefined
+  const delta = typeof platform.delta === 'number' ? platform.delta : undefined
+  return (
+    <div className={styles.platformStrip} data-dsh-part="platform-strip" data-platform-status="ready">
+      <span className={styles.platformTitle}>{t('usage.platform.title')}</span>
+      <span className={styles.scopeChip}>{t('usage.platform.scope')}</span>
+      <span data-dsh-part="platform-month">
+        {t('usage.platform.month', { official: cny(platform.monthCost), local: cny(platform.localMonthCost) })}
+      </span>
+      {coverage !== undefined && (
+        <span className={styles.platformHint} data-dsh-part="platform-coverage">
+          {t('usage.platform.coverage', { percent: coverage })}
+        </span>
+      )}
+      {delta !== undefined && (
+        <span
+          className={styles.platformHint}
+          data-dsh-part="platform-delta"
+          data-delta={delta >= 0 ? 'positive' : 'negative'}
+        >
+          {t('usage.platform.delta', { delta: `${delta >= 0 ? '+' : '−'}${formatCost(Math.abs(delta))}` })}
+        </span>
+      )}
+      <span className={styles.platformHint}>{t('usage.platform.updated', { time: formatClock(platform.updatedAt) })}</span>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Plan windows tab.
 // ---------------------------------------------------------------------------
 
@@ -1261,7 +1597,7 @@ const ALERT_DEFAULTS = {
 
 type AlertSettings = typeof ALERT_DEFAULTS
 
-const CONFIG_DEFAULTS: Required<Pick<UsageSettings, 'enabled' | 'pollIntervalSec' | 'bubbleMode' | 'alertsEnabled' | 'dailyCostLimitCny' | 'planAlertPercent' | 'balanceAlertCny' | 'alertCooldownMinutes' | 'cpamcEnabled' | 'cpamcBaseURL' | 'cpamcAllowedHosts' | 'volcanoEnabled'>> = {
+const CONFIG_DEFAULTS: Required<Pick<UsageSettings, 'enabled' | 'pollIntervalSec' | 'bubbleMode' | 'alertsEnabled' | 'dailyCostLimitCny' | 'planAlertPercent' | 'balanceAlertCny' | 'alertCooldownMinutes' | 'cpamcEnabled' | 'cpamcBaseURL' | 'cpamcAllowedHosts' | 'volcanoEnabled' | 'platformUsageEnabled' | 'costEstimateEnabled'>> = {
   enabled: true,
   pollIntervalSec: 60,
   bubbleMode: 'always',
@@ -1270,6 +1606,8 @@ const CONFIG_DEFAULTS: Required<Pick<UsageSettings, 'enabled' | 'pollIntervalSec
   cpamcBaseURL: 'http://127.0.0.1:8317',
   cpamcAllowedHosts: '',
   volcanoEnabled: false,
+  platformUsageEnabled: true,
+  costEstimateEnabled: true,
 }
 
 /** Clamp one numeric alert field the way the Host schema does. */
@@ -1295,6 +1633,8 @@ function normalizeSettings(value: UsageSettings | undefined): typeof CONFIG_DEFA
     cpamcBaseURL: value?.cpamcBaseURL ?? CONFIG_DEFAULTS.cpamcBaseURL,
     cpamcAllowedHosts: value?.cpamcAllowedHosts ?? CONFIG_DEFAULTS.cpamcAllowedHosts,
     volcanoEnabled: value?.volcanoEnabled ?? CONFIG_DEFAULTS.volcanoEnabled,
+    platformUsageEnabled: value?.platformUsageEnabled ?? CONFIG_DEFAULTS.platformUsageEnabled,
+    costEstimateEnabled: value?.costEstimateEnabled ?? CONFIG_DEFAULTS.costEstimateEnabled,
   }
 }
 
@@ -1311,6 +1651,8 @@ function SettingsRow(props: {
   value: UsageSettings
   /** Whether the running Host's schema knows the alert fields (v0.5.0+). */
   alertsSupported?: boolean
+  /** Whether the running Host's schema knows platform/cost-estimate fields (v0.6.0+). */
+  platformSupported?: boolean
   providers?: ProviderSnapshotView[]
   credentials?: ExternalCredentialStatus
   setCredential: UsageSectionProps['setCredential']
@@ -1318,6 +1660,7 @@ function SettingsRow(props: {
 }): ReactNode {
   const { settings, snapshot, value, providers = [], credentials, setCredential, clearCredential } = props
   const alertsSupported = props.alertsSupported ?? true
+  const platformSupported = props.platformSupported ?? false
   const disabled = snapshot !== undefined && !snapshot.writable
   const [draft, setDraft] = useState(() => normalizeSettings(value))
   const [dirty, setDirty] = useState(false)
@@ -1363,6 +1706,12 @@ function SettingsRow(props: {
       { op: 'set', path: ['cpamcBaseURL'], value: draft.cpamcBaseURL },
       { op: 'set', path: ['cpamcAllowedHosts'], value: draft.cpamcAllowedHosts },
       { op: 'set', path: ['volcanoEnabled'], value: draft.volcanoEnabled },
+      ...(platformSupported
+        ? ([
+            { op: 'set', path: ['platformUsageEnabled'], value: draft.platformUsageEnabled },
+            { op: 'set', path: ['costEstimateEnabled'], value: draft.costEstimateEnabled },
+          ] as const)
+        : []),
     ]
     void settings.mutate(ops, snapshot?.revision).then((ok) => {
       setSaving(false)
@@ -1555,6 +1904,20 @@ function SettingsRow(props: {
 
         <div className={styles.settingsSection}>
           <span className={styles.subTitle}>{t('usage.config.external')}</span>
+          {platformSupported && (
+            <>
+              <label className={styles.settingRow}>
+                <span>{t('usage.config.platformUsage')}</span>
+                <input type="checkbox" checked={draft.platformUsageEnabled} disabled={disabled || saving} onChange={(event) => { edit('platformUsageEnabled', event.target.checked) }} />
+              </label>
+              <span className={styles.settingHint}>{t('usage.config.platformUsageHint')}</span>
+              <label className={styles.settingRow}>
+                <span>{t('usage.config.costEstimate')}</span>
+                <input type="checkbox" checked={draft.costEstimateEnabled} disabled={disabled || saving} onChange={(event) => { edit('costEstimateEnabled', event.target.checked) }} />
+              </label>
+              <span className={styles.settingHint}>{t('usage.config.costEstimateHint')}</span>
+            </>
+          )}
           <label className={styles.settingRow}>
             <span>{t('usage.config.cpamc')}</span>
             <input type="checkbox" checked={cpamcOn} disabled={disabled || saving} onChange={(event) => { edit('cpamcEnabled', event.target.checked) }} />
@@ -1807,6 +2170,11 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
   const alertsSupported = snapshot?.health !== undefined
     || settingsFields === undefined
     || ALERT_SETTING_FIELDS.every((field) => settingsFields.includes(field))
+  // v0.6.0 fields: only save them when the running Host's schema lists them, so
+  // an older Host never rejects the whole atomic write.
+  const platformSupported = settingsFields?.includes('platformUsageEnabled') === true
+    || snapshot?.platform !== undefined
+    || snapshot?.costEstimate !== undefined
 
   const onRefresh = (): void => {
     setRefreshing(true)
@@ -1853,6 +2221,7 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
           snapshot={settingsSnapshot.status === 'ready' ? settingsSnapshot : undefined}
           value={settingsValue}
           alertsSupported={alertsSupported}
+          platformSupported={platformSupported}
           setCredential={setCredential}
           clearCredential={clearCredential}
         />
@@ -1969,14 +2338,25 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
                 rangeDays={ui.rangeDays}
               />
             </div>
+            {snapshot.platform !== undefined && snapshot.platform.status !== 'unavailable' && (
+              <div className={`${styles.cell} ${styles.cell12}`}>
+                <PlatformStrip platform={snapshot.platform} />
+              </div>
+            )}
             <div className={`${styles.cell} ${styles.cell7} ${styles.cellHeatmap}`}>
-              <HeatmapCard days={days} />
+              <HeatmapCard days={days} providers={snapshot.providers} />
             </div>
             <div className={`${styles.cell} ${styles.cell5} ${styles.cellQuota}`}>
               <QuotaCard provider={matchedPlan} model={current.model} onSeeAll={() => setTab('plans')} />
             </div>
             <div className={`${styles.cell} ${styles.cell7}`}>
-              <RangeCard range={snapshot.usage.range} providers={snapshot.providers} currentProvider={current.provider} rangeDays={ui.rangeDays} />
+              <RangeCard
+                range={snapshot.usage.range}
+                providers={snapshot.providers}
+                currentProvider={current.provider}
+                rangeDays={ui.rangeDays}
+                costEstimate={snapshot.costEstimate}
+              />
             </div>
             <div className={`${styles.cell} ${styles.cell5}`}>
               <section className={styles.card} data-dsh-part="provider-card">
@@ -2030,6 +2410,7 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
             snapshot={settingsSnapshot.status === 'ready' ? settingsSnapshot : undefined}
             value={settingsValue}
             alertsSupported={alertsSupported}
+          platformSupported={platformSupported}
             providers={snapshot.providers}
             credentials={snapshot.externalCredentials}
             setCredential={setCredential}

@@ -418,6 +418,52 @@
   white-space: nowrap;
 }
 
+/* Official platform reconcile: one quiet row, never a second card. */
+.platformStrip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  border: 1px solid var(--u-line);
+  border-radius: 12px;
+  background: var(--u-surface-1);
+  font-size: 11.5px;
+  color: var(--u-text-2);
+}
+
+.platformTitle {
+  font-weight: 500;
+  color: var(--u-text-2);
+}
+
+.platformHint {
+  color: var(--u-text-3);
+  font-size: 10.5px;
+}
+
+/* USD reference line: a separate, explicitly-labelled currency row. */
+.usdLine {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--u-line);
+  font-size: 10.5px;
+  color: var(--u-text-3);
+}
+
+.usdAmount {
+  color: var(--u-text-2);
+}
+
+.usdNote {
+  color: var(--u-text-3);
+}
+
 /* Data-scope badge: says whether a number is device-wide or account-wide, so
    adjacent surfaces never read as one total. Quiet rectangle, not a pill. */
 .scopeChip {
@@ -888,11 +934,33 @@
   gap: var(--hm-gap);
 }
 
+/* Week rows exist for grid semantics only; display:contents keeps the exact
+   column-major layout while giving screen readers proper row grouping. */
+.heatmapRow {
+  display: contents;
+}
+
 .heatmapCell {
+  appearance: none;
   width: var(--hm-cell);
   height: var(--hm-cell);
+  padding: 0;
+  border: 0;
   border-radius: 3px;
   background: color-mix(in srgb, currentColor 7%, transparent);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: filter 120ms ease;
+}
+
+.heatmapCell:hover:not(:disabled) {
+  filter: brightness(1.18);
+}
+
+.heatmapCell:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--u-accent) 65%, transparent);
 }
 
 .heatmapCell[data-level='0'] { background: color-mix(in srgb, currentColor 7%, transparent); }
@@ -901,11 +969,46 @@
 .heatmapCell[data-level='3'] { background: color-mix(in srgb, var(--u-accent) 72%, transparent); }
 .heatmapCell[data-level='4'] { background: var(--u-accent); }
 
+.heatmapCell[data-future='yes'] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--u-line);
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* A ring outside the cell: today is usually a hot cell, an inset ring would
    disappear into its own fill. */
 .heatmapToday {
   outline: 2px solid color-mix(in srgb, currentColor 64%, transparent);
   outline-offset: 2px;
+}
+
+.heatmapSelected,
+.heatmapToday.heatmapSelected {
+  outline: 2px solid var(--u-accent);
+  outline-offset: 2px;
+}
+
+.heatmapTools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.heatmapHead {
+  flex-wrap: wrap;
+}
+
+.heatmapHead .cardTitle {
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .heatmapTools {
+    justify-content: flex-start;
+  }
 }
 
 .heatmapLegend {
@@ -961,6 +1064,112 @@
 .sideHint {
   font-size: 10.5px;
   color: var(--u-text-3);
+}
+
+/* Heatmap day drill-down: dense rows under the grid, no extra card chrome. */
+.dayPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--u-line);
+}
+
+.dayHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dayTitle {
+  font-size: 12px;
+  color: var(--u-text-2);
+}
+
+.daySummary {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.dayMetricValue {
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: inherit;
+}
+
+.dayMetricUnit {
+  font-size: 11px;
+  color: var(--u-text-3);
+}
+
+.daySecondary {
+  font-size: 11px;
+  color: var(--u-text-3);
+}
+
+.dayTable {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+}
+
+.dayGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px 56px 64px;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.dayGrid > span:not(:first-child) {
+  text-align: right;
+}
+
+.dayTableHead {
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--u-line);
+  color: var(--u-text-3);
+  font-size: 10.5px;
+}
+
+.dayProviderGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dayRow {
+  color: var(--u-text-2);
+}
+
+.dayModelRow {
+  padding-left: 10px;
+  color: var(--u-text-3);
+}
+
+.dayName {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dayModelName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dayError {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--u-warn);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2172,6 +2381,52 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* This-session summary inside the plan popover: official projections only. */
+.sessionSummary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+  padding-top: 12px;
+  border-top: 1px solid var(--u-line-2);
+}
+
+.sessionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sessionTitle {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--u-text-2);
+}
+
+.sessionRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+}
+
+.sessionLabel {
+  color: var(--u-text-3);
+}
+
+.sessionValue {
+  color: var(--u-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.sessionHint {
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--u-text-3);
+}
+
 /* The panel reuses the shared .bar/.barFill classes; only the track tint is
    local so it reads on the elevated surface. */
 .quotaMeterPanel .bar {
@@ -2370,5 +2625,9 @@
 
   .quotaMeterPanel {
     animation: none;
+  }
+
+  .heatmapCell {
+    transition: none;
   }
 }
