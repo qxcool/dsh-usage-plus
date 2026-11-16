@@ -15,6 +15,8 @@ Independent DSH usage and official Plan-quota plugin (Host + Web UI). Requires D
 - Keeps all secrets in the host process / credential vault.
 - Shares one conditional-GET poller across the Plugins page and every composer strip; requests never overlap and a hidden tab pauses.
 - Serves the overview from a per-revision host cache, so warm polls skip ledger aggregation and answer `304` from a cached ETag.
+- Switches the usage window (7 / 30 / 90 / 182 days) on the overview and exports the aggregate ledger as CSV or JSON from the plugin page.
+- Rebuilds an empty ledger from DSH session history on first install (bounded, retention-limited, marked in `backfill.json`; requires the session query service in the composition).
 
 ## Screenshots
 
@@ -26,9 +28,15 @@ When the active model matches an official plan source, the composer dock shows a
 
 ### Plugins → Installed plugins → dsh-usage-plus · Overview
 
-![Usage overview (device-wide): a today hero figure with vs-yesterday comparator, 30-day / all-time / calls / average-cost stats, cache-hit ring, the 26-week Mon–Sun heatmap with weekday gutter, column-anchored month labels and active-day / peak facts, account-level quota rings, the 30-day provider trend, today's provider breakdown with token mix, and a collapsible per-day history](docs/screenshots/settings-overview.png)
+![Usage overview (device-wide): a today hero figure with vs-yesterday comparator, 30-day / all-time / calls / average-cost stats, cache-hit ring, the 26-week Mon–Sun heatmap with weekday gutter, column-anchored month labels and active-day / peak facts, account-level quota rings, the provider trend over a selectable 7/30/90/182-day window, today's provider breakdown with token mix, and a collapsible per-day history](docs/screenshots/settings-overview.png)
 
-The overview reads as one instrument panel: a hero figure for today, the 26-week heatmap as the main chart, account-level quota rings, and a 30-day provider ranking. Every figure is labelled with its scope (`全设备` / `账号级`); the balance line only lists real balances. Plan quotas and external sources live on the other tabs of the same Plugins page.
+The overview reads as one instrument panel: a hero figure for today, the 26-week heatmap as the main chart, account-level quota rings, and a provider ranking over a selectable 7 / 30 / 90 / 182-day window. Every figure is labelled with its scope (`全设备` / `账号级`); the balance line only lists real balances. Plan quotas, external sources and the aggregate CSV / JSON export live on the other tabs of the same plugin page.
+
+### Settings · data export
+
+![Settings tab with the 数据导出 card: the selected 30-day window chip and 导出 CSV / 导出 JSON buttons above the plugin settings](docs/screenshots/settings-export.png)
+
+The aggregate ledger (daily × provider × model totals) exports as CSV or JSON for the selected window; files are generated locally and the download route is loopback-only.
 
 ## Install
 
@@ -57,6 +65,7 @@ Optional credential names are `CPAMC_MANAGEMENT_KEY`, `VOLC_ACCESSKEY`, and `VOL
 ## Known Limitations
 
 - Requires DSH `>= 0.2.2-rc.3 < 0.3.0`. Missing optional surfaces (`configForms`, `plugins.bundle.config`, `conversation.composer.dock`) are treated as unavailable capabilities instead of a startup failure.
+- Historical backfill runs only when the ledger is empty and the composition mounts `sessionQuery`; an existing ledger is never re-counted.
 - Providers without an official Plan API show no strip and no fabricated windows.
 - CPAMC accepts loopback origins (or hosts listed in `cpamcAllowedHosts`) only; management routes are read-only and reject redirects.
 - Volcano Ark needs vaulted AK/SK (or `VOLC_ACCESSKEY` / `VOLC_SECRETKEY`); signing runs only in the Host process.

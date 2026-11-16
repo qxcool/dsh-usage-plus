@@ -13,6 +13,7 @@
 import { type ReactNode } from 'react';
 import type { UsageStoreInstance } from './usage-store.ts';
 import type { ExternalCredentialTarget } from '../core/types.ts';
+import { type UsageRangeDays } from './usage-api.ts';
 /** The settings fields this section edits (staged Save via configForms.mutate). */
 export interface UsageSettings {
     enabled?: boolean;
@@ -53,6 +54,8 @@ export interface UsageSectionFace {
     store: UsageStoreInstance;
     /** Fetch one overview now. */
     poll: () => void;
+    /** Select the overview window; the shared poller repolls with the new range. */
+    setRangeDays: (days: UsageRangeDays) => void;
     /** Force a host probe cycle now (resolves with the fresh overview). */
     refresh: () => void;
     /** Shared configuration form for the `usage-plus` profile entry. */

@@ -8,6 +8,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotState, ProviderSnapshotView, UsageOverviewView, UsageTokenTotals } from '../core/types.ts';
+import { type LedgerExportDocument } from './export.ts';
 /** Source tag the plugin stamps onto pet announcements. */
 export declare const USAGE_ANNOUNCE_SOURCE = "dsh-usage-plus";
 /** Poll-loop and announce options; re-applied live on settings change. */
@@ -23,6 +24,10 @@ export interface UsageServiceOptions {
     volcanoAccessKeyEnv: string;
     volcanoSecretKeyEnv: string;
 }
+/** Default overview trend window in local days (backward compatible). */
+export declare const DEFAULT_RANGE_DAYS = 30;
+/** The only `days` values the overview route accepts (besides the default). */
+export declare const ALLOWED_RANGE_DAYS: readonly [7, 30, 90, 182];
 /** The wire payload of one overview read: the cached document plus its ETag. */
 export interface UsageOverviewPayload {
     document: UsageOverviewView;
@@ -42,6 +47,13 @@ export declare function probeBackoffDelayMs(failures: number): number;
  * during an active session. Pure: unit-tested directly, no timer involved.
  */
 export declare function nextFlushDelayMs(nowMs: number, lastFlushAtMs: number): number;
+/**
+ * Resolve the overview `days` query value: absent -> 30 (backward compatible),
+ * one of `ALLOWED_RANGE_DAYS` -> itself, anything else -> undefined (the route
+ * answers 400). Accepts the raw query string so the route and the service
+ * share one validation rule.
+ */
+export declare function resolveRangeDays(value: unknown): number | undefined;
 /**
  * Drop overview rows no surface renders: the wire document otherwise carries
  * every catalog provider the runtime knows (40+ empty rows ≈ 6 KiB per poll).
@@ -151,9 +163,17 @@ export declare class UsageService {
     private revision;
     /** Bumped only by ledger mutations; the usage windows aggregate from it. */
     private ledgerRevision;
-    /** Derived overview document, rebuilt at most once per revision. */
+    /**
+     * Derived overview documents, one per accepted range window, keyed by
+     * `revision|dayKey`. Different `?days=` variants do not thrash each other;
+     * a revision/day rollover replaces the whole map.
+     */
     private overviewCache;
-    /** Aggregated usage windows, rebuilt at most once per ledger revision. */
+    /**
+     * Aggregated usage windows, one per accepted range window, keyed by
+     * `ledgerRevision|retainDays|dayKey`. The today/heatmap/all-time windows are
+     * range-independent but cheap to rebuild per variant once per revision.
+     */
     private usageCache;
     /** Provider route list TTL cache (the llm registry is a config scan). */
     private routesCache;
@@ -187,16 +207,25 @@ export declare class UsageService {
     applyOptions(options: UsageServiceOptions): void;
     /** Force one poll now (manual refresh route); joins an in-flight cycle. */
     refresh(): Promise<void>;
-    /** Assemble the overview document the browser section renders. */
-    overview(): Promise<UsageOverviewView>;
     /**
-     * The overview document plus its strong ETag. A warm request (same data
-     * revision) answers from the derived cache: no ledger re-summarization, no
-     * provider rebuild, and no SHA-1 over the JSON — the GET route only needs
-     * the cached validator to answer 304. `updatedAt` moves with each read but
-     * stays out of the ETag, exactly like the uncached path.
+     * Assemble the overview document the browser section renders.
+     * @param days - trend window (one of `ALLOWED_RANGE_DAYS`); default 30.
      */
-    overviewPayload(): Promise<UsageOverviewPayload>;
+    overview(days?: number): Promise<UsageOverviewView>;
+    /**
+     * The overview document plus its strong ETag for one range window. A warm
+     * request (same data revision and same window) answers from the derived
+     * cache: no ledger re-summarization, no provider rebuild, and no SHA-1 over
+     * the JSON — the GET route only needs the cached validator to answer 304.
+     * `updatedAt` moves with each read but stays out of the ETag.
+     */
+    overviewPayload(days?: number): Promise<UsageOverviewPayload>;
+    /**
+     * The aggregate ledger export document for the last `days` local days
+     * (1..730, default 182). Transport-free so the export route stays a thin
+     * HTTP wrapper; the payload is ledger aggregates only — no secrets.
+     */
+    exportLedger(days: number): LedgerExportDocument;
     /**
      * Build the wire document from an already-aggregated usage summary. Rows
      * and the provider keep-set (the exact ids the trend/today cards look up)
@@ -205,9 +234,9 @@ export declare class UsageService {
      */
     private assembleOverview;
     /**
-     * Aggregate the usage windows for the current ledger revision and local day.
-     * One pass over the retained ledger per revision; warm polls (and the pet
-     * bubble's today lookup) reuse it instead of re-summarizing 182 days.
+     * Aggregate the usage windows for the current ledger revision, local day,
+     * and range window. One pass over the retained ledger per revision/window;
+     * warm polls (and the pet bubble's today lookup) reuse it.
      */
     private usageSummary;
     /** Mark a document-visible mutation: the next overview read rebuilds. */
@@ -284,6 +313,19 @@ export declare class UsageService {
      */
     private preserveUnreadableLedger;
     private mergePersistedSnapshots;
+    /** Read the completion state; undefined when absent or unrecognized. */
+    private readBackfillState;
+    private writeBackfillState;
+    /**
+     * Rebuild the ledger from prior sessions after `loadPersisted()` resolves.
+     *
+     * Runs only when all of these hold: the optional `ctx.sessionQuery` service
+     * is present, the in-memory ledger has no usage (fresh install or data-dir
+     * loss), and no `backfill.json` completion state exists yet. Anything else is
+     * a normal upgrade (non-empty ledger) and simply records the state once so
+     * the empty-ledger check is not repeated on every boot. Never throws.
+     */
+    private maybeBackfill;
     /**
      * Arm one debounced ledger flush. The delay is the burst debounce or the
      * remaining flush floor, whichever is later, so an active session cannot

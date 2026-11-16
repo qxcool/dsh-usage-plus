@@ -24,6 +24,16 @@ import type { BalanceView, CredentialKind, ExternalCredentialStatus, ExternalCre
 import { emptyTotals } from '../core/types.ts'
 import { probeCpamc, probeVolcano } from './external-sources.ts'
 import { jsonEtag } from './http.ts'
+import {
+  BACKFILL_STATE_VERSION,
+  backfillStatePath,
+  collectBackfill,
+  hasLedgerUsage,
+  mergeLedgerDocuments,
+  type BackfillState,
+  type SessionQueryLike,
+} from './backfill.ts'
+import { buildExportDocument, type LedgerExportDocument } from './export.ts'
 
 /** Source tag the plugin stamps onto pet announcements. */
 export const USAGE_ANNOUNCE_SOURCE = 'dsh-usage-plus'
@@ -80,8 +90,14 @@ const FLUSH_DEBOUNCE_MS = 3_000
  */
 const FLUSH_MIN_INTERVAL_MS = 20_000
 
-/** How many days the per-provider trend bars aggregate. */
+/** How many days the per-provider trend bars aggregate by default. */
 const TREND_DAYS = 30
+
+/** Default overview trend window in local days (backward compatible). */
+export const DEFAULT_RANGE_DAYS = TREND_DAYS
+
+/** The only `days` values the overview route accepts (besides the default). */
+export const ALLOWED_RANGE_DAYS = [7, 30, 90, 182] as const
 
 /** How many daily rows the Codex-style heatmap receives (26 weeks). */
 const HEATMAP_DAYS = 182
@@ -135,6 +151,22 @@ export function nextFlushDelayMs(nowMs: number, lastFlushAtMs: number): number {
   // Clamp to the floor itself: a backwards clock jump must not park the ledger
   // unflushed for the length of the jump (stop() still flushes regardless).
   return Math.max(FLUSH_DEBOUNCE_MS, Math.min(floorWait, FLUSH_MIN_INTERVAL_MS))
+}
+
+/**
+ * Resolve the overview `days` query value: absent -> 30 (backward compatible),
+ * one of `ALLOWED_RANGE_DAYS` -> itself, anything else -> undefined (the route
+ * answers 400). Accepts the raw query string so the route and the service
+ * share one validation rule.
+ */
+export function resolveRangeDays(value: unknown): number | undefined {
+  if (value === undefined || value === null) return DEFAULT_RANGE_DAYS
+  const parsed = typeof value === 'number'
+    ? value
+    : typeof value === 'string' && /^\d+$/.test(value.trim())
+      ? Number(value.trim())
+      : Number.NaN
+  return (ALLOWED_RANGE_DAYS as readonly number[]).includes(parsed) ? parsed : undefined
 }
 
 /**
@@ -454,10 +486,18 @@ export class UsageService {
   private revision = 0
   /** Bumped only by ledger mutations; the usage windows aggregate from it. */
   private ledgerRevision = 0
-  /** Derived overview document, rebuilt at most once per revision. */
-  private overviewCache: { revision: number; dayKey: string; document: UsageOverviewView; etag: string } | undefined
-  /** Aggregated usage windows, rebuilt at most once per ledger revision. */
-  private usageCache: { ledgerRevision: number; retainDays: number; dayKey: string; usage: LedgerUsageSummary } | undefined
+  /**
+   * Derived overview documents, one per accepted range window, keyed by
+   * `revision|dayKey`. Different `?days=` variants do not thrash each other;
+   * a revision/day rollover replaces the whole map.
+   */
+  private overviewCache: { base: string; documents: Map<number, { document: UsageOverviewView; etag: string }> } | undefined
+  /**
+   * Aggregated usage windows, one per accepted range window, keyed by
+   * `ledgerRevision|retainDays|dayKey`. The today/heatmap/all-time windows are
+   * range-independent but cheap to rebuild per variant once per revision.
+   */
+  private usageCache: { base: string; summaries: Map<number, LedgerUsageSummary> } | undefined
   /** Provider route list TTL cache (the llm registry is a config scan). */
   private routesCache: { at: number; routes: ProviderRoute[] } | undefined
   /** configEditor entry snapshots a document read depends on; TTL-cached. */
@@ -488,8 +528,16 @@ export class UsageService {
 
   /** Start the listeners, load persisted state, and arm the first poll. */
   start(): void {
+    // Capture the live-fold cutoff before the event listener exists: anything
+    // the listener folds afterwards was appended at/after this instant, so the
+    // historical backfill (events strictly older) can never double count it.
+    const startedAt = Date.now()
     this.sessionListenerDisposer = this.ctx.on('session/event', (session, event) => this.onSessionEvent(session, event))
     void this.loadPersisted()
+      .then(() => this.maybeBackfill(startedAt))
+      .catch(() => {
+        // loadPersisted and maybeBackfill both swallow their own failures.
+      })
     this.rearmPoll(2_000)
   }
 
@@ -528,19 +576,23 @@ export class UsageService {
     await this.pollNow()
   }
 
-  /** Assemble the overview document the browser section renders. */
-  async overview(): Promise<UsageOverviewView> {
-    return (await this.overviewPayload()).document
+  /**
+   * Assemble the overview document the browser section renders.
+   * @param days - trend window (one of `ALLOWED_RANGE_DAYS`); default 30.
+   */
+  async overview(days?: number): Promise<UsageOverviewView> {
+    return (await this.overviewPayload(days)).document
   }
 
   /**
-   * The overview document plus its strong ETag. A warm request (same data
-   * revision) answers from the derived cache: no ledger re-summarization, no
-   * provider rebuild, and no SHA-1 over the JSON — the GET route only needs
-   * the cached validator to answer 304. `updatedAt` moves with each read but
-   * stays out of the ETag, exactly like the uncached path.
+   * The overview document plus its strong ETag for one range window. A warm
+   * request (same data revision and same window) answers from the derived
+   * cache: no ledger re-summarization, no provider rebuild, and no SHA-1 over
+   * the JSON — the GET route only needs the cached validator to answer 304.
+   * `updatedAt` moves with each read but stays out of the ETag.
    */
-  async overviewPayload(): Promise<UsageOverviewPayload> {
+  async overviewPayload(days?: number): Promise<UsageOverviewPayload> {
+    const rangeDays = resolveRangeDays(days) ?? DEFAULT_RANGE_DAYS
     // Always re-sync to the composer selection first: switching the model
     // selector updates the strip without waiting for the next request, and a
     // change must invalidate the cache before the lookup below.
@@ -557,20 +609,35 @@ export class UsageService {
       // re-check below: never cache a document built on stale state.
       const externalCredentials = await this.externalCredentialStatus()
       if (this.revision !== revision || localDateKey(Date.now()) !== dayKey) continue
-      const cached = this.overviewCache
-      if (cached !== undefined && cached.revision === revision && cached.dayKey === dayKey) {
+      const base = `${revision}|${dayKey}`
+      if (this.overviewCache?.base !== base) this.overviewCache = { base, documents: new Map() }
+      // One cache slot per range window: switching 7/30/90/182 does not evict
+      // the other variants, so a range toggle stays cheap.
+      const cached = this.overviewCache.documents.get(rangeDays)
+      if (cached !== undefined) {
         cached.document.updatedAt = Date.now()
         return { document: cached.document, etag: cached.etag }
       }
-      const document = this.assembleOverview(this.usageSummary(), externalCredentials)
+      const document = this.assembleOverview(this.usageSummary(rangeDays), externalCredentials)
       const etag = jsonEtag(document)
-      if (this.revision === revision) this.overviewCache = { revision, dayKey, document, etag }
+      if (this.revision === revision && this.overviewCache?.base === base) {
+        this.overviewCache.documents.set(rangeDays, { document, etag })
+      }
       return { document, etag }
     }
-    // Two races in a row (a fold or probe landed mid-await both times): answer
-    // with a consistent document, but do not cache it under a moving revision.
-    const document = this.assembleOverview(this.usageSummary(), await this.externalCredentialStatus())
+    // A fold or probe landed mid-await both times: answer with a consistent
+    // document, but do not cache it under a moving revision.
+    const document = this.assembleOverview(this.usageSummary(rangeDays), await this.externalCredentialStatus())
     return { document, etag: jsonEtag(document) }
+  }
+
+  /**
+   * The aggregate ledger export document for the last `days` local days
+   * (1..730, default 182). Transport-free so the export route stays a thin
+   * HTTP wrapper; the payload is ledger aggregates only — no secrets.
+   */
+  exportLedger(days: number): LedgerExportDocument {
+    return buildExportDocument(this.ledger, days, Date.now())
   }
 
   /**
@@ -629,29 +696,24 @@ export class UsageService {
   }
 
   /**
-   * Aggregate the usage windows for the current ledger revision and local day.
-   * One pass over the retained ledger per revision; warm polls (and the pet
-   * bubble's today lookup) reuse it instead of re-summarizing 182 days.
+   * Aggregate the usage windows for the current ledger revision, local day,
+   * and range window. One pass over the retained ledger per revision/window;
+   * warm polls (and the pet bubble's today lookup) reuse it.
    */
-  private usageSummary(): LedgerUsageSummary {
+  private usageSummary(rangeDays: number = DEFAULT_RANGE_DAYS): LedgerUsageSummary {
     const ledgerRevision = this.ledgerRevision
     const dayKey = localDateKey(Date.now())
     const retainDays = this.options.retainDays
-    const cached = this.usageCache
-    if (
-      cached !== undefined
-      && cached.ledgerRevision === ledgerRevision
-      && cached.retainDays === retainDays
-      && cached.dayKey === dayKey
-    ) {
-      return cached.usage
-    }
+    const base = `${ledgerRevision}|${retainDays}|${dayKey}`
+    if (this.usageCache?.base !== base) this.usageCache = { base, summaries: new Map() }
+    const cached = this.usageCache.summaries.get(rangeDays)
+    if (cached !== undefined) return cached
     const usage = summarizeLedgerUsage(this.ledger, {
       todayKey: dayKey,
       heatmapDays: Math.min(HEATMAP_DAYS, retainDays),
-      rangeDays: TREND_DAYS,
+      rangeDays,
     })
-    this.usageCache = { ledgerRevision, retainDays, dayKey, usage }
+    this.usageCache.summaries.set(rangeDays, usage)
     return usage
   }
 
@@ -977,6 +1039,92 @@ export class UsageService {
       }
     }
     if (loadedSnapshots) this.bumpRevision()
+  }
+
+  // ------------------------------------------------------------------
+  // Historical session backfill
+  // ------------------------------------------------------------------
+
+  /** Read the completion state; undefined when absent or unrecognized. */
+  private async readBackfillState(): Promise<BackfillState | undefined> {
+    try {
+      const raw = await readFile(backfillStatePath(this.persistDir), 'utf8')
+      const parsed: unknown = JSON.parse(raw)
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
+      if ((parsed as { version?: unknown }).version !== BACKFILL_STATE_VERSION) return undefined
+      return parsed as BackfillState
+    } catch {
+      return undefined
+    }
+  }
+
+  private async writeBackfillState(state: BackfillState): Promise<void> {
+    try {
+      const path = backfillStatePath(this.persistDir)
+      await mkdir(dirname(path), { recursive: true })
+      await writeJsonAtomic(path, state)
+    } catch {
+      // Best-effort: a state write failure only means the check may repeat.
+    }
+  }
+
+  /**
+   * Rebuild the ledger from prior sessions after `loadPersisted()` resolves.
+   *
+   * Runs only when all of these hold: the optional `ctx.sessionQuery` service
+   * is present, the in-memory ledger has no usage (fresh install or data-dir
+   * loss), and no `backfill.json` completion state exists yet. Anything else is
+   * a normal upgrade (non-empty ledger) and simply records the state once so
+   * the empty-ledger check is not repeated on every boot. Never throws.
+   */
+  private async maybeBackfill(startedAt: number): Promise<void> {
+    try {
+      const sessionQuery = service<SessionQueryLike>(this.ctx, 'sessionQuery')
+      // No session-query service: nothing to read. Do not record state, so a
+      // later composition that mounts the service can still recover history.
+      if (sessionQuery === undefined || this.disposed) return
+      const state = await this.readBackfillState()
+      const hasUsage = hasLedgerUsage(this.ledger)
+      if (hasUsage) {
+        if (state === undefined) {
+          await this.writeBackfillState({
+            version: BACKFILL_STATE_VERSION,
+            completedAt: Date.now(),
+            cutoff: startedAt,
+            sessions: 0,
+            events: 0,
+          })
+        }
+        return
+      }
+      if (state !== undefined) return
+      const result = await collectBackfill(sessionQuery, {
+        startedAt,
+        retainDays: this.options.retainDays,
+        shouldAbort: () => this.disposed,
+      })
+      if (this.disposed) return
+      if (!result.ok) {
+        console.warn('[dsh-usage-plus] session backfill could not read prior sessions')
+        return
+      }
+      if (result.events > 0) {
+        mergeLedgerDocuments(this.ledger, result.ledger)
+        this.bumpLedgerRevision()
+        // Flush immediately: the restored history must survive an early exit.
+        await this.flushLedger()
+      }
+      await this.writeBackfillState({
+        version: BACKFILL_STATE_VERSION,
+        completedAt: Date.now(),
+        cutoff: startedAt,
+        sessions: result.sessions,
+        events: result.events,
+      })
+      console.info(`[dsh-usage-plus] session backfill: ${result.sessions} session(s), ${result.events} usage event(s)${result.truncated ? ' (truncated by caps)' : ''}`)
+    } catch (error) {
+      console.warn('[dsh-usage-plus] session backfill failed:', error instanceof Error ? error.message : String(error))
+    }
   }
 
   /**

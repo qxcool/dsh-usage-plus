@@ -3,9 +3,10 @@ import { appendFile, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { ExternalCredentialTarget } from '../core/types.ts'
-import { asJsonObject, readJsonBody, writeJson } from './http.ts'
+import { asJsonObject, readJsonBody, writeJson, writeText } from './http.ts'
 import { isLoopbackRequest } from './loopback.ts'
-import type { UsageService } from './usage-service.ts'
+import { exportCsv, exportFilename, resolveExportDays, resolveExportFormat } from './export.ts'
+import { resolveRangeDays, type UsageService } from './usage-service.ts'
 import { dshHome } from '../dsh-home.ts'
 
 export const USAGE_API_PREFIX = '/api/dsh-usage-plus'
@@ -14,6 +15,15 @@ export const USAGE_API_PREFIX = '/api/dsh-usage-plus'
 const CLIENT_DIAG_MAX_BYTES = 256 * 1024
 
 const FIXED_CREDENTIAL_TARGETS = new Set(['cpamc', 'volcano.ak', 'volcano.sk'])
+
+/** Parsed query string of one request; an unparsable URL reads as no query. */
+function requestQuery(req: IncomingMessage): URLSearchParams {
+  try {
+    return new URL(req.url ?? '/', 'http://localhost').searchParams
+  } catch {
+    return new URLSearchParams()
+  }
+}
 
 /**
  * Whether an `If-None-Match` header names this ETag. Handles the list form,
@@ -50,10 +60,17 @@ export function makeUsageOverviewRoute(service: UsageService): WebRoute {
         writeJson(res, 403, { ok: false, error: 'forbidden: loopback-only' })
         return
       }
-      // The service caches the document and its ETag per data revision: a warm
-      // poll costs a cache lookup, and an unchanged document can answer 304
-      // without re-serializing the JSON body.
-      const { document, etag } = await service.overviewPayload()
+      // `?days=` selects the trend window; absent keeps the historical 30-day
+      // default, and anything outside the accepted set is a client error.
+      const days = resolveRangeDays(requestQuery(req).get('days') ?? undefined)
+      if (days === undefined) {
+        writeJson(res, 400, { ok: false, error: 'invalid days' })
+        return
+      }
+      // The service caches the document and its ETag per data revision and
+      // range window: a warm poll costs a cache lookup, and an unchanged
+      // document can answer 304 without re-serializing the JSON body.
+      const { document, etag } = await service.overviewPayload(days)
       const ifNoneMatch = req.headers['if-none-match']
       if (typeof ifNoneMatch === 'string' && requestEtagMatches(ifNoneMatch, etag)) {
         res.writeHead(304, { etag, 'cache-control': 'no-store' })
@@ -61,6 +78,48 @@ export function makeUsageOverviewRoute(service: UsageService): WebRoute {
         return
       }
       writeJson(res, 200, document, { etag, 'cache-control': 'no-store' })
+    },
+  }
+}
+
+/**
+ * Loopback-fenced aggregate export of the usage ledger.
+ *
+ * `GET /api/dsh-usage-plus/export?format=csv|json&days=N` where `days` is an
+ * integer 1..730 (default 182). The payload is ledger aggregates only — no
+ * credential, session-content, or provider-secret value is read. CSV uses the
+ * fixed column contract and a CRLF body; JSON serves the versioned document.
+ */
+export function makeUsageExportRoute(service: UsageService): WebRoute {
+  return {
+    kind: 'exact',
+    path: USAGE_API_PREFIX + '/export',
+    handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+      if (!isLoopbackRequest(req)) {
+        writeJson(res, 403, { ok: false, error: 'forbidden: loopback-only' })
+        return
+      }
+      if (req.method !== 'GET') {
+        writeJson(res, 405, { ok: false, error: 'method not allowed' })
+        return
+      }
+      const query = requestQuery(req)
+      const format = resolveExportFormat(query.get('format') ?? undefined)
+      const days = resolveExportDays(query.get('days') ?? undefined)
+      if (format === undefined || days === undefined) {
+        writeJson(res, 400, { ok: false, error: 'invalid format or days' })
+        return
+      }
+      const document = service.exportLedger(days)
+      const headers = {
+        'cache-control': 'no-store',
+        'content-disposition': `attachment; filename="${exportFilename(document.exportedAt, format)}"`,
+      }
+      if (format === 'json') {
+        writeJson(res, 200, document, headers)
+        return
+      }
+      writeText(res, 200, exportCsv(document.entries), { ...headers, 'content-type': 'text/csv; charset=utf-8' })
     },
   }
 }

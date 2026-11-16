@@ -27,6 +27,16 @@ export declare const zh: {
     'usage.scope.note.usage': string;
     'usage.scope.note.plans': string;
     'usage.scope.note.settings': string;
+    'usage.range.label': string;
+    'usage.range.days': string;
+    'usage.range.window': string;
+    'usage.range.covered': string;
+    'usage.export.title': string;
+    'usage.export.hint': string;
+    'usage.export.csv': string;
+    'usage.export.json': string;
+    'usage.export.busy': string;
+    'usage.export.failed': string;
     'usage.today.cost': string;
     'usage.today.breakdown': string;
     'usage.hero.today': string;

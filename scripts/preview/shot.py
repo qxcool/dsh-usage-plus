@@ -37,6 +37,8 @@ SHOTS: dict[str, tuple[dict[str, str], str]] = {
     "overview-light": ({"part": "section", "theme": "light", "tab": "usage"}, "full"),
     "plans": ({"part": "section", "theme": "dark", "tab": "plans"}, "full"),
     "settings": ({"part": "section", "theme": "dark", "tab": "settings"}, "full"),
+    "range-90": ({"part": "section", "theme": "dark", "tab": "usage", "range": "90"}, "full"),
+    "range-retained": ({"part": "section", "theme": "dark", "tab": "usage", "range": "182", "retain": "45"}, "full"),
     "sparse": ({"part": "section", "theme": "dark", "tab": "usage", "variant": "sparse"}, "full"),
     "strip": ({"part": "strip", "theme": "dark"}, "element"),
     "strip-open": ({"part": "strip", "theme": "dark", "open": "1"}, "element"),

@@ -1,5 +1,5 @@
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver';
-import type { UsageService } from './usage-service.ts';
+import { type UsageService } from './usage-service.ts';
 export declare const USAGE_API_PREFIX = "/api/dsh-usage-plus";
 /**
  * Whether an `If-None-Match` header names this ETag. Handles the list form,
@@ -16,6 +16,15 @@ export declare function requestEtagMatches(ifNoneMatch: string, etag: string): b
  * body every cadence.
  */
 export declare function makeUsageOverviewRoute(service: UsageService): WebRoute;
+/**
+ * Loopback-fenced aggregate export of the usage ledger.
+ *
+ * `GET /api/dsh-usage-plus/export?format=csv|json&days=N` where `days` is an
+ * integer 1..730 (default 182). The payload is ledger aggregates only — no
+ * credential, session-content, or provider-secret value is read. CSV uses the
+ * fixed column contract and a CRLF body; JSON serves the versioned document.
+ */
+export declare function makeUsageExportRoute(service: UsageService): WebRoute;
 /**
  * Loopback-fenced manual refresh: forces one probe cycle now and answers
  * with the fresh overview.

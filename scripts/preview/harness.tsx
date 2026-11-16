@@ -11,6 +11,8 @@
  *   theme=dark|light          colour scheme to emulate, default dark
  *   lang=zh|en                document language for the `t()` helper, default zh
  *   tab=usage|plans|settings  section tab to activate, default usage
+ *   range=7|30|90|182         overview window to select, default 30
+ *   retain=<days>             simulated ledger retention (forces the covered-range note)
  *   variant=rich|sparse       fixture shape, default rich
  *   updated=fresh|stale       document age for the header freshness dot
  *                             (fresh = 8 s, stale = 10 min), default fresh
@@ -21,7 +23,8 @@ import { createRoot } from 'react-dom/client'
 import { UsageSectionCard } from '../../src/client/UsageSectionCard.tsx'
 import { PlanUsageStrip } from '../../src/client/PlanUsageStrip.tsx'
 import { buildOverview } from './fixture.ts'
-import type { UsageOverviewView } from '../../src/core/types.ts'
+import { DEFAULT_USAGE_RANGE_DAYS, isUsageRangeDays, type UsageRangeDays } from '../../src/client/usage-api.ts'
+import { addTotals, emptyTotals, type UsageOverviewView, type UsageProviderSummary, type UsageTokenTotals } from '../../src/core/types.ts'
 import './theme.css'
 
 /**
@@ -40,6 +43,11 @@ const width = Number(params.get('w') ?? 1280)
 const theme = params.get('theme') === 'light' ? 'light' : 'dark'
 const lang = params.get('lang') === 'en' ? 'en' : 'zh'
 const tab = params.get('tab') ?? 'usage'
+const rangeParam = Number(params.get('range') ?? DEFAULT_USAGE_RANGE_DAYS)
+const initialRange: UsageRangeDays = isUsageRangeDays(rangeParam) ? rangeParam : DEFAULT_USAGE_RANGE_DAYS
+/** Optional simulated ledger retention, so the "covered range" note can be previewed. */
+const retainParam = Number(params.get('retain') ?? 0)
+const retainDays = Number.isFinite(retainParam) && retainParam > 0 ? Math.floor(retainParam) : undefined
 const variant = params.get('variant') === 'sparse' ? 'sparse' : 'rich'
 /** `updatedAt` is wall-clock (freshness dot); everything else hangs off FIXED_NOW. */
 const updatedAgoMs = params.get('updated') === 'stale' ? 10 * 60_000 : 8_000
@@ -67,17 +75,78 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 
 function noop(): void {}
 
+function totalOf(totals: UsageTokenTotals): number {
+  return totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens + totals.outputTokens
+}
+
+/** Scale one totals bucket; keeps provider shares identical across windows. */
+function scaleTotals(totals: UsageTokenTotals, factor: number): UsageTokenTotals {
+  return {
+    inputTokens: Math.round(totals.inputTokens * factor),
+    outputTokens: Math.round(totals.outputTokens * factor),
+    cacheReadTokens: Math.round(totals.cacheReadTokens * factor),
+    cacheWriteTokens: Math.round(totals.cacheWriteTokens * factor),
+    reasoningTokens: Math.round(totals.reasoningTokens * factor),
+    calls: Math.round(totals.calls * factor),
+    cost: totals.cost * factor,
+  }
+}
+
+function scaleProvider(row: UsageProviderSummary, factor: number): UsageProviderSummary {
+  return {
+    ...row,
+    totals: scaleTotals(row.totals, factor),
+    models: row.models.map((model) => ({ ...model, totals: scaleTotals(model.totals, factor) })),
+  }
+}
+
 /**
- * Minimal stand-in for `EngineStoreInstance`: `useSyncExternalStore` only
- * needs a stable `subscribe`/`getSnapshot` pair. No action is ever triggered
- * because the harness never polls.
+ * Aggregate the fixture's deterministic daily rows into the selected window,
+ * and scale the fixture's provider/model split to that window's total. The
+ * fixture's day rows only carry totals, so the split is the base 30-day split
+ * (shares stay identical across windows); harness-only, never sent anywhere.
+ */
+function windowFor(view: UsageOverviewView, days: UsageRangeDays, retain = retainDays): UsageOverviewView {
+  const covered = retain === undefined ? days : Math.min(days, retain)
+  const rows = view.usage.days.slice(-covered)
+  const totals = emptyTotals()
+  for (const row of rows) addTotals(totals, row.totals)
+  const base = view.usage.range
+  const baseTotal = base === undefined ? 0 : totalOf(base.totals)
+  const factor = baseTotal > 0 ? totalOf(totals) / baseTotal : 0
+  const providers = (base?.providers ?? []).map((row) => scaleProvider(row, factor))
+  const from = rows[0]?.date ?? view.usage.today.date
+  const to = base?.to ?? view.usage.today.date
+  return {
+    ...view,
+    usage: {
+      ...view.usage,
+      range: { from, to, totals, providers },
+    },
+  }
+}
+
+/**
+ * Fake `EngineStoreInstance` backed by one mutable snapshot: `useSyncExternalStore`
+ * gets a stable subscribe/getSnapshot pair, and `setRangeDays` (wired into the
+ * face below) re-derives the window so the picker is interactive in the harness.
  */
 function createFakeStore(view: UsageOverviewView) {
-  const state = { snapshot: view, status: 'ready' as const, error: null }
+  let state = { snapshot: view, status: 'ready' as const, error: null, rangeDays: initialRange }
+  const listeners = new Set<() => void>()
   return {
-    subscribe: () => noop,
+    subscribe(listener: () => void) {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
     getSnapshot: () => state,
     actions: {},
+    setRangeDays(days: UsageRangeDays) {
+      state = { ...state, rangeDays: days, snapshot: windowFor(view, days) }
+      listeners.forEach((listener) => listener())
+    },
   }
 }
 
@@ -107,12 +176,13 @@ function createFakeSettings() {
 }
 
 const fixture = buildOverview({ now: FIXED_NOW, variant, updatedAgoMs })
-const store = createFakeStore(fixture)
+const store = createFakeStore(windowFor(fixture, initialRange))
 const settings = createFakeSettings()
 const face = {
   store,
   poll: noop,
   refresh: noop,
+  setRangeDays: (days: UsageRangeDays) => store.setRangeDays(days),
   settings,
   setCredential: async () => {},
   clearCredential: async () => {},

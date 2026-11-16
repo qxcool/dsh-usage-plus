@@ -21,6 +21,7 @@ import { buildHeatmapGrid } from '../core/heatmap.ts'
 import { currentPlanProvider, orderedPlanWindows, planSourceLabelKey, planTabProviders } from '../core/plan-match.ts'
 import { deepseekPeriodAt } from '../core/pricing.ts'
 import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotView, UsageDaySummary, UsageOverviewView, UsageProviderSummary, UsageTokenTotals } from '../core/types.ts'
+import { exportRequestPath, USAGE_RANGE_DAYS, type UsageRangeDays } from './usage-api.ts'
 
 /** The settings fields this section edits (staged Save via configForms.mutate). */
 export interface UsageSettings {
@@ -60,6 +61,8 @@ export interface UsageSectionFace {
   store: UsageStoreInstance
   /** Fetch one overview now. */
   poll: () => void
+  /** Select the overview window; the shared poller repolls with the new range. */
+  setRangeDays: (days: UsageRangeDays) => void
   /** Force a host probe cycle now (resolves with the fresh overview). */
   refresh: () => void
   /** Shared configuration form for the `usage-plus` profile entry. */
@@ -442,6 +445,7 @@ function HeroBand(props: {
   cacheRead: number
   billed: number
   avgCost: number | null
+  rangeDays: UsageRangeDays
 }): ReactNode {
   const hitTone = props.hitRate === null
     ? styles.toneAccent
@@ -471,7 +475,7 @@ function HeroBand(props: {
       </div>
       <div className={styles.statGroup}>
         <Stat
-          label={t('usage.summary.month')}
+          label={t('usage.range.window', { n: props.rangeDays })}
           value={formatTokens(props.rangeTokens)}
           hint={t('usage.calls', { n: props.rangeCalls })}
         />
@@ -724,6 +728,7 @@ const RangeCard = memo(function RangeCard(props: {
   range?: UsageOverviewView['usage']['range']
   providers: ProviderSnapshotView[]
   currentProvider?: string
+  rangeDays: UsageRangeDays
 }): ReactNode {
   const { range, providers, currentProvider } = props
   const derived = useMemo(() => {
@@ -737,7 +742,7 @@ const RangeCard = memo(function RangeCard(props: {
     <section className={styles.card} data-dsh-part="trend-card">
       <div className={styles.cardHead}>
         <div className={styles.cardHeadGroup}>
-          <span className={styles.cardTitle}>{t('usage.trend')}</span>
+          <span className={styles.cardTitle}>{t('usage.range.window', { n: props.rangeDays })}</span>
           <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
         </div>
         {grandTotal > 0 && (
@@ -844,6 +849,128 @@ const HistoryCard = memo(function HistoryCard(props: { days: UsageDaySummary[] }
     </section>
   )
 })
+
+// ---------------------------------------------------------------------------
+// Overview window control + coverage note.
+// ---------------------------------------------------------------------------
+
+/**
+ * The real covered range when retained history is shorter than the selection.
+ * `usage.range.from/to` are the Host's truth; the copy stays hidden when the
+ * whole requested window exists.
+ */
+function coveredRange(
+  range: UsageOverviewView['usage']['range'],
+  days: UsageRangeDays,
+): { from: string; to: string } | undefined {
+  if (range === undefined) return undefined
+  const from = Date.parse(`${range.from}T00:00:00Z`)
+  const to = Date.parse(`${range.to}T00:00:00Z`)
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return undefined
+  const coveredDays = Math.round((to - from) / 86_400_000) + 1
+  if (coveredDays >= days) return undefined
+  return { from: range.from.slice(5), to: range.to.slice(5) }
+}
+
+/** Compact segmented window picker; `aria-pressed` carries the selection. */
+function RangeBar(props: {
+  days: UsageRangeDays
+  covered?: { from: string; to: string }
+  onSelect: (days: UsageRangeDays) => void
+}): ReactNode {
+  return (
+    <div className={styles.rangeBar} data-dsh-part="range-bar" data-range={props.days}>
+      <div className={styles.rangeSeg} role="group" aria-label={t('usage.range.label')}>
+        {USAGE_RANGE_DAYS.map((option) => (
+          <button
+            key={option}
+            type="button"
+            aria-pressed={option === props.days}
+            className={option === props.days ? `${styles.rangeBtn} ${styles.rangeBtnActive}` : styles.rangeBtn}
+            onClick={() => props.onSelect(option)}
+          >
+            {t('usage.range.days', { n: option })}
+          </button>
+        ))}
+      </div>
+      {props.covered !== undefined && (
+        <span className={styles.rangeCovered} data-dsh-part="range-covered">
+          {t('usage.range.covered', { from: props.covered.from, to: props.covered.to })}
+        </span>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Export (Settings tab): a local CSV / JSON download of the selected window.
+// ---------------------------------------------------------------------------
+
+function ExportCard(props: { days: UsageRangeDays }): ReactNode {
+  const [busy, setBusy] = useState<'csv' | 'json' | null>(null)
+  const [error, setError] = useState<string | undefined>(undefined)
+
+  const run = async (format: 'csv' | 'json'): Promise<void> => {
+    if (busy !== null) return
+    setBusy(format)
+    setError(undefined)
+    try {
+      const response = await fetch(exportRequestPath(format, props.days))
+      if (!response.ok) throw new Error(`export failed: ${response.status}`)
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      try {
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = `dsh-usage-${props.days}d.${format}`
+        document.body.append(anchor)
+        anchor.click()
+        anchor.remove()
+      } finally {
+        // Revoke after the click settles; a task boundary avoids freeing the
+        // URL before the browser has started reading it.
+        window.setTimeout(() => URL.revokeObjectURL(url), 0)
+      }
+    } catch {
+      setError(t('usage.export.failed'))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <section className={`${styles.card} ${styles.exportCard}`} data-dsh-part="export-card">
+      <div className={styles.cardHead}>
+        <div className={styles.cardHeadGroup}>
+          <span className={styles.cardTitle}>{t('usage.export.title')}</span>
+          <span className={styles.scopeChip}>{t('usage.range.days', { n: props.days })}</span>
+        </div>
+      </div>
+      <p className={styles.exportHint}>{t('usage.export.hint', { n: props.days })}</p>
+      <div className={styles.exportActions}>
+        <button
+          type="button"
+          className={styles.refreshBtn}
+          disabled={busy !== null}
+          data-busy={busy === 'csv' ? 'yes' : 'no'}
+          onClick={() => void run('csv')}
+        >
+          {busy === 'csv' ? t('usage.export.busy') : t('usage.export.csv')}
+        </button>
+        <button
+          type="button"
+          className={styles.refreshBtn}
+          disabled={busy !== null}
+          data-busy={busy === 'json' ? 'yes' : 'no'}
+          onClick={() => void run('json')}
+        >
+          {busy === 'json' ? t('usage.export.busy') : t('usage.export.json')}
+        </button>
+      </div>
+      {error !== undefined && <span className={styles.exportError} role="alert">{error}</span>}
+    </section>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Plan windows tab.
@@ -1233,7 +1360,7 @@ function StateGlyph(props: { kind: 'loading' | 'error' | 'disabled' }): ReactNod
 
 /** The section component; the slot merges the face into these props. */
 export function UsageSectionCard(props: UsageSectionProps): ReactNode {
-  const { store, poll, refresh, settings, setCredential, clearCredential, view } = props
+  const { store, poll, refresh, setRangeDays, settings, setCredential, clearCredential, view } = props
   // Plugins page asks for a one-liner under the card title, or the full page.
   if (view === 'summary') return t('usage.intro')
 
@@ -1410,62 +1537,70 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
       </div>
 
       {tab === 'usage' && (
-        <div className={styles.cockpit} data-dsh-part="usage-cockpit">
-          <div className={`${styles.cell} ${styles.cell12}`}>
-            <HeroBand
-              todayTokens={todayTokens}
-              todayCalls={todayTotals.calls}
-              todayCost={todayTotals.cost}
-              tokenDelta={tokenDelta}
-              rangeTokens={totalOf(rangeTotals)}
-              rangeCalls={rangeTotals.calls}
-              allTokens={totalOf(allTotals)}
-              allCalls={allTotals.calls}
-              hitRate={hitRate}
-              cacheRead={todayTotals.cacheReadTokens}
-              billed={billedToday}
-              avgCost={avgCost}
-            />
-          </div>
-          <div className={`${styles.cell} ${styles.cell7} ${styles.cellHeatmap}`}>
-            <HeatmapCard days={days} />
-          </div>
-          <div className={`${styles.cell} ${styles.cell5} ${styles.cellQuota}`}>
-            <QuotaCard provider={matchedPlan} model={current.model} onSeeAll={() => setTab('plans')} />
-          </div>
-          <div className={`${styles.cell} ${styles.cell7}`}>
-            <RangeCard range={snapshot.usage.range} providers={snapshot.providers} currentProvider={current.provider} />
-          </div>
-          <div className={`${styles.cell} ${styles.cell5}`}>
-            <section className={styles.card} data-dsh-part="provider-card">
-              <div className={styles.cardHead}>
-                <div className={styles.cardHeadGroup}>
-                  <span className={styles.cardTitle}>{t('usage.today')}</span>
-                  <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
+        <>
+          <RangeBar
+            days={ui.rangeDays}
+            covered={coveredRange(snapshot.usage.range, ui.rangeDays)}
+            onSelect={setRangeDays}
+          />
+          <div className={styles.cockpit} data-dsh-part="usage-cockpit">
+            <div className={`${styles.cell} ${styles.cell12}`}>
+              <HeroBand
+                todayTokens={todayTokens}
+                todayCalls={todayTotals.calls}
+                todayCost={todayTotals.cost}
+                tokenDelta={tokenDelta}
+                rangeTokens={totalOf(rangeTotals)}
+                rangeCalls={rangeTotals.calls}
+                allTokens={totalOf(allTotals)}
+                allCalls={allTotals.calls}
+                hitRate={hitRate}
+                cacheRead={todayTotals.cacheReadTokens}
+                billed={billedToday}
+                avgCost={avgCost}
+                rangeDays={ui.rangeDays}
+              />
+            </div>
+            <div className={`${styles.cell} ${styles.cell7} ${styles.cellHeatmap}`}>
+              <HeatmapCard days={days} />
+            </div>
+            <div className={`${styles.cell} ${styles.cell5} ${styles.cellQuota}`}>
+              <QuotaCard provider={matchedPlan} model={current.model} onSeeAll={() => setTab('plans')} />
+            </div>
+            <div className={`${styles.cell} ${styles.cell7}`}>
+              <RangeCard range={snapshot.usage.range} providers={snapshot.providers} currentProvider={current.provider} rangeDays={ui.rangeDays} />
+            </div>
+            <div className={`${styles.cell} ${styles.cell5}`}>
+              <section className={styles.card} data-dsh-part="provider-card">
+                <div className={styles.cardHead}>
+                  <div className={styles.cardHeadGroup}>
+                    <span className={styles.cardTitle}>{t('usage.today')}</span>
+                    <span className={styles.scopeChip}>{t('usage.scope.device')}</span>
+                  </div>
+                  {deepseekVisible && (
+                    <span className={styles.peakPill} data-dsh-part="peak-status">
+                      {t(deepseekPeriod.peak ? 'usage.peak.on' : 'usage.peak.off', { time: formatClock(deepseekPeriod.boundaryMs) })}
+                    </span>
+                  )}
                 </div>
-                {deepseekVisible && (
-                  <span className={styles.peakPill} data-dsh-part="peak-status">
-                    {t(deepseekPeriod.peak ? 'usage.peak.on' : 'usage.peak.off', { time: formatClock(deepseekPeriod.boundaryMs) })}
-                  </span>
-                )}
-              </div>
-              <ProviderBreakdown
-                rows={snapshot.usage.today.providers}
-                providers={snapshot.providers}
-                current={current.provider}
-              />
-              <BalanceInline
-                providers={snapshot.providers}
-                current={current.provider}
-                excludeIds={todayProviderIds}
-              />
-              <TokenComposition totals={todayTotals} />
-            </section>
+                <ProviderBreakdown
+                  rows={snapshot.usage.today.providers}
+                  providers={snapshot.providers}
+                  current={current.provider}
+                />
+                <BalanceInline
+                  providers={snapshot.providers}
+                  current={current.provider}
+                  excludeIds={todayProviderIds}
+                />
+                <TokenComposition totals={todayTotals} />
+              </section>
+            </div>
+            <div className={`${styles.cell} ${styles.cell12}`}>
+              <HistoryCard days={days} />
+            </div>
           </div>
-          <div className={`${styles.cell} ${styles.cell12}`}>
-            <HistoryCard days={days} />
-          </div>
-        </div>
+        </>
       )}
 
       {tab === 'plans' && (
@@ -1481,15 +1616,18 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
       )}
 
       {tab === 'settings' && (
-        <SettingsRow
-          settings={settings}
-          snapshot={settingsSnapshot.status === 'ready' ? settingsSnapshot : undefined}
-          value={settingsValue}
-          providers={snapshot.providers}
-          credentials={snapshot.externalCredentials}
-          setCredential={setCredential}
-          clearCredential={clearCredential}
-        />
+        <>
+          <ExportCard days={ui.rangeDays} />
+          <SettingsRow
+            settings={settings}
+            snapshot={settingsSnapshot.status === 'ready' ? settingsSnapshot : undefined}
+            value={settingsValue}
+            providers={snapshot.providers}
+            credentials={snapshot.externalCredentials}
+            setCredential={setCredential}
+            clearCredential={clearCredential}
+          />
+        </>
       )}
     </div>
   )

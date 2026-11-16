@@ -14,8 +14,8 @@ import { emptyTotals, type ProviderSnapshotState, type ProviderSnapshotView, typ
 import { foldUsage, localDateKey, summarizeDays, summarizeDayTotals, summarizeProviderTotals } from '../src/core/ledger.ts'
 import { dedupeProviderAliasRoutes } from '../src/core/adapters.ts'
 import { jsonEtag } from '../src/host/http.ts'
-import { makeUsageOverviewRoute, requestEtagMatches } from '../src/host/routes.ts'
-import { nextFlushDelayMs, probeBackoffDelayMs, providerSnapshotFactsEqual, selectOverviewProviders, UsageService, type UsageServiceOptions } from '../src/host/usage-service.ts'
+import { makeUsageOverviewRoute, makeUsageRefreshRoute, requestEtagMatches } from '../src/host/routes.ts'
+import { DEFAULT_RANGE_DAYS, nextFlushDelayMs, probeBackoffDelayMs, providerSnapshotFactsEqual, resolveRangeDays, selectOverviewProviders, UsageService, type UsageServiceOptions } from '../src/host/usage-service.ts'
 
 /** A provider row with the defaults a catalog-only route would carry. */
 function row(overrides: Partial<ProviderSnapshotView>): ProviderSnapshotView {
@@ -117,9 +117,9 @@ describe('requestEtagMatches', () => {
   })
 })
 
-/** Minimal request the loopback fence can inspect. */
-function request(headers: Record<string, string>, remoteAddress = '127.0.0.1'): IncomingMessage {
-  return { socket: { remoteAddress }, headers } as unknown as IncomingMessage
+/** Minimal request the loopback fence and query parsing can inspect. */
+function request(headers: Record<string, string>, remoteAddress = '127.0.0.1', url = '/api/dsh-usage-plus/overview'): IncomingMessage {
+  return { socket: { remoteAddress }, headers, url } as unknown as IncomingMessage
 }
 
 /** Capture status, headers, and body from one route handler run. */
@@ -832,5 +832,125 @@ describe('ledger flush floor', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v0.4.0 overview range window (`?days=`)
+// ---------------------------------------------------------------------------
+
+describe('resolveRangeDays', () => {
+  it('defaults to 30 and accepts only the documented windows', () => {
+    expect(resolveRangeDays(undefined)).toBe(DEFAULT_RANGE_DAYS)
+    expect(resolveRangeDays(null)).toBe(DEFAULT_RANGE_DAYS)
+    for (const days of [7, 30, 90, 182]) {
+      expect(resolveRangeDays(days)).toBe(days)
+      expect(resolveRangeDays(String(days))).toBe(days)
+    }
+  })
+
+  it('rejects anything outside the allowed set', () => {
+    for (const value of [0, 1, 8, 31, 180, 365, 730, -7, 7.5, 'abc', '']) {
+      expect(resolveRangeDays(value), String(value)).toBeUndefined()
+    }
+  })
+})
+
+describe('overview range windows', () => {
+  it('reflects the requested window in usage.range while heatmap and all stay fixed', async () => {
+    const { service, internals } = perfHarness()
+    try {
+      const seven = (await service.overviewPayload(7)).document
+      expect(seven.usage.range?.from).toBe(seven.usage.days[175]?.date)
+      expect(seven.usage.range?.to).toBe(seven.usage.days[181]?.date)
+      const allKeys = Object.keys(internals.ledger.days).sort()
+      const expectedSeven = summarizeDays(allKeys.slice(-7).map((key) => internals.ledger.days[key] ?? {}))
+      expect(seven.usage.range?.totals).toEqual(expectedSeven.totals)
+      expect(seven.usage.days).toHaveLength(182)
+      expect(seven.usage.all?.from).toBe(seven.usage.days[0]?.date)
+
+      const ninety = (await service.overviewPayload(90)).document
+      expect(ninety.usage.range?.from).toBe(ninety.usage.days[92]?.date)
+      expect(ninety.usage.all).toEqual(seven.usage.all)
+
+      const full = (await service.overviewPayload(182)).document
+      expect(full.usage.range?.from).toBe(full.usage.days[0]?.date)
+      expect(full.usage.range?.to).toBe(full.usage.days[181]?.date)
+    } finally {
+      await service.stop()
+    }
+  })
+
+  it('caches one document per accepted window without thrashing', async () => {
+    const { service } = perfHarness()
+    try {
+      const seven = await service.overviewPayload(7)
+      const sevenAgain = await service.overviewPayload(7)
+      expect(sevenAgain.document).toBe(seven.document)
+      expect(sevenAgain.etag).toBe(seven.etag)
+
+      const thirty = await service.overviewPayload(30)
+      expect(thirty.document).not.toBe(seven.document)
+      expect(thirty.etag).not.toBe(seven.etag)
+
+      // Re-requesting 7 after 30 still hits its own cache slot.
+      const sevenThird = await service.overviewPayload(7)
+      expect(sevenThird.document).toBe(seven.document)
+      expect(sevenThird.etag).toBe(seven.etag)
+
+      // The no-argument default is the 30 slot.
+      const defaulted = await service.overviewPayload()
+      expect(defaulted.document).toBe(thirty.document)
+      expect(defaulted.etag).toBe(thirty.etag)
+    } finally {
+      await service.stop()
+    }
+  })
+
+  it('parses ?days= on the route, answers 400 for other values, and 304s per variant', async () => {
+    const { service } = perfHarness()
+    try {
+      const route = makeUsageOverviewRoute(service)
+      const sevenResponse = response()
+      await route.handler(request({ host: '127.0.0.1:53215' }, '127.0.0.1', '/api/dsh-usage-plus/overview?days=7'), sevenResponse.res)
+      expect(sevenResponse.status()).toBe(200)
+      const sevenBody = JSON.parse(sevenResponse.body()) as UsageOverviewView
+      expect(sevenBody.usage.range?.from).toBe(sevenBody.usage.days[175]?.date)
+      const sevenEtag = String(sevenResponse.headers()['etag'])
+
+      const notModified = response()
+      await route.handler(request({ host: '127.0.0.1:53215', 'if-none-match': sevenEtag }, '127.0.0.1', '/api/dsh-usage-plus/overview?days=7'), notModified.res)
+      expect(notModified.status()).toBe(304)
+
+      const otherVariant = response()
+      await route.handler(request({ host: '127.0.0.1:53215', 'if-none-match': sevenEtag }, '127.0.0.1', '/api/dsh-usage-plus/overview?days=30'), otherVariant.res)
+      expect(otherVariant.status()).toBe(200)
+      expect(otherVariant.headers()['etag']).not.toBe(sevenEtag)
+      const otherBody = JSON.parse(otherVariant.body()) as UsageOverviewView
+      expect(otherBody.usage.range?.from).toBe(otherBody.usage.days[152]?.date)
+
+      const invalid = response()
+      await route.handler(request({ host: '127.0.0.1:53215' }, '127.0.0.1', '/api/dsh-usage-plus/overview?days=8'), invalid.res)
+      expect(invalid.status()).toBe(400)
+    } finally {
+      await service.stop()
+    }
+  })
+
+  it('keeps the refresh route on the default window', async () => {
+    const seen: Array<number | undefined> = []
+    const service = {
+      refresh: async () => {},
+      overview: async (days?: number) => {
+        seen.push(days)
+        return overviewDocument
+      },
+    } as unknown as UsageService
+    const route = makeUsageRefreshRoute(service)
+    const out = response()
+    const req = { ...request({ host: '127.0.0.1:53215' }), method: 'POST' } as unknown as IncomingMessage
+    await route.handler(req, out.res)
+    expect(out.status()).toBe(200)
+    expect(seen).toEqual([undefined])
   })
 })

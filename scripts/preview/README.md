@@ -17,6 +17,7 @@ python scripts/preview/shot.py                                  # overview + str
 python scripts/preview/shot.py --only all                       # + plans, settings, light, sparse, strip-open
 python scripts/preview/shot.py --prefix dev-after               # after-redesign names
 python scripts/preview/shot.py --only overview --width 900      # narrow layout probe
+python scripts/preview/shot.py --only range-90 --width 960      # 90-day window at the Plugins column
 
 # 2. Or keep the dev server up and open it in a browser:
 pnpm exec vite scripts/preview --port 5199 --strictPort
@@ -38,6 +39,8 @@ capture, and reports how long the harness took to become ready.
 | `theme`   | `dark` \| `light`                      | `dark`    | emulated DSH colour scheme                    |
 | `lang`    | `zh` \| `en`                           | `zh`      | sets `document.documentElement.lang` for `t()`|
 | `tab`     | `usage` \| `plans` \| `settings`       | `usage`   | section tab to activate after mount           |
+| `range`   | `7` \| `30` \| `90` \| `182`            | `30`      | overview window to select after mount         |
+| `retain`  | days                                    | –         | simulate shorter ledger retention             |
 | `variant` | `rich` \| `sparse`                     | `rich`    | fixture shape (see below)                     |
 | `updated` | `fresh` \| `stale`                     | `fresh`   | document age for the header freshness dot (`fresh` = 8 s, `stale` = 10 min) |
 | `open`    | `1`                                    | –         | strip: open the quota popover on load         |

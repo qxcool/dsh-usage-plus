@@ -17,6 +17,7 @@ import { createUsageStore, type UsageStoreInstance } from './usage-store.ts'
 import { UsageSectionCard, type UsageConfigForm, type UsageSectionFace, type UsageSettings } from './UsageSectionCard.tsx'
 import { PlanUsageStrip, reportDiag, type PlanUsageStripProps } from './PlanUsageStrip.tsx'
 import { NS, en, zh } from './locales.ts'
+import { overviewRequestPath, type UsageRangeDays } from './usage-api.ts'
 import type { ExternalCredentialTarget, UsageOverviewView } from '../core/types.ts'
 
 /**
@@ -85,11 +86,13 @@ async function credentialMutation(action: 'set' | 'clear', target: ExternalCrede
 }
 
 /**
- * Read the overview, revalidating with the previous ETag so an unchanged
- * document answers 304 instead of a full body on every poll.
+ * Read the overview for one window, revalidating with the previous ETag so an
+ * unchanged document answers 304 instead of a full body on every poll. The
+ * caller resets the ETag when the window changes (the Host's ETag is per
+ * variant).
  */
-async function fetchOverview(ifNoneMatch: string | undefined): Promise<OverviewPollResult> {
-  const response = await fetch('/api/dsh-usage-plus/overview', {
+async function fetchOverview(ifNoneMatch: string | undefined, days: UsageRangeDays): Promise<OverviewPollResult> {
+  const response = await fetch(overviewRequestPath(days), {
     method: 'GET',
     ...(ifNoneMatch === undefined ? {} : { headers: { 'if-none-match': ifNoneMatch } }),
     signal: AbortSignal.timeout(USAGE_FETCH_TIMEOUT_MS),
@@ -218,7 +221,10 @@ export function apply(ctx: ClientContext): void {
     if (!force && now - lastFetchStartAt < POLL_DEDUPE_MS) return
     lastFetchStartAt = now
     const seq = ++pollSeq
-    inFlight = fetchOverview(overviewEtag).then((result) => {
+    // Read the window at request time: the shared strip poller and the
+    // section poller both follow whatever the store currently selects.
+    const days = store.getSnapshot().rangeDays
+    inFlight = fetchOverview(overviewEtag, days).then((result) => {
       if (seq !== pollSeq) return
       if (result.notModified) {
         // Data is still current; only a stale error state needs clearing.
@@ -253,6 +259,20 @@ export function apply(ctx: ClientContext): void {
 
   const poll = (): void => startPoll()
   const refresh = (): void => startRefresh()
+
+  /**
+   * Switch the overview window: store the choice, drop the ETag of the
+   * previous variant, and force one read. An in-flight read for the old window
+   * is invalidated (`pollSeq`) so its response cannot paint over the new one;
+   * its settle hook then starts the queued forced poll with the new range.
+   */
+  const setRangeDays = (days: UsageRangeDays): void => {
+    if (days === store.getSnapshot().rangeDays) return
+    store.actions.setRangeDays(days)
+    overviewEtag = undefined
+    pollSeq += 1
+    startPoll(true)
+  }
 
   const applyOverview = (snapshot: UsageOverviewView): void => {
     pollSeq += 1
@@ -333,6 +353,7 @@ export function apply(ctx: ClientContext): void {
     store,
     poll,
     refresh,
+    setRangeDays,
     settings,
     setCredential,
     clearCredential,

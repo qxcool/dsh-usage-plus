@@ -8,6 +8,7 @@
 import { defineStore } from '@deepseek-ai/dsh-client-store'
 import type { EngineStoreHandle, EngineStoreInstance } from '@deepseek-ai/dsh-client-store'
 import type { UsageOverviewView } from '../core/types.ts'
+import { DEFAULT_USAGE_RANGE_DAYS, type UsageRangeDays } from './usage-api.ts'
 
 /** Section UI state as consumers see it. */
 export interface UsageUiState {
@@ -17,6 +18,8 @@ export interface UsageUiState {
   status: 'loading' | 'ready' | 'error'
   /** Transport error message, when any. */
   error: string | null
+  /** Selected overview window in days (the Host ETag is per variant). */
+  rangeDays: UsageRangeDays
 }
 
 /** Store write set. */
@@ -25,6 +28,8 @@ export type UsageUiActions = {
   setSnapshot: (draft: UsageUiState, snapshot: UsageOverviewView) => void
   /** Mark the fetch lifecycle. */
   setState: (draft: UsageUiState, status: UsageUiState['status'], error: string | null) => void
+  /** Select the overview window; the fetch layer resets its ETag and repolls. */
+  setRangeDays: (draft: UsageUiState, rangeDays: UsageRangeDays) => void
 }
 
 /** Create the usage store handle (apply world only; never module-level). */
@@ -34,6 +39,7 @@ export function createUsageStore(): EngineStoreHandle<UsageUiState, UsageUiActio
       snapshot: null,
       status: 'loading',
       error: null,
+      rangeDays: DEFAULT_USAGE_RANGE_DAYS,
     }),
     actions: {
       setSnapshot: (draft, snapshot) => {
@@ -44,6 +50,9 @@ export function createUsageStore(): EngineStoreHandle<UsageUiState, UsageUiActio
       setState: (draft, status, error) => {
         draft.status = status
         draft.error = error
+      },
+      setRangeDays: (draft, rangeDays) => {
+        draft.rangeDays = rangeDays
       },
     },
   })

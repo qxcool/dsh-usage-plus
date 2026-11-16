@@ -103,6 +103,20 @@ export function writeJson(
 }
 
 /**
+ * Write one text response (CSV and other non-JSON bodies) with the family
+ * defaults; caller headers are appended or override them.
+ */
+export function writeText(
+  res: ServerResponse,
+  status: number,
+  body: string,
+  headers: OutgoingHttpHeaders = {},
+): void {
+  res.writeHead(status, { ...JSON_HEADERS, 'content-type': 'text/plain; charset=utf-8', ...headers })
+  res.end(body)
+}
+
+/**
  * A strong ETag for one JSON document: SHA-1 over the document with its
  * volatile top-level `updatedAt` normalized away, quoted for HTTP. Documents
  * that differ only in the instant they were assembled share an ETag, so a

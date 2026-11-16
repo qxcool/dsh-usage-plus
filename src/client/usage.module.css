@@ -190,6 +190,62 @@
   max-width: 54ch;
 }
 
+/* Overview window picker: a quiet segmented control above the cockpit, with
+   the Host's real covered range on the right when retention is shorter. */
+.rangeBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.rangeSeg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--u-line);
+  border-radius: 8px;
+  background: var(--u-surface-2);
+}
+
+.rangeBtn {
+  appearance: none;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--u-text-3);
+  font: inherit;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.rangeBtn:hover {
+  color: var(--u-text-2);
+}
+
+.rangeBtn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--u-accent) 55%, transparent);
+}
+
+.rangeBtnActive {
+  background: var(--u-surface-3);
+  color: inherit;
+  box-shadow: inset 0 0 0 1px var(--u-line-2);
+}
+
+.rangeCovered {
+  font-size: 11px;
+  color: var(--u-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ------------------------------------------------------------------ */
 /* Shared card chassis                                                */
 /* ------------------------------------------------------------------ */
@@ -370,6 +426,29 @@
 .refreshBtn:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--u-accent) 55%, transparent);
+}
+
+/* Data export: a quiet action card in the Settings tab, not a second form. */
+.exportCard {
+  gap: 12px;
+}
+
+.exportHint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--u-text-3);
+}
+
+.exportActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.exportError {
+  font-size: 11.5px;
+  color: var(--u-bad);
 }
 
 /* ------------------------------------------------------------------ */
