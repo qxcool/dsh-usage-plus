@@ -90,6 +90,7 @@ Optional credential names are `CPAMC_MANAGEMENT_KEY`, `VOLC_ACCESSKEY`, and `VOL
 
 - Requires DSH `>= 0.2.2-rc.3 < 0.3.0`. Missing optional surfaces (`configForms`, `plugins.bundle.config`, `conversation.composer.dock`) are treated as unavailable capabilities instead of a startup failure.
 - Historical backfill runs only when the ledger is empty and the composition mounts `sessionQuery`; an existing ledger is never re-counted.
+- After an upgrade, a reloaded client can briefly run against an older Host process. Alert fields are then hidden and legacy settings still save; restart DSH to load the new Host (health, alerts and the new adapters need it).
 - Alert episodes and pet-bubble cooldowns live in memory (a DSH restart starts a fresh episode); balance alerts compare CNY balances only, and the daily-cost alert counts priced routes (currently the official DeepSeek price book).
 - Providers without an official Plan API show no strip and no fabricated windows.
 - CPAMC accepts loopback origins (or hosts listed in `cpamcAllowedHosts`) only; management routes are read-only and reject redirects.

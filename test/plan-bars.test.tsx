@@ -90,6 +90,8 @@ function face(
     rangeDays?: UsageRangeDays
     onRange?: (days: UsageRangeDays) => void
     onMutate?: (ops: ReadonlyArray<{ op: string; path: readonly string[]; value?: unknown }>) => void
+    /** Host-resolved config fields; a legacy set proves the old-Host path. */
+    settingsValue?: Record<string, unknown>
   } = {},
 ): Record<string, unknown> {
   const state = {
@@ -108,7 +110,7 @@ function face(
     setCredential: async () => {},
     clearCredential: async () => {},
     settings: {
-      getSnapshot: () => ({ status: 'ready', value: {}, writable: true, revision: 0 }),
+      getSnapshot: () => ({ status: 'ready', value: options.settingsValue ?? {}, writable: true, revision: 0 }),
       subscribe: () => () => {},
       set: async () => true,
       mutate: async (ops: ReadonlyArray<{ op: string; path: readonly string[]; value?: unknown }>) => {
@@ -498,6 +500,56 @@ describe('alert settings and data health', () => {
     expect(byPath.get('planAlertPercent')).toBe(85)
     expect(byPath.get('balanceAlertCny')).toBe(40)
     expect(byPath.get('alertCooldownMinutes')).toBe(30)
+  })
+
+  it('saves only legacy fields and explains the version skew on an older Host', async () => {
+    const calls: Array<ReadonlyArray<{ op: string; path: readonly string[]; value?: unknown }>> = []
+    const snapshot = overview()
+    // Old Host: no health payload and a config schema without the alert fields.
+    delete snapshot.health
+    const legacyFields = {
+      enabled: true,
+      pollIntervalSec: 60,
+      bubbleMode: 'always',
+      cpamcEnabled: false,
+      cpamcBaseURL: 'http://127.0.0.1:8317',
+      cpamcAllowedHosts: '',
+      volcanoEnabled: false,
+    }
+    const { host, root: mounted } = mount(snapshot, {
+      settingsValue: legacyFields,
+      onMutate: (ops) => calls.push(ops),
+    })
+    root = mounted
+    await flush()
+    pressTab(host, '设置')
+
+    const alertGroup = host.querySelector<HTMLElement>('[data-dsh-part="alert-settings"]')
+    expect(alertGroup?.getAttribute('data-host-compat')).toBe('old')
+    expect(host.querySelector('[data-dsh-part="alert-settings-host-note"]')?.textContent).toContain('重启 DSH')
+    const alertInputs = [...(alertGroup?.querySelectorAll<HTMLInputElement>('input') ?? [])]
+    expect(alertInputs.every((input) => input.disabled)).toBe(true)
+    expect(host.textContent).toContain('需要 v0.5.0 及以上')
+
+    // Legacy settings still save; the undeliverable alert paths are omitted.
+    const pollInput = [...host.querySelectorAll<HTMLInputElement>('[data-dsh-part="settings-row"] input[type="number"]')][0]
+    expect(pollInput).toBeDefined()
+    setInputValue(pollInput!, '120')
+    const save = [...host.querySelectorAll<HTMLButtonElement>('[data-dsh-part="settings-row"] button')]
+      .filter((button) => button.textContent === '保存' && !button.disabled)
+      .pop()
+    expect(save).toBeDefined()
+    await act(async () => {
+      save?.click()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+
+    expect(calls).toHaveLength(1)
+    const paths = (calls[0] ?? []).map((op) => op.path.join('.'))
+    expect(paths).toContain('pollIntervalSec')
+    expect(paths).not.toContain('alertsEnabled')
+    expect(paths).not.toContain('dailyCostLimitCny')
+    expect(paths).not.toContain('alertCooldownMinutes')
   })
 
   it('renders coverage, ledger size, backfill, probes and corrupt files in the health card', async () => {

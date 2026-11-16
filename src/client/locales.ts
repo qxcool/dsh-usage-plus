@@ -194,6 +194,8 @@ export const zh = {
   'usage.config.saving': '保存中…',
   'usage.config.discard': '放弃',
   'usage.config.saveFailed': '保存失败，请重试。',
+  'usage.config.saveFailedHostOld': '保存失败：当前 Host 仍是旧版本，请重启 DSH 更新插件后重试。',
+  'usage.config.hostOld': '当前 Host 仍是旧版本：告警阈值需重启 DSH 更新插件后生效；其他设置仍可正常保存。',
 }
 
 /** English mirror; every zh key present. */
@@ -383,6 +385,8 @@ export const en: Record<UsageKey, string> = {
   'usage.config.saving': 'Saving…',
   'usage.config.discard': 'Discard',
   'usage.config.saveFailed': 'Save failed. Please try again.',
+  'usage.config.saveFailedHostOld': 'Save failed: the running Host is still an older build. Restart DSH to update the plugin, then retry.',
+  'usage.config.hostOld': 'The running Host is an older build: alert thresholds take effect after a DSH restart updates the plugin; other settings still save.',
 }
 
 export type UsageKey = keyof typeof zh

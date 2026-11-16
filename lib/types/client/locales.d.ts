@@ -192,6 +192,8 @@ export declare const zh: {
     'usage.config.saving': string;
     'usage.config.discard': string;
     'usage.config.saveFailed': string;
+    'usage.config.saveFailedHostOld': string;
+    'usage.config.hostOld': string;
 };
 /** English mirror; every zh key present. */
 export declare const en: Record<UsageKey, string>;

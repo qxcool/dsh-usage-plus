@@ -1291,16 +1291,22 @@ function normalizeSettings(value: UsageSettings | undefined): typeof CONFIG_DEFA
  * Config tab on the bundle's configuration page: edits stay staged until Save.
  * Matches the official Plugins page contract (leave page → discard draft).
  */
+/** Alert fields only a v0.5.0+ Host understands; older Hosts reject them. */
+const ALERT_SETTING_FIELDS = ['alertsEnabled', 'dailyCostLimitCny', 'planAlertPercent', 'balanceAlertCny', 'alertCooldownMinutes'] as const
+
 function SettingsRow(props: {
   settings: UsageSectionProps['settings']
   snapshot?: { writable: boolean; revision?: number }
   value: UsageSettings
+  /** Whether the running Host's schema knows the alert fields (v0.5.0+). */
+  alertsSupported?: boolean
   providers?: ProviderSnapshotView[]
   credentials?: ExternalCredentialStatus
   setCredential: UsageSectionProps['setCredential']
   clearCredential: UsageSectionProps['clearCredential']
 }): ReactNode {
   const { settings, snapshot, value, providers = [], credentials, setCredential, clearCredential } = props
+  const alertsSupported = props.alertsSupported ?? true
   const disabled = snapshot !== undefined && !snapshot.writable
   const [draft, setDraft] = useState(() => normalizeSettings(value))
   const [dirty, setDirty] = useState(false)
@@ -1332,11 +1338,15 @@ function SettingsRow(props: {
       { op: 'set', path: ['enabled'], value: draft.enabled },
       { op: 'set', path: ['pollIntervalSec'], value: draft.pollIntervalSec },
       { op: 'set', path: ['bubbleMode'], value: draft.bubbleMode },
-      { op: 'set', path: ['alertsEnabled'], value: draft.alertsEnabled },
-      { op: 'set', path: ['dailyCostLimitCny'], value: draft.dailyCostLimitCny },
-      { op: 'set', path: ['planAlertPercent'], value: draft.planAlertPercent },
-      { op: 'set', path: ['balanceAlertCny'], value: draft.balanceAlertCny },
-      { op: 'set', path: ['alertCooldownMinutes'], value: draft.alertCooldownMinutes },
+      ...(alertsSupported
+        ? ([
+            { op: 'set', path: ['alertsEnabled'], value: draft.alertsEnabled },
+            { op: 'set', path: ['dailyCostLimitCny'], value: draft.dailyCostLimitCny },
+            { op: 'set', path: ['planAlertPercent'], value: draft.planAlertPercent },
+            { op: 'set', path: ['balanceAlertCny'], value: draft.balanceAlertCny },
+            { op: 'set', path: ['alertCooldownMinutes'], value: draft.alertCooldownMinutes },
+          ] as const)
+        : []),
       { op: 'set', path: ['cpamcEnabled'], value: draft.cpamcEnabled },
       { op: 'set', path: ['cpamcBaseURL'], value: draft.cpamcBaseURL },
       { op: 'set', path: ['cpamcAllowedHosts'], value: draft.cpamcAllowedHosts },
@@ -1345,7 +1355,7 @@ function SettingsRow(props: {
     void settings.mutate(ops, snapshot?.revision).then((ok) => {
       setSaving(false)
       if (!ok) {
-        setSaveError(t('usage.config.saveFailed'))
+        setSaveError(t(alertsSupported ? 'usage.config.saveFailed' : 'usage.config.saveFailedHostOld'))
         return
       }
       setDirty(false)
@@ -1411,14 +1421,14 @@ function SettingsRow(props: {
           </label>
         </div>
 
-        <div className={styles.settingsSection} data-dsh-part="alert-settings">
+        <div className={styles.settingsSection} data-dsh-part="alert-settings" data-host-compat={alertsSupported ? 'current' : 'old'}>
           <span className={styles.subTitle}>{t('usage.config.alerts')}</span>
           <label className={styles.settingRow}>
             <span>{t('usage.config.alertsEnabled')}</span>
             <input
               type="checkbox"
               checked={draft.alertsEnabled}
-              disabled={disabled || saving}
+              disabled={disabled || saving || !alertsSupported}
               onChange={(event) => { edit('alertsEnabled', event.target.checked) }}
             />
           </label>
@@ -1429,7 +1439,7 @@ function SettingsRow(props: {
               min={0}
               step={1}
               value={draft.dailyCostLimitCny}
-              disabled={disabled || saving || !draft.alertsEnabled}
+              disabled={disabled || saving || !alertsSupported || !draft.alertsEnabled}
               onChange={(event) => {
                 const parsed = Number(event.target.value)
                 if (Number.isFinite(parsed) && parsed >= 0) edit('dailyCostLimitCny', parsed)
@@ -1444,7 +1454,7 @@ function SettingsRow(props: {
               max={100}
               step={1}
               value={draft.planAlertPercent}
-              disabled={disabled || saving || !draft.alertsEnabled}
+              disabled={disabled || saving || !alertsSupported || !draft.alertsEnabled}
               onChange={(event) => {
                 const parsed = Number(event.target.value)
                 if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 100) edit('planAlertPercent', parsed)
@@ -1458,7 +1468,7 @@ function SettingsRow(props: {
               min={0}
               step={1}
               value={draft.balanceAlertCny}
-              disabled={disabled || saving || !draft.alertsEnabled}
+              disabled={disabled || saving || !alertsSupported || !draft.alertsEnabled}
               onChange={(event) => {
                 const parsed = Number(event.target.value)
                 if (Number.isFinite(parsed) && parsed >= 0) edit('balanceAlertCny', parsed)
@@ -1473,7 +1483,7 @@ function SettingsRow(props: {
               max={1440}
               step={1}
               value={draft.alertCooldownMinutes}
-              disabled={disabled || saving || !draft.alertsEnabled}
+              disabled={disabled || saving || !alertsSupported || !draft.alertsEnabled}
               onChange={(event) => {
                 const parsed = Number(event.target.value)
                 if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 1440) edit('alertCooldownMinutes', Math.round(parsed))
@@ -1481,6 +1491,11 @@ function SettingsRow(props: {
             />
           </label>
           <span className={styles.muted}>{t('usage.config.alertsHint')}</span>
+          {!alertsSupported && (
+            <span className={styles.settingWarn} data-dsh-part="alert-settings-host-note">
+              {t('usage.config.hostOld')}
+            </span>
+          )}
         </div>
 
         <div className={styles.settingsSection}>
@@ -1703,6 +1718,19 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
   }, [poll, enabled])
 
   const snapshot = ui.snapshot
+  // Version skew: a page reload can run the new client over a Host that still
+  // has the previous plugin build. That Host's Config schema rejects the alert
+  // fields (the whole atomic mutate fails), so advertise them only when the
+  // resolved Host form actually contains those keys (or the Host sends health).
+  const settingsFields = (() => {
+    const resolved = settingsSnapshot.value
+    if (resolved === undefined) return undefined
+    const keys = Object.keys(resolved)
+    return keys.length === 0 ? undefined : keys
+  })()
+  const alertsSupported = snapshot?.health !== undefined
+    || settingsFields === undefined
+    || ALERT_SETTING_FIELDS.every((field) => settingsFields.includes(field))
 
   const onRefresh = (): void => {
     setRefreshing(true)
@@ -1748,6 +1776,7 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
           settings={settings}
           snapshot={settingsSnapshot.status === 'ready' ? settingsSnapshot : undefined}
           value={settingsValue}
+          alertsSupported={alertsSupported}
           setCredential={setCredential}
           clearCredential={clearCredential}
         />
@@ -1924,6 +1953,7 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
             settings={settings}
             snapshot={settingsSnapshot.status === 'ready' ? settingsSnapshot : undefined}
             value={settingsValue}
+            alertsSupported={alertsSupported}
             providers={snapshot.providers}
             credentials={snapshot.externalCredentials}
             setCredential={setCredential}
