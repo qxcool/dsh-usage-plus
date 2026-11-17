@@ -7,7 +7,7 @@
  * @module test/strip.test.tsx
  */
 import { act, cleanup } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createElement, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { PlanUsageStrip } from '../src/client/PlanUsageStrip.tsx'
@@ -384,8 +384,26 @@ describe('cpamc / reset helpers', () => {
     expect(friendlyProbeError('CPAMC URL must be a loopback origin')).toContain('127.0.0.1')
   })
 
-  it('explains custom-plan failures without reusing the CPAMC copy', async () => {
-    const { friendlyCustomPlanError } = await import('../src/client/locales.ts')
+  it('shows concrete minutes when a reset is under an hour away', async () => {
+    const { formatPlanReset } = await import('../src/client/locales.ts')
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-11-17T12:00:00Z'))
+      expect(formatPlanReset('2026-11-17T12:30:00Z')).toBe('30 分钟后重置')
+      expect(formatPlanReset('2026-11-17T12:00:45Z')).toBe('1 分钟后重置')
+      expect(formatPlanReset('2026-11-17T12:45:30Z')).toBe('46 分钟后重置')
+      expect(formatPlanReset('2026-11-17T13:00:00Z')).toBe('1 小时后重置')
+      expect(formatPlanReset('2026-11-17T14:30:00Z')).toBe('3 小时后重置')
+      expect(formatPlanReset('2026-11-20T12:00:00Z')).toBe('3 天后重置')
+      expect(formatPlanReset('2026-11-17T11:59:00Z')).toBe('即将重置')
+      expect(formatPlanReset(undefined)).toBe('—')
+      expect(formatPlanReset('not-a-date')).toBe('—')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('explains custom-plan failures without reusing the CPAMC copy', async () => {    const { friendlyCustomPlanError } = await import('../src/client/locales.ts')
     // A 401 must not tell the user to fix a CPAMC management token.
     const auth = friendlyCustomPlanError('custom plan rejected the request (401/403)')
     expect(auth).toBeDefined()

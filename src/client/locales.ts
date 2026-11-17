@@ -141,6 +141,7 @@ export const zh = {
   'usage.plan.reset': '{date} 重置',
   'usage.plan.reset.soon': '即将重置',
   'usage.plan.reset.inHours': '{n} 小时后重置',
+  'usage.plan.reset.inMinutes': '{n} 分钟后重置',
   'usage.plan.reset.inDays': '{n} 天后重置',
   'usage.plan.noPlan': '未检测到套餐数据',
   'usage.plan.emptyHint': '当前模型未匹配到账号套餐，前往「套餐额度」查看已配置的额度源。',
@@ -399,6 +400,7 @@ export const en: Record<UsageKey, string> = {
   'usage.plan.reset': 'resets {date}',
   'usage.plan.reset.soon': 'Resets soon',
   'usage.plan.reset.inHours': 'Resets in {n}h',
+  'usage.plan.reset.inMinutes': 'Resets in {n}m',
   'usage.plan.reset.inDays': 'Resets in {n}d',
   'usage.plan.noPlan': 'No plan data detected',
   'usage.plan.emptyHint': 'No account plan matched this model. Open Plan quotas to see the configured sources.',
@@ -553,6 +555,11 @@ export function formatPlanReset(iso?: string): string {
   if (Number.isNaN(target)) return '—'
   const delta = target - Date.now()
   if (delta <= 0) return t('usage.plan.reset.soon')
+  // Under an hour, talk in minutes: rounding to "1 hour" hid a reset that was
+  // minutes away. A sub-minute remainder reads as "1 minute" rather than 0.
+  if (delta < 3_600_000) {
+    return t('usage.plan.reset.inMinutes', { n: Math.max(1, Math.ceil(delta / 60_000)) })
+  }
   const hours = Math.round(delta / 3_600_000)
   if (hours < 48) return t('usage.plan.reset.inHours', { n: Math.max(1, hours) })
   const days = Math.round(delta / 86_400_000)

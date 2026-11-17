@@ -139,6 +139,7 @@ export declare const zh: {
     'usage.plan.reset': string;
     'usage.plan.reset.soon': string;
     'usage.plan.reset.inHours': string;
+    'usage.plan.reset.inMinutes': string;
     'usage.plan.reset.inDays': string;
     'usage.plan.noPlan': string;
     'usage.plan.emptyHint': string;
