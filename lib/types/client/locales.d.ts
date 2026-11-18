@@ -145,6 +145,8 @@ export declare const zh: {
     'usage.plan.emptyHint': string;
     'usage.plan.quota.tightest': string;
     'usage.plan.tightest': string;
+    'usage.plan.featured': string;
+    'usage.plan.full': string;
     'usage.plan.noneConfigured': string;
     'usage.plan.groupEmpty': string;
     'usage.plan.groupCount': string;

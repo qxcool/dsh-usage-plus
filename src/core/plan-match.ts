@@ -40,6 +40,31 @@ export function orderedPlanWindows(plan: PlanView | undefined): PlanWindowView[]
   })
 }
 
+/** A window at or past 100% blocks further usage until it resets. */
+export function isPlanWindowFull(window: PlanWindowView | undefined): boolean {
+  return typeof window?.percent === 'number' && window.percent >= 100
+}
+
+/**
+ * The window whose reading should be featured in the composer strip.
+ *
+ * Windows measure different periods, so "highest percent" is not comparable:
+ * a monthly window at 70% is normal while the 5-hour window still has room.
+ * The shortest window is the one that throttles a working session soonest, so
+ * it stays primary; a longer window replaces it only once it is actually full
+ * (100%), because then it blocks all usage regardless of the shorter window.
+ * Among multiple full windows the shortest (week before month) is featured.
+ *
+ * @param windows - display-ordered windows (`orderedPlanWindows`).
+ * @returns the featured window, or undefined when there is none.
+ */
+export function featuredPlanWindow(windows: readonly PlanWindowView[]): PlanWindowView | undefined {
+  if (windows.length === 0) return undefined
+  const shortest = windows[0]
+  if (isPlanWindowFull(shortest)) return shortest
+  return windows.slice(1).find(isPlanWindowFull) ?? shortest
+}
+
 /** Clone a provider row with display-only windows, or undefined when empty. */
 export function withDisplayPlan(provider: ProviderSnapshotView | undefined): ProviderSnapshotView | undefined {
   if (provider?.plan === undefined) return undefined

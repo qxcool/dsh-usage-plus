@@ -21,6 +21,22 @@ export interface PlanRouteOverride {
 export declare function planWindowsForDisplay(plan: PlanView | undefined): PlanWindowView[];
 /** Stable 5h → week → month order for plan cards and the strip panel. */
 export declare function orderedPlanWindows(plan: PlanView | undefined): PlanWindowView[];
+/** A window at or past 100% blocks further usage until it resets. */
+export declare function isPlanWindowFull(window: PlanWindowView | undefined): boolean;
+/**
+ * The window whose reading should be featured in the composer strip.
+ *
+ * Windows measure different periods, so "highest percent" is not comparable:
+ * a monthly window at 70% is normal while the 5-hour window still has room.
+ * The shortest window is the one that throttles a working session soonest, so
+ * it stays primary; a longer window replaces it only once it is actually full
+ * (100%), because then it blocks all usage regardless of the shorter window.
+ * Among multiple full windows the shortest (week before month) is featured.
+ *
+ * @param windows - display-ordered windows (`orderedPlanWindows`).
+ * @returns the featured window, or undefined when there is none.
+ */
+export declare function featuredPlanWindow(windows: readonly PlanWindowView[]): PlanWindowView | undefined;
 /** Clone a provider row with display-only windows, or undefined when empty. */
 export declare function withDisplayPlan(provider: ProviderSnapshotView | undefined): ProviderSnapshotView | undefined;
 /** Volcano Ark / Doubao coding-plan routes (and their control-plane hosts). */

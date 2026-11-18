@@ -1884,6 +1884,24 @@
   font-variant-numeric: tabular-nums;
 }
 
+.windowName {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.windowFull {
+  flex: none;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--u-bad);
+  background: color-mix(in srgb, var(--u-bad) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--u-bad) 30%, transparent);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
 .bar {
   height: 6px;
   border-radius: 3px;
@@ -2513,7 +2531,7 @@
   min-width: 0;
 }
 
-/* The ring tracks the tightest window; this badge names the same row so the
+/* The ring tracks the featured window; this badge names the same row so the
    arc and the reading can never be misattributed. */
 .quotaMeterTight {
   flex: none;
@@ -2527,6 +2545,14 @@
   border-radius: 4px;
   padding: 0 4px;
   white-space: nowrap;
+}
+
+/* An exhausted window blocks usage; it replaces the featured accent with the
+   danger tone without changing the badge geometry. */
+.quotaMeterFull {
+  color: var(--u-bad);
+  background: color-mix(in srgb, var(--u-bad) 12%, transparent);
+  border-color: color-mix(in srgb, var(--u-bad) 34%, transparent);
 }
 
 .quotaMeterBarPct {

@@ -18,7 +18,7 @@ import { PlanUsageStrip } from './PlanUsageStrip.tsx'
 import styles from './usage.module.css'
 import { isDeepSeekProviderRoute } from '../core/adapters.ts'
 import { buildHeatmapGrid, HEATMAP_WEEKS, type HeatmapCell } from '../core/heatmap.ts'
-import { currentPlanProvider, orderedPlanWindows, planSourceLabelKey, planTabProviders } from '../core/plan-match.ts'
+import { currentPlanProvider, isPlanWindowFull, orderedPlanWindows, planSourceLabelKey, planTabProviders } from '../core/plan-match.ts'
 import { deepseekPeriodAt } from '../core/pricing.ts'
 import type { ExternalCredentialStatus, ExternalCredentialTarget, ProviderSnapshotView, UsageAlert, UsageCostEstimate, UsageCustomPlanError, UsageDayDetail, UsageDaySummary, UsageHealth, UsageOverviewView, UsagePlatformView, UsageProviderSummary, UsageTokenTotals } from '../core/types.ts'
 import { dayRequestPath, exportRequestPath, USAGE_RANGE_DAYS, type UsageRangeDays } from './usage-api.ts'
@@ -1577,7 +1577,10 @@ function PlanCard(props: { provider: ProviderSnapshotView; currentId?: string })
             return (
               <div key={window.key} className={styles.windowRow} data-dsh-part="plan-window">
                 <span className={styles.windowLabel}>
-                  <span>{window.name ?? t(`usage.plan.windows.${window.key}`)}</span>
+                  <span className={styles.windowName}>
+                    <span>{window.name ?? t(`usage.plan.windows.${window.key}`)}</span>
+                    {isPlanWindowFull(window) && <span className={styles.windowFull}>{t('usage.plan.full')}</span>}
+                  </span>
                   <span className={`${styles.mono}`}>{percentText(percent)}</span>
                 </span>
                 <span className={styles.bar}>

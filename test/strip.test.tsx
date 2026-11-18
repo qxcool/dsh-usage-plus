@@ -117,7 +117,7 @@ describe('PlanUsageStrip per-session route', () => {
     root.unmount()
   })
 
-  it('keeps the fill geometry for a high-usage monthly window', async () => {
+  it('keeps 5h on the ring while a monthly window is high but not full', async () => {
     const snapshot = overview({
       current: { provider: 'opencode-go', model: 'glm-5.3-flash', source: 'live' },
       providers: [provider({
@@ -129,14 +129,34 @@ describe('PlanUsageStrip per-session route', () => {
     await flush()
     const ring = host.querySelector(`.${styles.quotaMeterFill}`)
     const dashLength = Number(ring?.getAttribute('stroke-dasharray')?.split(' ')[0])
-    expect(dashLength).toBeCloseTo(2 * Math.PI * 5.5 * 0.91)
-    expect(host.querySelector('[data-dsh-part="quota-meter"]')?.classList.contains(styles.quotaMeterDanger)).toBe(true)
+    // A high-but-not-full month must not hijack the ring: the 5h window still
+    // governs the working session.
+    expect(dashLength).toBeCloseTo(2 * Math.PI * 5.5 * 0.20)
+    expect(host.querySelector('[data-dsh-part="quota-meter"]')?.classList.contains(styles.quotaMeterDanger)).toBe(false)
     const trigger = host.querySelector('button')
     act(() => trigger?.click())
 
     const monthlyFill = host.querySelector('[style*="width: 91%"]')
     expect(monthlyFill?.classList.contains(styles.barFill)).toBe(true)
     expect(monthlyFill?.classList.contains(styles.barLow)).toBe(true)
+    root.unmount()
+  })
+
+  it('draws the ring for a full monthly window that took over', async () => {
+    const snapshot = overview({
+      current: { provider: 'opencode-go', model: 'glm-5.3-flash', source: 'live' },
+      providers: [provider({
+        provider: 'opencode-go', displayName: 'opencode-go', planSupported: true,
+        plan: { updatedAt: 1, windows: [{ key: '5h', percent: 20 }, { key: 'week', percent: 19 }, { key: 'month', percent: 100 }] },
+      })],
+    })
+    const { root, host } = mount(createElement(PlanUsageStrip, { store: fakeStore(snapshot) as never }))
+    await flush()
+    const ring = host.querySelector(`.${styles.quotaMeterFill}`)
+    const dashLength = Number(ring?.getAttribute('stroke-dasharray')?.split(' ')[0])
+    expect(dashLength).toBeCloseTo(2 * Math.PI * 5.5)
+    expect(host.querySelector('[data-dsh-part="quota-meter"]')?.classList.contains(styles.quotaMeterDanger)).toBe(true)
+    expect(host.textContent).toContain('月 100.0% · 5h 20.0%')
     root.unmount()
   })
 
@@ -162,7 +182,7 @@ describe('PlanUsageStrip per-session route', () => {
     root.unmount()
   })
 
-  it('links the popover, marks the tightest window and formats readings uniformly', async () => {
+  it('links the popover, marks the featured window and formats readings uniformly', async () => {
     const resetsAt = new Date(Date.now() + 3_600_000).toISOString()
     const snapshot = overview({
       current: { provider: 'opencode-go', model: 'glm-5.3-flash', source: 'live' },
@@ -201,10 +221,11 @@ describe('PlanUsageStrip per-session route', () => {
     // One consistent one-decimal format across the whole panel.
     expect(heads.every((head) => /\d+\.\d%/.test(head.textContent ?? ''))).toBe(true)
 
-    // The "tightest" badge sits on the highest-usage window (5h 41%).
+    // The badge names the row the ring follows; defaults to the shortest
+    // window even when a longer window has a higher percentage.
     const tight = panel?.querySelector(`.${styles.quotaMeterTight}`)
     expect(tight).not.toBeNull()
-    expect(tight?.textContent).toBe('最紧')
+    expect(tight?.textContent).toBe('当前')
     expect(heads[0]?.contains(tight as Node)).toBe(true)
 
     // Relative reset copy keeps the absolute instant as a tooltip.
@@ -218,6 +239,71 @@ describe('PlanUsageStrip per-session route', () => {
     expect(host.querySelector('[role="dialog"]')).toBeNull()
     expect(document.activeElement).toBe(trigger)
     root.unmount()
+  })
+
+  it('features 5h by default and promotes only a full weekly/monthly window', async () => {
+    const render = async (windows: Array<{ key: string; percent: number }>): Promise<{ root: Root; host: HTMLElement }> => {
+      const snapshot = overview({
+        current: { provider: 'opencode-go', model: 'glm-5.3-flash', source: 'live' },
+        providers: [provider({
+          provider: 'opencode-go',
+          displayName: 'opencode-go',
+          planSupported: true,
+          plan: { updatedAt: 1, windows },
+        })],
+      })
+      const mounted = mount(createElement(PlanUsageStrip, { store: fakeStore(snapshot) as never }))
+      await flush()
+      return mounted
+    }
+    const badgeRows = (host: HTMLElement): string[] => [...host.querySelectorAll(`.${styles.quotaMeterBarHead}`)]
+      .map((head) => head.textContent ?? '')
+      .filter((text) => text.includes('当前') || text.includes('已满'))
+
+    // No window is full: 5h stays featured although the month is higher.
+    const normal = await render([{ key: '5h', percent: 5 }, { key: 'week', percent: 40 }, { key: 'month', percent: 72.6 }])
+    act(() => normal.host.querySelector('button')?.click())
+    await flush()
+    expect(badgeRows(normal.host)).toEqual(['5 小时当前5.0%'])
+    expect(normal.host.querySelector('button')?.textContent).toContain('5h 5.0% · 周 40.0% · 月 72.6%')
+    normal.root.unmount()
+
+    // A full week replaces 5h and moves to the front of the inline reading.
+    const weekFull = await render([{ key: '5h', percent: 5 }, { key: 'week', percent: 100 }, { key: 'month', percent: 20 }])
+    act(() => weekFull.host.querySelector('button')?.click())
+    await flush()
+    expect(badgeRows(weekFull.host)).toEqual(['每周已满100.0%'])
+    expect(weekFull.host.querySelector('button')?.textContent).toContain('周 100.0% · 5h 5.0% · 月 20.0%')
+    weekFull.root.unmount()
+
+    // A full month replaces 5h when the week still has room.
+    const monthFull = await render([{ key: '5h', percent: 5 }, { key: 'week', percent: 40 }, { key: 'month', percent: 100 }])
+    act(() => monthFull.host.querySelector('button')?.click())
+    await flush()
+    expect(badgeRows(monthFull.host)).toEqual(['每月已满100.0%'])
+    expect(monthFull.host.querySelector('button')?.textContent).toContain('月 100.0% · 5h 5.0% · 周 40.0%')
+    monthFull.root.unmount()
+
+    // Both full: the shorter window is still the featured one.
+    const bothFull = await render([{ key: '5h', percent: 5 }, { key: 'week', percent: 100 }, { key: 'month', percent: 100 }])
+    act(() => bothFull.host.querySelector('button')?.click())
+    await flush()
+    expect(badgeRows(bothFull.host)).toEqual(['每周已满100.0%', '每月已满100.0%'])
+    bothFull.root.unmount()
+
+    // A full 5h window is already featured and gets the "full" badge.
+    const fiveFull = await render([{ key: '5h', percent: 100 }, { key: 'week', percent: 20 }, { key: 'month', percent: 10 }])
+    act(() => fiveFull.host.querySelector('button')?.click())
+    await flush()
+    expect(badgeRows(fiveFull.host)).toEqual(['5 小时已满100.0%'])
+    fiveFull.root.unmount()
+
+    // Without a 5h window the shortest available window is featured.
+    const weekOnly = await render([{ key: 'week', percent: 40 }, { key: 'month', percent: 10 }])
+    act(() => weekOnly.host.querySelector('button')?.click())
+    await flush()
+    expect(badgeRows(weekOnly.host)).toEqual(['每周当前40.0%'])
+    weekOnly.root.unmount()
   })
 
   it('falls back to English for non-Chinese document languages', async () => {

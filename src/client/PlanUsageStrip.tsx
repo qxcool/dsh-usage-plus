@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { UsageStoreInstance } from './usage-store.ts'
 import type { PlanWindowView, UsageTokenTotals } from '../core/types.ts'
-import { currentPlanProvider, orderedPlanWindows, planSourceLabelKey, type PlanRouteOverride } from '../core/plan-match.ts'
+import { currentPlanProvider, featuredPlanWindow, isPlanWindowFull, orderedPlanWindows, planSourceLabelKey, type PlanRouteOverride } from '../core/plan-match.ts'
 import { isDeepSeekProviderRoute } from '../core/adapters.ts'
 import { deepseekModelSpend } from '../core/pricing.ts'
 import { sessionRouteFrom, type SessionSelectionView } from './session-route.ts'
@@ -135,11 +135,10 @@ function barTone(percent: number): string {
 }
 
 function primaryWindow(windows: PlanWindowView[]): PlanWindowView {
-  // Every official window can block further usage. The compact ring must show
-  // the tightest active limit, rather than always favouring a short 5h window
-  // while a week or month is almost exhausted.
-  return windows.reduce((worst, window) =>
-    (window.percent as number) > (worst.percent as number) ? window : worst)
+  // The shortest window is the one that throttles a session soonest, so it is
+  // featured by default. A longer window takes over only when it is full: then
+  // it blocks usage no matter how much room the 5-hour window has.
+  return featuredPlanWindow(windows) ?? windows[0]
 }
 
 function routeOverride(selection: unknown): PlanRouteOverride | undefined {
@@ -152,10 +151,11 @@ function routeOverride(selection: unknown): PlanRouteOverride | undefined {
  * Compact plan-quota meter for `conversation.composer.dock`, seated on the
  * bottom strip beside official StatsPills and ContextMeter.
  *
- * The trigger stays a single quiet pill: a 16px ring for the tightest window
- * plus the per-window reading. The popover is the detailed view (per-window
- * bars, tone colours, reset copy) and explains that the ring tracks the
- * tightest window, so the arc and the numbers can never be misread.
+ * The trigger stays a single quiet pill: a 16px ring for the featured window
+ * (the 5-hour window by default; a weekly/monthly window once it is full) plus
+ * the per-window reading. The popover is the detailed view (per-window bars,
+ * tone colours, reset copy) and marks which row the ring follows, so the arc
+ * and the numbers can never be misread.
  */
 export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
   const { store } = props
@@ -275,8 +275,13 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
 
   const primary = primaryWindow(windows)
   const percent = primary.percent as number
-  const level = toneClass(percent)
-  const windowSummary = windows.map((window) => `${windowShort(window)} ${percentText(window.percent as number)}`).join(' · ')
+  // A full longer window is the reason it took over the ring, so keep the pill
+  // at least in the warning tone even though the primary arc is 100%.
+  const level = toneClass(percent) || (windows.some(isPlanWindowFull) ? styles.quotaMeterWarn : '')
+  // Promote the featured window to the front of the inline reading; by default
+  // that is still 5h, and a full week/month explains why it moved.
+  const summaryWindows = [primary, ...windows.filter((window) => window.key !== primary.key)]
+  const windowSummary = summaryWindows.map((window) => `${windowShort(window)} ${percentText(window.percent as number)}`).join(' · ')
   const model = override?.model ?? snapshot.current.model
   const source = t(planSourceLabelKey(provider))
   const identity = model === undefined || model === ''
@@ -383,15 +388,21 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
           <div className={styles.quotaMeterBars}>
             {windows.map((window) => {
               const value = window.percent as number
-              // The ring tracks the tightest (highest-usage) window: mark that
-              // same row in the detail view so the arc has a visible referent.
-              const tightest = primary.key === window.key
+              // The ring tracks the featured window (5h by default, or a full
+              // week/month); name that row and mark every exhausted window so
+              // the arc and the badges can never be misread.
+              const featured = primary.key === window.key
+              const full = isPlanWindowFull(window)
               return (
                 <div key={window.key} className={`${styles.quotaMeterBarRow} ${toneClass(value)}`}>
                   <div className={styles.quotaMeterBarHead}>
                     <span className={styles.quotaMeterBarLabel}>
                       {windowLabel(window)}
-                      {tightest ? <span className={styles.quotaMeterTight}>{t('usage.plan.tightest')}</span> : null}
+                      {full
+                        ? <span className={`${styles.quotaMeterTight} ${styles.quotaMeterFull}`}>{t('usage.plan.full')}</span>
+                        : featured
+                          ? <span className={styles.quotaMeterTight}>{t('usage.plan.featured')}</span>
+                          : null}
                     </span>
                     <span className={styles.quotaMeterBarPct}>{percentText(value)}</span>
                   </div>
