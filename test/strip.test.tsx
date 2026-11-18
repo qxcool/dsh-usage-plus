@@ -241,6 +241,61 @@ describe('PlanUsageStrip per-session route', () => {
     root.unmount()
   })
 
+  it('honours a configured promotion threshold below 100', async () => {
+    const render = async (percentByKey: Record<string, number>, planPromotePercent?: number): Promise<{ root: Root; host: HTMLElement }> => {
+      const snapshot = overview({
+        current: { provider: 'opencode-go', model: 'glm-5.3-flash', source: 'live' },
+        providers: [provider({
+          provider: 'opencode-go',
+          displayName: 'opencode-go',
+          planSupported: true,
+          plan: {
+            updatedAt: 1,
+            windows: Object.entries(percentByKey).map(([key, percent]) => ({ key, percent })),
+          },
+        })],
+        ...(planPromotePercent === undefined ? {} : { planPromotePercent }),
+      })
+      const mounted = mount(createElement(PlanUsageStrip, { store: fakeStore(snapshot) as never }))
+      await flush()
+      return mounted
+    }
+    const badgeRows = (host: HTMLElement): string[] => [...host.querySelectorAll(`.${styles.quotaMeterBarHead}`)]
+      .map((head) => head.textContent ?? '')
+      .filter((text) => text.includes('当前') || text.includes('已满'))
+
+    // 95% threshold: a week at 96% takes over even though it is not full, and
+    // the badge stays the neutral "featured" one rather than "full".
+    const early = await render({ '5h': 5, week: 96, month: 20 }, 95)
+    act(() => early.host.querySelector('button')?.click())
+    await flush()
+    expect(badgeRows(early.host)).toEqual(['每周当前96.0%'])
+    expect(early.host.querySelector('button')?.textContent).toContain('周 96.0% · 5h 5.0% · 月 20.0%')
+    early.root.unmount()
+
+    // Same data at the default 100 threshold stays on 5h.
+    const defaultThreshold = await render({ '5h': 5, week: 96, month: 20 })
+    act(() => defaultThreshold.host.querySelector('button')?.click())
+    await flush()
+    expect(badgeRows(defaultThreshold.host)).toEqual(['5 小时当前5.0%'])
+    defaultThreshold.root.unmount()
+
+    // 50% threshold with no window reaching it keeps 5h.
+    const notReached = await render({ '5h': 5, week: 40, month: 30 }, 50)
+    act(() => notReached.host.querySelector('button')?.click())
+    await flush()
+    expect(badgeRows(notReached.host)).toEqual(['5 小时当前5.0%'])
+    notReached.root.unmount()
+
+    // A threshold at 1 promotes the first longer window that qualifies when the
+    // 5-hour window itself does not (5h 0%), i.e. the week here.
+    const lowest = await render({ '5h': 0, week: 10, month: 30 }, 1)
+    act(() => lowest.host.querySelector('button')?.click())
+    await flush()
+    expect(badgeRows(lowest.host)).toEqual(['每周当前10.0%'])
+    lowest.root.unmount()
+  })
+
   it('features 5h by default and promotes only a full weekly/monthly window', async () => {
     const render = async (windows: Array<{ key: string; percent: number }>): Promise<{ root: Root; host: HTMLElement }> => {
       const snapshot = overview({

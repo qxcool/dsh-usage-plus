@@ -51,18 +51,29 @@ export function isPlanWindowFull(window: PlanWindowView | undefined): boolean {
  * Windows measure different periods, so "highest percent" is not comparable:
  * a monthly window at 70% is normal while the 5-hour window still has room.
  * The shortest window is the one that throttles a working session soonest, so
- * it stays primary; a longer window replaces it only once it is actually full
- * (100%), because then it blocks all usage regardless of the shorter window.
- * Among multiple full windows the shortest (week before month) is featured.
+ * it stays primary; a longer window replaces it only once it reaches the
+ * configured promotion percent (100 by default — i.e. actually full, since a
+ * full window blocks all usage regardless of the shorter window). Among
+ * multiple qualifying windows the shortest (week before month) is featured.
  *
  * @param windows - display-ordered windows (`orderedPlanWindows`).
+ * @param promotePercent - percent a longer window must reach to take over; 1-100.
  * @returns the featured window, or undefined when there is none.
  */
-export function featuredPlanWindow(windows: readonly PlanWindowView[]): PlanWindowView | undefined {
+export function featuredPlanWindow(windows: readonly PlanWindowView[], promotePercent: number = 100): PlanWindowView | undefined {
   if (windows.length === 0) return undefined
+  const threshold = clampPromotePercent(promotePercent)
+  const reaches = (window: PlanWindowView): boolean =>
+    typeof window.percent === 'number' && window.percent >= threshold
   const shortest = windows[0]
-  if (isPlanWindowFull(shortest)) return shortest
-  return windows.slice(1).find(isPlanWindowFull) ?? shortest
+  if (reaches(shortest)) return shortest
+  return windows.slice(1).find(reaches) ?? shortest
+}
+
+/** Normalize a promotion threshold: integers 1-100, 100 when unusable. */
+export function clampPromotePercent(value: unknown): number {
+  const parsed = typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : 100
+  return Math.min(100, Math.max(1, parsed))
 }
 
 /** Clone a provider row with display-only windows, or undefined when empty. */

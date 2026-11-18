@@ -29,14 +29,18 @@ export declare function isPlanWindowFull(window: PlanWindowView | undefined): bo
  * Windows measure different periods, so "highest percent" is not comparable:
  * a monthly window at 70% is normal while the 5-hour window still has room.
  * The shortest window is the one that throttles a working session soonest, so
- * it stays primary; a longer window replaces it only once it is actually full
- * (100%), because then it blocks all usage regardless of the shorter window.
- * Among multiple full windows the shortest (week before month) is featured.
+ * it stays primary; a longer window replaces it only once it reaches the
+ * configured promotion percent (100 by default — i.e. actually full, since a
+ * full window blocks all usage regardless of the shorter window). Among
+ * multiple qualifying windows the shortest (week before month) is featured.
  *
  * @param windows - display-ordered windows (`orderedPlanWindows`).
+ * @param promotePercent - percent a longer window must reach to take over; 1-100.
  * @returns the featured window, or undefined when there is none.
  */
-export declare function featuredPlanWindow(windows: readonly PlanWindowView[]): PlanWindowView | undefined;
+export declare function featuredPlanWindow(windows: readonly PlanWindowView[], promotePercent?: number): PlanWindowView | undefined;
+/** Normalize a promotion threshold: integers 1-100, 100 when unusable. */
+export declare function clampPromotePercent(value: unknown): number;
 /** Clone a provider row with display-only windows, or undefined when empty. */
 export declare function withDisplayPlan(provider: ProviderSnapshotView | undefined): ProviderSnapshotView | undefined;
 /** Volcano Ark / Doubao coding-plan routes (and their control-plane hosts). */

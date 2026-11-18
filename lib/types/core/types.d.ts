@@ -253,6 +253,11 @@ export interface UsageOverviewView {
     costEstimate?: UsageCostEstimate;
     /** Rejected custom-plan fields, when the settings JSON could not be parsed. */
     customPlanErrors?: UsageCustomPlanError[];
+    /**
+     * Percent a longer plan window must reach before the composer ring features
+     * it instead of the 5-hour window. Absent on older Hosts (treat as 100).
+     */
+    planPromotePercent?: number;
     /** The provider the pet bubble and the header highlight; `source` says how it was picked. */
     current: {
         provider?: string;

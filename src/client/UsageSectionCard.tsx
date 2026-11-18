@@ -37,6 +37,8 @@ export interface UsageSettings {
   dailyCostLimitCny?: number
   /** Tightest official plan window percent that raises an alert; 0 disables it. */
   planAlertPercent?: number
+  /** Percent a longer plan window must reach before it replaces 5h in the ring. */
+  planPromotePercent?: number
   /** Known provider balance (CNY) below which an alert is raised; 0 disables it. */
   balanceAlertCny?: number
   /** Minutes before the same alert kind/provider/window may bubble again. */
@@ -1603,13 +1605,14 @@ const ALERT_DEFAULTS = {
   alertsEnabled: true,
   dailyCostLimitCny: 0,
   planAlertPercent: 0,
+  planPromotePercent: 100,
   balanceAlertCny: 0,
   alertCooldownMinutes: 60,
 } as const
 
 type AlertSettings = typeof ALERT_DEFAULTS
 
-const CONFIG_DEFAULTS: Required<Pick<UsageSettings, 'enabled' | 'pollIntervalSec' | 'bubbleMode' | 'alertsEnabled' | 'dailyCostLimitCny' | 'planAlertPercent' | 'balanceAlertCny' | 'alertCooldownMinutes' | 'cpamcEnabled' | 'cpamcBaseURL' | 'cpamcAllowedHosts' | 'volcanoEnabled' | 'platformUsageEnabled' | 'costEstimateEnabled' | 'customPlans'>> = {
+const CONFIG_DEFAULTS: Required<Pick<UsageSettings, 'enabled' | 'pollIntervalSec' | 'bubbleMode' | 'alertsEnabled' | 'dailyCostLimitCny' | 'planAlertPercent' | 'balanceAlertCny' | 'alertCooldownMinutes' | 'cpamcEnabled' | 'cpamcBaseURL' | 'cpamcAllowedHosts' | 'volcanoEnabled' | 'platformUsageEnabled' | 'costEstimateEnabled' | 'customPlans' | 'planPromotePercent'>> = {
   enabled: true,
   pollIntervalSec: 60,
   bubbleMode: 'always',
@@ -1640,6 +1643,9 @@ function normalizeSettings(value: UsageSettings | undefined): typeof CONFIG_DEFA
     alertsEnabled: value?.alertsEnabled ?? CONFIG_DEFAULTS.alertsEnabled,
     dailyCostLimitCny: clampAlertNumber('dailyCostLimitCny', value?.dailyCostLimitCny),
     planAlertPercent: clampAlertNumber('planAlertPercent', value?.planAlertPercent),
+    planPromotePercent: typeof value?.planPromotePercent === 'number'
+      ? Math.min(100, Math.max(1, Math.round(value.planPromotePercent)))
+      : CONFIG_DEFAULTS.planPromotePercent,
     balanceAlertCny: clampAlertNumber('balanceAlertCny', value?.balanceAlertCny),
     alertCooldownMinutes: clampAlertNumber('alertCooldownMinutes', value?.alertCooldownMinutes),
     cpamcEnabled: value?.cpamcEnabled ?? CONFIG_DEFAULTS.cpamcEnabled,
@@ -1669,6 +1675,8 @@ function SettingsRow(props: {
   platformSupported?: boolean
   /** Whether the running Host's schema knows the custom-plan field (v0.6.1+). */
   customPlansSupported?: boolean
+  /** Whether the running Host's schema knows the ring-promotion threshold (v0.6.7+). */
+  planPromoteSupported?: boolean
   /** Rejected custom-plan config fields reported by the Host. */
   customPlanErrors?: UsageCustomPlanError[]
   providers?: ProviderSnapshotView[]
@@ -1680,6 +1688,7 @@ function SettingsRow(props: {
   const alertsSupported = props.alertsSupported ?? true
   const platformSupported = props.platformSupported ?? false
   const customPlansSupported = props.customPlansSupported ?? false
+  const planPromoteSupported = props.planPromoteSupported ?? false
   const customPlanErrors = props.customPlanErrors ?? []
   const disabled = snapshot !== undefined && !snapshot.writable
   const [draft, setDraft] = useState(() => normalizeSettings(value))
@@ -1734,6 +1743,9 @@ function SettingsRow(props: {
         : []),
       ...(customPlansSupported
         ? ([{ op: 'set', path: ['customPlans'], value: draft.customPlans }] as const)
+        : []),
+      ...(planPromoteSupported
+        ? ([{ op: 'set', path: ['planPromotePercent'], value: draft.planPromotePercent }] as const)
         : []),
     ]
     void settings.mutate(ops, snapshot?.revision).then((ok) => {
@@ -1929,6 +1941,27 @@ function SettingsRow(props: {
             />
           </label>
           <span className={styles.muted}>{t('usage.config.alertsHint')}</span>
+          {planPromoteSupported && (
+            <>
+              <label className={styles.settingRow}>
+                <span>{t('usage.config.planPromotePercent')}</span>
+                <input
+                  type="number"
+                  data-dsh-part="plan-promote-percent"
+                  min={1}
+                  max={100}
+                  step={1}
+                  value={draft.planPromotePercent}
+                  disabled={disabled || saving}
+                  onChange={(event) => {
+                    const parsed = Number(event.target.value)
+                    if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 100) edit('planPromotePercent', Math.round(parsed))
+                  }}
+                />
+              </label>
+              <span className={styles.settingHint}>{t('usage.config.planPromoteHint')}</span>
+            </>
+          )}
           {!alertsSupported && (
             <span className={styles.settingWarn} data-dsh-part="alert-settings-host-note">
               {t('usage.config.hostOld')}
@@ -2443,6 +2476,7 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
     || snapshot?.platform !== undefined
     || snapshot?.costEstimate !== undefined
   const customPlansSupported = settingsFields?.includes('customPlans') === true
+  const planPromoteSupported = settingsFields?.includes('planPromotePercent') === true
 
   const onRefresh = (): void => {
     setRefreshing(true)
@@ -2491,6 +2525,7 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
           alertsSupported={alertsSupported}
           platformSupported={platformSupported}
           customPlansSupported={customPlansSupported}
+          planPromoteSupported={planPromoteSupported}
           customPlanErrors={snapshot?.customPlanErrors}
           setCredential={setCredential}
           clearCredential={clearCredential}
@@ -2682,6 +2717,7 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
             alertsSupported={alertsSupported}
           platformSupported={platformSupported}
           customPlansSupported={customPlansSupported}
+          planPromoteSupported={planPromoteSupported}
           customPlanErrors={snapshot.customPlanErrors}
             providers={snapshot.providers}
             credentials={snapshot.externalCredentials}

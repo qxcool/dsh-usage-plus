@@ -26,6 +26,8 @@ export interface UsageSettings {
     dailyCostLimitCny?: number;
     /** Tightest official plan window percent that raises an alert; 0 disables it. */
     planAlertPercent?: number;
+    /** Percent a longer plan window must reach before it replaces 5h in the ring. */
+    planPromotePercent?: number;
     /** Known provider balance (CNY) below which an alert is raised; 0 disables it. */
     balanceAlertCny?: number;
     /** Minutes before the same alert kind/provider/window may bubble again. */

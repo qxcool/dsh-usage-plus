@@ -41,6 +41,11 @@ export interface Config {
   dailyCostLimitCny?: number
   /** Tightest official plan window percent that raises an alert; 0 disables it. */
   planAlertPercent?: number
+  /**
+   * Percent a longer plan window must reach before it replaces the 5-hour
+   * window in the composer ring. Default 100 (only a fully used window wins).
+   */
+  planPromotePercent?: number
   /** Known provider balance (CNY) below which an alert is raised; 0 disables it. */
   balanceAlertCny?: number
   /** Minutes before the same alert kind/provider/window may bubble again. */
@@ -75,6 +80,7 @@ export const Config = z.object({
   alertsEnabled: z.boolean().default(true).volatile(),
   dailyCostLimitCny: z.number().min(0).max(1_000_000_000).default(0).volatile(),
   planAlertPercent: z.number().min(0).max(100).default(0).volatile(),
+  planPromotePercent: z.number().min(1).max(100).default(100).volatile(),
   balanceAlertCny: z.number().min(0).max(1_000_000_000).default(0).volatile(),
   alertCooldownMinutes: z.number().min(1).max(1440).default(60).volatile(),
   platformUsageEnabled: z.boolean().default(true).volatile(),
@@ -94,6 +100,7 @@ export interface ResolvedConfig extends UsageServiceOptions {
   alertsEnabled: boolean
   dailyCostLimitCny: number
   planAlertPercent: number
+  planPromotePercent: number
   balanceAlertCny: number
   alertCooldownMinutes: number
   platformUsageEnabled: boolean
@@ -133,6 +140,7 @@ export function resolveConfig(input?: Record<string, unknown> | Config): Resolve
     alertsEnabled: config.alertsEnabled ?? true,
     dailyCostLimitCny: typeof config.dailyCostLimitCny === 'number' ? config.dailyCostLimitCny : 0,
     planAlertPercent: typeof config.planAlertPercent === 'number' ? config.planAlertPercent : 0,
+    planPromotePercent: typeof config.planPromotePercent === 'number' ? config.planPromotePercent : 100,
     balanceAlertCny: typeof config.balanceAlertCny === 'number' ? config.balanceAlertCny : 0,
     alertCooldownMinutes: typeof config.alertCooldownMinutes === 'number' ? config.alertCooldownMinutes : 60,
     platformUsageEnabled: config.platformUsageEnabled ?? true,

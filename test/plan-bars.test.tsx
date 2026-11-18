@@ -679,6 +679,70 @@ describe('alert settings and data health', () => {
     root = undefined
   })
 
+  it('stages and saves the ring promotion threshold when the Host supports it', async () => {
+    const calls: Array<ReadonlyArray<{ op: string; path: readonly string[]; value?: unknown }>> = []
+    const { host, root: mounted } = mount(overview(), {
+      settingsValue: {
+        enabled: true,
+        pollIntervalSec: 60,
+        bubbleMode: 'always',
+        alertsEnabled: true,
+        dailyCostLimitCny: 0,
+        planAlertPercent: 0,
+        balanceAlertCny: 0,
+        alertCooldownMinutes: 60,
+        planPromotePercent: 100,
+        cpamcEnabled: false,
+        cpamcBaseURL: 'http://127.0.0.1:8317',
+        cpamcAllowedHosts: '',
+        volcanoEnabled: false,
+      },
+      onMutate: (ops) => calls.push(ops),
+    })
+    root = mounted
+    await flush()
+    pressTab(host, '设置')
+
+    const promote = host.querySelector<HTMLInputElement>('[data-dsh-part="plan-promote-percent"]')
+    expect(promote).not.toBeNull()
+    expect(promote?.value).toBe('100')
+    setInputValue(promote!, '95')
+
+    const save = [...host.querySelectorAll<HTMLButtonElement>('[data-dsh-part="settings-row"] button')]
+      .filter((button) => button.textContent === '保存' && !button.disabled)
+      .pop()
+    await act(async () => {
+      save?.click()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+
+    expect(calls).toHaveLength(1)
+    const byPath = new Map((calls[0] ?? []).map((op) => [op.path.join('.'), op.value]))
+    expect(byPath.get('planPromotePercent')).toBe(95)
+  })
+
+  it('hides the promotion field on a Host that does not know it', async () => {
+    const legacyFields = {
+      enabled: true,
+      pollIntervalSec: 60,
+      bubbleMode: 'always',
+      alertsEnabled: true,
+      dailyCostLimitCny: 0,
+      planAlertPercent: 0,
+      balanceAlertCny: 0,
+      alertCooldownMinutes: 60,
+      cpamcEnabled: false,
+      cpamcBaseURL: 'http://127.0.0.1:8317',
+      cpamcAllowedHosts: '',
+      volcanoEnabled: false,
+    }
+    const { host, root: mounted } = mount(overview(), { settingsValue: legacyFields })
+    root = mounted
+    await flush()
+    pressTab(host, '设置')
+    expect(host.querySelector('[data-dsh-part="plan-promote-percent"]')).toBeNull()
+  })
+
   it('stages and saves all five alert fields with the existing payload semantics', async () => {
     const calls: Array<ReadonlyArray<{ op: string; path: readonly string[]; value?: unknown }>> = []
     const { host, root: mounted } = mount(overview(), { onMutate: (ops) => calls.push(ops) })

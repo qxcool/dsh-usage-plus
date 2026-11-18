@@ -185,6 +185,8 @@ export declare const zh: {
     'usage.config.balanceAlertCny': string;
     'usage.config.alertCooldownMinutes': string;
     'usage.config.alertsHint': string;
+    'usage.config.planPromotePercent': string;
+    'usage.config.planPromoteHint': string;
     'usage.alerts.dailyCost': string;
     'usage.alerts.plan': string;
     'usage.alerts.balance': string;

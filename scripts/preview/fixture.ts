@@ -330,6 +330,8 @@ export interface FixtureOptions {
   updatedAgoMs?: number
   /** Render the v0.5.0 threshold alerts; defaults to on for `rich`, off for `sparse`. */
   alerts?: boolean
+  /** Composer ring promotion threshold for a longer plan window; default 100. */
+  planPromotePercent?: number
   /** Custom quota sources: `ready` (two probed plans), `errors` (config rejected). */
   customPlans?: 'none' | 'ready' | 'errors'
   /**
@@ -542,6 +544,7 @@ export function buildOverview(options: FixtureOptions = {}): UsageOverviewView {
     ...(platform === undefined ? {} : { platform }),
     ...(costEstimate === undefined ? {} : { costEstimate }),
     ...(customPlanErrors.length > 0 ? { customPlanErrors } : {}),
+    planPromotePercent: options.planPromotePercent ?? 100,
     usage: {
       today: { date: todayKey, totals: todayTotals, providers: todayRows },
       days: dayRows,

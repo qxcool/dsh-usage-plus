@@ -181,7 +181,7 @@ This endpoint is the console's **internal, undocumented** API. It is best-effort
 ## Model Experience
 
 - Quota strip follows the **session** `modelSelection` projection (composer picker or `/model`). It does not fall through to another session’s or the global plan while this session already has a route.
-- The composer ring features the **5-hour window by default**, because that is the limit that throttles a working session soonest. A weekly or monthly window takes over only once it is **full (100%)**, since a full longer window blocks usage regardless of 5-hour headroom; the popover then shows it in the danger tone with a `已满` badge, while a merely high (e.g. 91%) longer window stays warning-coloured on its own row without hijacking the ring.
+- The composer ring features the **5-hour window by default**, because that is the limit that throttles a working session soonest. A weekly or monthly window takes over only once it reaches the **promotion threshold** — 100% by default (a fully used window blocks usage regardless of 5-hour headroom), configurable down (e.g. 95%) in Settings → 警戒阈值区. The popover marks a full window in the danger tone with `已满`, and a merely high longer window stays warning-coloured on its own row without hijacking the ring.
 - Windows are only shown when the remote Plan API returns real percentages; there is no local token estimate disguised as quota.
 - Token ledger and balance cards stay on the Plugins page; they do not inject into the conversation transcript.
 

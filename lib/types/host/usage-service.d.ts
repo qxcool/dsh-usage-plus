@@ -23,6 +23,11 @@ export interface UsageServiceOptions {
     dailyCostLimitCny?: number;
     /** Official plan-window percent that raises an alert; 0/absent disables it. */
     planAlertPercent?: number;
+    /**
+     * Percent a longer plan window must reach before the composer ring replaces
+     * the 5-hour window with it. Default 100; exposed in the overview document.
+     */
+    planPromotePercent?: number;
     /** Known CNY balance at/below which an alert is raised; 0/absent disables it. */
     balanceAlertCny?: number;
     /** Minutes between alert bubbles for the same episode key. Default 60. */

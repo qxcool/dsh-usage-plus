@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { UsageStoreInstance } from './usage-store.ts'
 import type { PlanWindowView, UsageTokenTotals } from '../core/types.ts'
-import { currentPlanProvider, featuredPlanWindow, isPlanWindowFull, orderedPlanWindows, planSourceLabelKey, type PlanRouteOverride } from '../core/plan-match.ts'
+import { clampPromotePercent, currentPlanProvider, featuredPlanWindow, isPlanWindowFull, orderedPlanWindows, planSourceLabelKey, type PlanRouteOverride } from '../core/plan-match.ts'
 import { isDeepSeekProviderRoute } from '../core/adapters.ts'
 import { deepseekModelSpend } from '../core/pricing.ts'
 import { sessionRouteFrom, type SessionSelectionView } from './session-route.ts'
@@ -134,11 +134,11 @@ function barTone(percent: number): string {
   return styles.barFill
 }
 
-function primaryWindow(windows: PlanWindowView[]): PlanWindowView {
+function primaryWindow(windows: PlanWindowView[], promotePercent: number): PlanWindowView {
   // The shortest window is the one that throttles a session soonest, so it is
-  // featured by default. A longer window takes over only when it is full: then
-  // it blocks usage no matter how much room the 5-hour window has.
-  return featuredPlanWindow(windows) ?? windows[0]
+  // featured by default. A longer window takes over once it reaches the
+  // configured promotion percent (100 = only when actually full).
+  return featuredPlanWindow(windows, promotePercent) ?? windows[0]
 }
 
 function routeOverride(selection: unknown): PlanRouteOverride | undefined {
@@ -273,13 +273,14 @@ export function PlanUsageStrip(props: PlanUsageStripProps): ReactNode {
     return <span data-usage-strip-state={`empty:${emptyReason}`} style={{ display: 'none' }} />
   }
 
-  const primary = primaryWindow(windows)
+  const promotePercent = clampPromotePercent(snapshot.planPromotePercent)
+  const primary = primaryWindow(windows, promotePercent)
   const percent = primary.percent as number
-  // A full longer window is the reason it took over the ring, so keep the pill
-  // at least in the warning tone even though the primary arc is 100%.
-  const level = toneClass(percent) || (windows.some(isPlanWindowFull) ? styles.quotaMeterWarn : '')
+  // The pill tone follows the featured window's own reading; a full window is
+  // already danger-toned by `toneClass`.
+  const level = toneClass(percent)
   // Promote the featured window to the front of the inline reading; by default
-  // that is still 5h, and a full week/month explains why it moved.
+  // that is still 5h, and a promoted week/month shows why it moved.
   const summaryWindows = [primary, ...windows.filter((window) => window.key !== primary.key)]
   const windowSummary = summaryWindows.map((window) => `${windowShort(window)} ${percentText(window.percent as number)}`).join(' · ')
   const model = override?.model ?? snapshot.current.model

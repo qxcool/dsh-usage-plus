@@ -1072,6 +1072,26 @@ describe('platform reconcile and USD estimate wiring', () => {
       await rm(dir, { recursive: true, force: true })
     }
   })
+  it('publishes the ring promotion threshold, defaulting to 100 when unset', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-usage-promote-'))
+    const make = async (options: Partial<UsageServiceOptions>): Promise<number | undefined> => {
+      const service = new UsageService({ get: () => undefined, on: () => () => {} } as unknown as Context, {
+        ...PERF_OPTIONS,
+        ...options,
+      }, dir)
+      try {
+        return (await service.overview()).planPromotePercent
+      } finally {
+        await service.stop()
+      }
+    }
+    try {
+      expect(await make({})).toBe(100)
+      expect(await make({ planPromotePercent: 95 })).toBe(95)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('overview alerts and health wiring', () => {

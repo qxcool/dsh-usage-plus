@@ -33,6 +33,11 @@ export interface Config {
     dailyCostLimitCny?: number;
     /** Tightest official plan window percent that raises an alert; 0 disables it. */
     planAlertPercent?: number;
+    /**
+     * Percent a longer plan window must reach before it replaces the 5-hour
+     * window in the composer ring. Default 100 (only a fully used window wins).
+     */
+    planPromotePercent?: number;
     /** Known provider balance (CNY) below which an alert is raised; 0 disables it. */
     balanceAlertCny?: number;
     /** Minutes before the same alert kind/provider/window may bubble again. */
@@ -66,6 +71,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     alertsEnabled: z<boolean, boolean, "volatile-defined">;
     dailyCostLimitCny: z<number, number, "volatile-defined">;
     planAlertPercent: z<number, number, "volatile-defined">;
+    planPromotePercent: z<number, number, "volatile-defined">;
     balanceAlertCny: z<number, number, "volatile-defined">;
     alertCooldownMinutes: z<number, number, "volatile-defined">;
     platformUsageEnabled: z<boolean, boolean, "volatile-defined">;
@@ -86,6 +92,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     alertsEnabled: z<boolean, boolean, "volatile-defined">;
     dailyCostLimitCny: z<number, number, "volatile-defined">;
     planAlertPercent: z<number, number, "volatile-defined">;
+    planPromotePercent: z<number, number, "volatile-defined">;
     balanceAlertCny: z<number, number, "volatile-defined">;
     alertCooldownMinutes: z<number, number, "volatile-defined">;
     platformUsageEnabled: z<boolean, boolean, "volatile-defined">;
@@ -104,6 +111,7 @@ export interface ResolvedConfig extends UsageServiceOptions {
     alertsEnabled: boolean;
     dailyCostLimitCny: number;
     planAlertPercent: number;
+    planPromotePercent: number;
     balanceAlertCny: number;
     alertCooldownMinutes: number;
     platformUsageEnabled: boolean;

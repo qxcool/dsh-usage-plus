@@ -214,6 +214,7 @@ function createFakeSettings() {
       volcanoEnabled: false,
       platformUsageEnabled: true,
       costEstimateEnabled: true,
+      planPromotePercent: 100,
       customPlans: JSON.stringify([
         { id: 'my-plan', name: '内部额度网关', url: 'https://quota.example.com/usage', allowedHosts: ['quota.example.com'], tokenEnv: 'MY_PLAN_TOKEN' },
         { id: 'lite-plan', name: 'Lite Plan', url: 'http://127.0.0.1:9100/usage' },
