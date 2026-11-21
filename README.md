@@ -48,6 +48,25 @@ Independent DSH usage and official Plan-quota plugin (Host + Web UI). Requires D
 
 CPAMC and Volcano Ark remain separate external sources configured in Settings. OAuth-only adapters (`anthropic`, `github-copilot`) are skipped — not error-reported — for API-key credentials; a route with no verified quota API shows no card or pill.
 
+### Automatic quota recognition
+
+A standard provider keeps its quota API even when you configure it under your own route name (`my-opencode`, `work-kimi`, …). The adapter is resolved by the route id first, then by the **configured base URL**:
+
+| Configured base URL host | Recognized as |
+|---|---|
+| `api.deepseek.com` | DeepSeek balance |
+| `api.moonshot.cn` / `api.moonshot.ai` | Moonshot balance (CNY / USD) |
+| `opencode.ai` | OpenCode Go plan |
+| `api.z.ai`, `z.ai`, `open.bigmodel.cn` | GLM Coding Plan (intl / CN) |
+| `api.minimaxi.com` / `api.minimax.io` | MiniMax plan |
+| `api.anthropic.com` | Claude Pro/Max |
+| `githubcopilot.com` | Copilot quota |
+| `openrouter.ai`, `ai-gateway.vercel.sh`, `api.siliconflow.*`, `zenmux.ai`, `nano-gpt.com` | balances |
+
+- Two custom routes pointing at the same provider collapse into one probe and one row (the first route keeps the row), so nothing is double-probed.
+- A plan card recognized this way shows an `自动识别` chip, and the composer strip borrows that row for the custom route.
+- Only when no adapter matches (a non-standard or self-hosted endpoint, e.g. an internal gateway) is manual configuration needed — add a source under **Settings → 自定义额度源**.
+
 ## Screenshots
 
 ### Composer plan strip (current model)

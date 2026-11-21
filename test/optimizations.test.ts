@@ -756,6 +756,66 @@ describe('no-op probe cycles', () => {
     }
   })
 
+  it('auto-detects a standard provider configured under a custom route name', async () => {
+    // The route id is ours to invent; the configured base URL is what tells us
+    // this is an OpenCode Go endpoint with an official quota API.
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-usage-autodetect-'))
+    const calls: string[] = []
+    vi.stubGlobal('fetch', async (input: unknown) => {
+      calls.push(String(input))
+      return {
+        ok: false,
+        status: 401,
+        json: async () => ({ error: 'unauthorized' }),
+      } as unknown as Response
+    })
+    const ctx = {
+      get: (name: string) => {
+        if (name === 'llm') {
+          return { listProviders: () => [{ id: 'my-opencode', name: 'My OpenCode' }], listConfigurableProviders: () => [] }
+        }
+        if (name === 'credentials') {
+          return {
+            resolve: async () => ({ value: 'test-key' }),
+            readRecord: async () => ({ kind: 'api-key', key: 'test-key' }),
+            describe: async () => ({ configured: true }),
+          }
+        }
+        if (name === 'configEditor') {
+          return {
+            configuration: () => [{
+              entry: {
+                options: { id: 'llm-pi-ai' },
+                fiber: { config: { providers: { 'my-opencode': { baseURL: 'https://opencode.ai/zen/go/v1', apiKeyEnv: 'MY_OPENCODE_KEY' } } } },
+              },
+            }],
+          }
+        }
+        return undefined
+      },
+      on: () => () => {},
+    } as unknown as Context
+    const service = new UsageService(ctx, PERF_OPTIONS, dir)
+    const internals = service as unknown as ProbeInternals
+    internals.current = { provider: 'my-opencode', model: 'claude-sonnet-4.5', source: 'live' }
+    try {
+      await internals.loadPersisted()
+      await service.pollNow()
+      expect(calls.length).toBeGreaterThan(0)
+      expect(calls[0]).toContain('opencode.ai/zen/go/v1/usage')
+      const document = await service.overview()
+      const row = document.providers.find((provider) => provider.provider === 'my-opencode')
+      expect(row?.matchedBy).toBe('baseURL')
+      expect(row?.planSupported).toBe(true)
+      // A 401 is a real probe result, not silence: the row carries the error.
+      expect(row?.error).toContain('401')
+    } finally {
+      vi.unstubAllGlobals()
+      await service.stop()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('probes the DeepSeek alias family once and emits one provider row', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dsh-usage-alias-'))
     const harness = probeHarness({

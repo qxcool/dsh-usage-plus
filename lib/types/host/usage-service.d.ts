@@ -502,6 +502,12 @@ export declare class UsageService {
      * document-visible (provider rows), so it bumps the revision.
      */
     private listProviderRoutes;
+    /**
+     * The adapter for one configured route: its id, else the configured pi-ai
+     * base URL. This is what lets a standard provider configured under a custom
+     * route name still get its quota probe without a manual custom source.
+     */
+    private routeAdapter;
     private readProviderRoutes;
     private probeRoute;
     /** Advance or clear the retry backoff after one provider's probe run. */

@@ -123,6 +123,12 @@ export interface ProviderSnapshotView {
   balanceSupported?: boolean
   /** A coding-plan adapter exists for this route — the Plans tab lists these only. */
   planSupported?: boolean
+  /**
+   * How the quota adapter was recognized: by route id, or inferred from the
+   * configured base URL (a standard provider set up under a custom route name).
+   * Absent means no adapter matched.
+   */
+  matchedBy?: 'id' | 'baseURL'
   balance?: BalanceView
   plan?: PlanView
   /** Last probe failure, cleared on the next success. */

@@ -147,6 +147,25 @@ GitHub 形式安装的是本仓库已提交的 `lib/` 构建产物；npm 包可�
 
 CPAMC 与火山方舟仍作为独立外部数据源在设置页配置。仅 OAuth 的适配器（`anthropic`、`github-copilot`）在 API Key 凭据下会直接跳过而不是报错；没有可验证额度 API 的路由不显示卡片或额度条。
 
+### 额度自动识别
+
+标准服务即使你用自定义路由名（`my-opencode`、`work-kimi` 等）配置，也照样能识别额度：先按路由 id 匹配适配器，再按**配置的 baseURL** 识别。
+
+| 配置的 baseURL 主机 | 识别为 |
+|---|---|
+| `api.deepseek.com` | DeepSeek 余额 |
+| `api.moonshot.cn` / `api.moonshot.ai` | Moonshot 余额（人民币 / 美元） |
+| `opencode.ai` | OpenCode Go 套餐 |
+| `api.z.ai`、`z.ai`、`open.bigmodel.cn` | GLM Coding Plan（国际 / 国内） |
+| `api.minimaxi.com` / `api.minimax.io` | MiniMax 套餐 |
+| `api.anthropic.com` | Claude Pro/Max |
+| `githubcopilot.com` | Copilot 配额 |
+| `openrouter.ai`、`ai-gateway.vercel.sh`、`api.siliconflow.*`、`zenmux.ai`、`nano-gpt.com` | 余额 |
+
+- 两个自定义路由指向同一服务时只探测一次、只保留一行（由先出现的路由持有），不会重复探测。
+- 这样识别出的套餐卡片会带「自动识别」徽标，composer 额度条也会借用该行显示。
+- 只有完全识别不到（自建/非标准接口，例如内部网关）时才需要手动配置：在**设置 → 自定义额度源**里加一条即可。
+
 ## 外部数据源
 
 普通模型 Provider 不需要重复配置密钥。CPAMC 与火山方舟是可选独立数据源，凭据可写入 DSH 凭据库或宿主环境变量（`CPAMC_MANAGEMENT_KEY`、`VOLC_ACCESSKEY`、`VOLC_SECRETKEY`）。

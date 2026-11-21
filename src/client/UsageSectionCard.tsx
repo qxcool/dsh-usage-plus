@@ -1566,6 +1566,9 @@ function PlanCard(props: { provider: ProviderSnapshotView; currentId?: string })
           {provider.displayName}
           {currentId === provider.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
           <span className={styles.sourceChip}>{t(planSourceLabelKey(provider))}</span>
+          {provider.matchedBy === 'baseURL' && (
+            <span className={styles.sourceChip} data-dsh-part="plan-auto-detected">{t('usage.plan.source.auto')}</span>
+          )}
           <span className={styles.scopeChip}>{t('usage.scope.account')}</span>
           {provider.plan?.planName !== undefined ? <span className={styles.planTier}>{provider.plan.planName}</span> : ''}
         </span>

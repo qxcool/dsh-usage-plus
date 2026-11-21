@@ -77,6 +77,34 @@ export declare const PROVIDER_ADAPTERS: readonly ProviderAdapter[];
 /** Find the adapter serving a provider route key, if any. */
 export declare function adapterFor(provider: string): ProviderAdapter | undefined;
 /**
+ * Hostnames that identify one adapter's provider family. A user can configure a
+ * standard provider under any route name (`my-opencode`, `work-kimi`, ...); the
+ * base URL still says which quota API to call, so quota recognition does not
+ * depend on the route id being one we ship.
+ */
+export declare const ADAPTER_HOSTS: Readonly<Record<string, string>>;
+/** The adapter id inferred from a base URL hostname, if any. */
+export declare function adapterIdForHost(raw: string | undefined): string | undefined;
+/**
+ * Resolve the adapter for one configured route: the route id first, then the
+ * configured base URL. This is what makes a standard provider configured under
+ * a custom route name still get its quota card without manual setup.
+ *
+ * @param route - route id plus the pi-ai profile base URL when known.
+ * @returns the adapter, or undefined when the route is not recognized (the
+ *   case that needs a custom quota source).
+ */
+export declare function adapterForRoute(route: {
+    id: string;
+    baseURL?: string;
+}): ProviderAdapter | undefined;
+/**
+ * Candidate route ids a composer route could borrow a plan from, derived from
+ * its provider name, model id and base URL. Used by the client when the session
+ * picks a custom route name that the Host probed under another id.
+ */
+export declare function planCandidateRouteIds(text: string): string[];
+/**
  * Keep one route per adapter when several live routes resolve to the same
  * probe endpoint (the `deepseek` catalog key and the `deepseek-official` live
  * route share the DeepSeek balance probe). The adapter's `preferredId` wins
@@ -86,7 +114,8 @@ export declare function adapterFor(provider: string): ProviderAdapter | undefine
  */
 export declare function dedupeProviderAliasRoutes<T extends {
     id: string;
-}>(routes: readonly T[]): T[];
+    baseURL?: string;
+}>(routes: readonly T[], resolve?: (route: T) => ProviderAdapter | undefined): T[];
 /**
  * Whether a provider route belongs to the official DeepSeek family: the only
  * family with a spend price book and a settings-section-owned env credential

@@ -648,6 +648,93 @@ export function adapterFor(provider: string): ProviderAdapter | undefined {
 }
 
 /**
+ * Hostnames that identify one adapter's provider family. A user can configure a
+ * standard provider under any route name (`my-opencode`, `work-kimi`, ...); the
+ * base URL still says which quota API to call, so quota recognition does not
+ * depend on the route id being one we ship.
+ */
+export const ADAPTER_HOSTS: Readonly<Record<string, string>> = {
+  'api.deepseek.com': 'deepseek-official',
+  'api.moonshot.cn': 'moonshotai-cn',
+  'api.moonshot.ai': 'moonshotai',
+  'opencode.ai': 'opencode-go',
+  'api.z.ai': 'zai',
+  'z.ai': 'zai',
+  'open.bigmodel.cn': 'zai-coding-cn',
+  'api.minimaxi.com': 'minimax-cn',
+  'api.minimax.io': 'minimax',
+  'api.anthropic.com': 'anthropic',
+  'api.githubcopilot.com': 'github-copilot',
+  'githubcopilot.com': 'github-copilot',
+  'openrouter.ai': 'openrouter',
+  'ai-gateway.vercel.sh': 'vercel-ai-gateway',
+  'api.siliconflow.cn': 'siliconflow-cn',
+  'api.siliconflow.com': 'siliconflow-intl',
+  'zenmux.ai': 'zenmux',
+  'nano-gpt.com': 'nano-gpt',
+}
+
+/** The hostname of an absolute URL, or '' when it cannot be parsed. */
+function hostnameOf(raw: string | undefined): string {
+  if (raw === undefined || raw.trim() === '') return ''
+  try {
+    return new URL(raw.trim()).hostname.toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
+/** The adapter id inferred from a base URL hostname, if any. */
+export function adapterIdForHost(raw: string | undefined): string | undefined {
+  return ADAPTER_HOSTS[hostnameOf(raw)]
+}
+
+/**
+ * Resolve the adapter for one configured route: the route id first, then the
+ * configured base URL. This is what makes a standard provider configured under
+ * a custom route name still get its quota card without manual setup.
+ *
+ * @param route - route id plus the pi-ai profile base URL when known.
+ * @returns the adapter, or undefined when the route is not recognized (the
+ *   case that needs a custom quota source).
+ */
+export function adapterForRoute(route: { id: string; baseURL?: string }): ProviderAdapter | undefined {
+  const direct = adapterFor(route.id)
+  if (direct !== undefined) return direct
+  const inferred = adapterIdForHost(route.baseURL)
+  return inferred === undefined ? undefined : adapterFor(inferred)
+}
+
+/**
+ * Candidate route ids a composer route could borrow a plan from, derived from
+ * its provider name, model id and base URL. Used by the client when the session
+ * picks a custom route name that the Host probed under another id.
+ */
+export function planCandidateRouteIds(text: string): string[] {
+  const haystack = text.toLowerCase()
+  const ids = new Set<string>()
+  for (const [host, id] of Object.entries(ADAPTER_HOSTS)) {
+    if (haystack.includes(host)) ids.add(id)
+  }
+  const families: Array<[RegExp, string]> = [
+    [/deepseek/,'deepseek-official'],
+    [/opencode/, 'opencode-go'],
+    [/kimi|moonshot/, 'kimi-coding'],
+    [/zai|glm|bigmodel/, 'zai'],
+    [/minimax/, 'minimax'],
+    [/openrouter/, 'openrouter'],
+    [/vercel|ai-gateway/,'vercel-ai-gateway'],
+    [/siliconflow/, 'siliconflow'],
+    [/zenmux/, 'zenmux'],
+    [/nano-gpt|nanogpt/, 'nano-gpt'],
+  ]
+  for (const [pattern, id] of families) {
+    if (pattern.test(haystack)) ids.add(id)
+  }
+  return [...ids]
+}
+
+/**
  * Keep one route per adapter when several live routes resolve to the same
  * probe endpoint (the `deepseek` catalog key and the `deepseek-official` live
  * route share the DeepSeek balance probe). The adapter's `preferredId` wins
@@ -655,10 +742,13 @@ export function adapterFor(provider: string): ProviderAdapter | undefined {
  * without an adapter are never collapsed. Pure: preserves input order of the
  * kept routes and returns a new array.
  */
-export function dedupeProviderAliasRoutes<T extends { id: string }>(routes: readonly T[]): T[] {
+export function dedupeProviderAliasRoutes<T extends { id: string; baseURL?: string }>(
+  routes: readonly T[],
+  resolve: (route: T) => ProviderAdapter | undefined = (route) => adapterForRoute(route),
+): T[] {
   const keptIndex = new Map<ProviderAdapter, number>()
   routes.forEach((route, index) => {
-    const adapter = adapterFor(route.id)
+    const adapter = resolve(route)
     if (adapter === undefined) return
     const current = keptIndex.get(adapter)
     if (current === undefined) {
@@ -669,7 +759,7 @@ export function dedupeProviderAliasRoutes<T extends { id: string }>(routes: read
     if (adapter.preferredId === route.id) keptIndex.set(adapter, index)
   })
   return routes.filter((route, index) => {
-    const adapter = adapterFor(route.id)
+    const adapter = resolve(route)
     return adapter === undefined || keptIndex.get(adapter) === index
   })
 }

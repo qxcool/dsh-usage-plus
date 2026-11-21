@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   PROVIDER_ADAPTERS,
   adapterFor,
+  adapterForRoute,
+  adapterIdForHost,
   dedupeProviderAliasRoutes,
+  planCandidateRouteIds,
   probeHalfAllowed,
   type ProviderAdapter,
 } from '../src/core/adapters.ts'
@@ -55,6 +58,44 @@ describe('adapter registry', () => {
     for (const id of ['anthropic', 'vercel-ai-gateway', 'github-copilot', 'nano-gpt', 'zai']) {
       expect(adapterFor(id)).toBeDefined()
     }
+  })
+})
+
+describe('quota auto-detection for configured routes', () => {
+  it('recognizes a standard provider configured under a custom route name by base URL', () => {
+    // Nothing about the route ids below is a shipped adapter id.
+    expect(adapterForRoute({ id: 'my-opencode', baseURL: 'https://opencode.ai/zen/go/v1' })?.displayName).toBe('OpenCode Go')
+    expect(adapterForRoute({ id: 'work-kimi', baseURL: 'https://api.moonshot.cn/v1' })?.displayName).toContain('Moonshot')
+    expect(adapterForRoute({ id: 'office-glm', baseURL: 'https://open.bigmodel.cn/api/paas/v4' })?.displayName).toContain('GLM')
+    expect(adapterForRoute({ id: 'team-ds', baseURL: 'https://api.deepseek.com/v1' })?.displayName).toBe('DeepSeek')
+    expect(adapterForRoute({ id: 'my-mm', baseURL: 'http://api.minimax.io/v1' })?.displayName).toContain('MiniMax')
+    expect(adapterForRoute({ id: 'z', baseURL: 'https://api.z.ai/api/coding/paas/v4' })?.displayName).toContain('GLM')
+  })
+
+  it('prefers an exact route id over the base URL and never guesses unknown hosts', () => {
+    expect(adapterForRoute({ id: 'deepseek-official', baseURL: 'https://example.com' })?.ids).toContain('deepseek-official')
+    expect(adapterForRoute({ id: 'custom-gateway', baseURL: 'https://llm.internal.example.com/v1' })).toBeUndefined()
+    expect(adapterForRoute({ id: 'custom-gateway' })).toBeUndefined()
+    expect(adapterForRoute({ id: 'custom-gateway', baseURL: 'not a url' })).toBeUndefined()
+    expect(adapterIdForHost('')).toBeUndefined()
+  })
+
+  it('lists candidate rows a composer route can borrow a plan from', () => {
+    expect(planCandidateRouteIds('custom-gateway:foo https://opencode.ai/zen/go')).toEqual(['opencode-go'])
+    expect(planCandidateRouteIds('kimi-work')).toEqual(['kimi-coding'])
+    // A configured Moonshot endpoint contributes its host-specific rows too.
+    expect(planCandidateRouteIds('my-kimi https://api.moonshot.ai/v1')).toEqual(expect.arrayContaining(['kimi-coding', 'moonshotai']))
+    expect(planCandidateRouteIds('some-route')).toEqual([])
+  })
+
+  it('dedupes two custom routes that resolve to the same inferred adapter', () => {
+    const routes = [
+      { id: 'my-opencode', baseURL: 'https://opencode.ai/zen/go/v1' },
+      { id: 'second-opencode', baseURL: 'https://opencode.ai/zen/go/v1' },
+      { id: 'unmatched', baseURL: 'https://example.com' },
+    ]
+    // The kept row is the first route that reaches the adapter.
+    expect(dedupeProviderAliasRoutes(routes).map((route) => route.id)).toEqual(['my-opencode', 'unmatched'])
   })
 })
 

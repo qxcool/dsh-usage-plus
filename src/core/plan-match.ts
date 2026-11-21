@@ -6,6 +6,7 @@
  * @module dsh-usage-plus/core/plan-match
  */
 
+import { planCandidateRouteIds } from './adapters.ts'
 import type { PlanView, PlanWindowView, ProviderSnapshotView, UsageOverviewView } from './types.ts'
 
 /**
@@ -154,6 +155,14 @@ export function currentPlanProvider(
 
   const text = haystack(current.provider, current.model, current.baseURL
     ?? (current.provider === snapshot.current.provider ? snapshot.current.baseURL : undefined))
+
+  // A standard provider configured under a custom route name has no row of its
+  // own; borrow the row the Host probed for the inferred adapter instead.
+  const candidates = planCandidateRouteIds(text)
+  for (const candidate of candidates) {
+    const row = withDisplayPlan(providers.find((provider) => provider.provider === candidate))
+    if (row !== undefined) return row
+  }
 
   if (looksLikeVolcano(text)) {
     const volcano = withDisplayPlan(providers.find((row) => row.source === 'volcano'))

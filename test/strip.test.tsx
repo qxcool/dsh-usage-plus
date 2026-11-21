@@ -361,6 +361,43 @@ describe('PlanUsageStrip per-session route', () => {
     weekOnly.root.unmount()
   })
 
+  it('borrows the auto-detected quota row for a custom route name', async () => {
+    // A standard provider configured under our own route name: no adapter row
+    // carries this id, but the base URL identifies the OpenCode Go endpoint.
+    const snapshot = overview({
+      current: { provider: 'my-opencode', model: 'claude-sonnet-4.5', source: 'live', baseURL: 'https://opencode.ai/zen/go/v1' },
+      providers: [provider({
+        provider: 'opencode-go',
+        displayName: 'opencode-go',
+        matchedBy: 'baseURL',
+        planSupported: true,
+        plan: { updatedAt: 1, windows: [{ key: '5h', percent: 63 }, { key: 'week', percent: 78 }, { key: 'month', percent: 18 }] },
+      })],
+    })
+    const store = fakeStore(snapshot)
+    const { root, host } = mount(createElement(PlanUsageStrip, { store: store as never, sessionId: 'auto' }))
+    await flush()
+    expect(host.textContent).toContain('5h 63.0%')
+    expect(host.textContent).toContain('月 18.0%')
+    root.unmount()
+  })
+
+  it('does not invent a plan when no adapter matches the custom route', async () => {
+    const snapshot = overview({
+      current: { provider: 'my-gateway', model: 'x', source: 'live', baseURL: 'https://internal.example.com/v1' },
+      providers: [provider({
+        provider: 'opencode-go',
+        displayName: 'opencode-go',
+        planSupported: true,
+        plan: { updatedAt: 1, windows: [{ key: '5h', percent: 63 }] },
+      })],
+    })
+    const { root, host } = mount(createElement(PlanUsageStrip, { store: fakeStore(snapshot) as never, sessionId: 'none' }))
+    await flush()
+    expect(host.querySelector('[data-dsh-part="quota-meter"]')).toBeNull()
+    root.unmount()
+  })
+
   it('falls back to English for non-Chinese document languages', async () => {
     const previous = document.documentElement.lang
     document.documentElement.lang = 'ja-JP'

@@ -14,7 +14,7 @@ import { credentialKey, credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { TokenUsage } from '@deepseek-ai/dsh-llm'
 import { dshHome } from '../dsh-home.ts'
-import { adapterFor, dedupeProviderAliasRoutes, isDeepSeekProviderRoute, probeHalfAllowed, providerErrorMessage } from '../core/adapters.ts'
+import { adapterFor, adapterForRoute, dedupeProviderAliasRoutes, isDeepSeekProviderRoute, probeHalfAllowed, providerErrorMessage, type ProviderAdapter } from '../core/adapters.ts'
 import { estimateUsd, fetchPriceBook, isPriceBookFresh, loadPriceBook, savePriceBook, type PriceBook } from '../core/pricing-book.ts'
 import { CUSTOM_PLAN_LIMITS, customPlanSnapshot, describeCustomPlanError, parseCustomPlans, probeCustomPlan, type CustomPlanConfigError } from './custom-plans.ts'
 import { fetchPlatformUsage } from './platform-usage.ts'
@@ -1055,7 +1055,7 @@ export class UsageService {
     const routes = this.listProviderRoutes()
     const rows: ProviderSnapshotView[] = []
     for (const route of routes) {
-      const adapter = adapterFor(route.id)
+      const adapter = this.routeAdapter(route)
       const snapshot = this.snapshots.get(route.id)
       const error = snapshot?.balanceError ?? snapshot?.planError
       // Credential-gated halves are advertised as unsupported until the resolved
@@ -1069,6 +1069,9 @@ export class UsageService {
         source: 'model',
         displayName: route.displayName || adapter?.displayName || route.id,
         credential: snapshot?.credential ?? 'none',
+        ...(adapter === undefined
+          ? {}
+          : { matchedBy: adapterFor(route.id) === undefined ? 'baseURL' as const : 'id' as const }),
         supported: balanceSupported || planSupported,
         ...(balanceSupported ? { balanceSupported: true } : {}),
         ...(planSupported ? { planSupported: true } : {}),
@@ -1828,14 +1831,14 @@ export class UsageService {
         // provider (up to 2 × PROBE_TIMEOUT_MS per route) must not stretch
         // the whole cycle past the 60s default poll interval. probeRoute only
         // writes its own snapshot key, so batches can run in parallel safely.
-        const probeable: Array<{ route: ProviderRoute; adapter: NonNullable<ReturnType<typeof adapterFor>> }> = []
+        const probeable: Array<{ route: ProviderRoute; adapter: ProviderAdapter }> = []
         const now = Date.now()
         for (const route of routes) {
           // Bail out of a cycle that outlived the service.
           if (this.disposed) return
           // `seen` keeps a skipped provider's retained snapshot alive.
           seen.add(route.id)
-          const adapter = adapterFor(route.id)
+          const adapter = this.routeAdapter(route)
           if (adapter === undefined || (adapter.balance === undefined && adapter.plan === undefined)) continue
           // Skip a provider backing off after failures, except the current
           // route: its operator is watching this one and a transient failure
@@ -1889,6 +1892,17 @@ export class UsageService {
     return routes
   }
 
+  /**
+   * The adapter for one configured route: its id, else the configured pi-ai
+   * base URL. This is what lets a standard provider configured under a custom
+   * route name still get its quota probe without a manual custom source.
+   */
+  private routeAdapter(route: ProviderRoute): ProviderAdapter | undefined {
+    const direct = adapterForRoute({ id: route.id, baseURL: this.piAiProfile(route.id)?.baseURL })
+    if (direct !== undefined) return direct
+    return adapterForRoute({ id: route.id })
+  }
+
   private readProviderRoutes(): ProviderRoute[] {
     const routes = new Map<string, string>()
     const runtime = service<{ listProviders(): Array<{ id: string; name: string }>; listConfigurableProviders(): Array<{ provider: string; displayName: string }> }>(this.ctx, 'llm')
@@ -1906,7 +1920,10 @@ export class UsageService {
     }
     // One provider adapter means one probe endpoint, one snapshot, one row:
     // the DeepSeek catalog key and live route must not be probed twice a cycle.
-    return dedupeProviderAliasRoutes([...routes].map(([id, displayName]) => ({ id, displayName })))
+    const listed = [...routes].map(([id, displayName]) => ({ id, displayName }))
+    // A standard provider configured under a custom route name resolves through
+    // its base URL, so two such routes can share one adapter/probe/row.
+    return dedupeProviderAliasRoutes(listed, (route) => this.routeAdapter(route))
   }
 
   private async probeRoute(route: ProviderRoute, adapter: NonNullable<ReturnType<typeof adapterFor>>): Promise<void> {
