@@ -13,6 +13,7 @@
 
 import { memo, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import type { UsageStoreInstance } from './usage-store.ts'
+import { CustomPlanEditor } from './CustomPlanEditor.tsx'
 import { formatPlanReset, friendlyCustomPlanError, friendlyProbeError, isCpamcLoopbackUrl, t } from './locales.ts'
 import { PlanUsageStrip } from './PlanUsageStrip.tsx'
 import styles from './usage.module.css'
@@ -2089,36 +2090,11 @@ function SettingsRow(props: {
           )}
           {customPlansSupported && (
             <>
-              <div className={styles.settingStack}>
-                <span className={styles.settingLabel}>{t('usage.config.customPlans')}</span>
-                <textarea
-                  className={styles.customPlansInput}
-                  value={draft.customPlans}
-                  disabled={disabled || saving}
-                  spellCheck={false}
-                  rows={Math.min(16, Math.max(4, draft.customPlans.split('\n').length + 1))}
-                  placeholder={t('usage.config.customPlans.placeholder')}
-                  onChange={(event) => { edit('customPlans', event.target.value) }}
-                  onBlur={() => {
-                    // Pretty-print only a valid document, and only on blur so
-                    // typing is never rewritten under the cursor.
-                    const text = draft.customPlans.trim()
-                    if (text === '' || !text.startsWith('[')) return
-                    try {
-                      const formatted = JSON.stringify(JSON.parse(text), null, 2)
-                      if (formatted !== draft.customPlans.trim()) edit('customPlans', formatted)
-                    } catch {
-                      // Invalid JSON stays exactly as the user typed it.
-                    }
-                  }}
-                  onKeyDown={(event) => {
-                    // A JSON editor must keep Enter/Tab local instead of
-                    // submitting or moving focus away from the field.
-                    if (event.key === 'Enter' || event.key === 'Tab') event.stopPropagation()
-                  }}
-                />
-              </div>
-              <span className={styles.settingHint}>{t('usage.config.customPlansHint')}</span>
+              <CustomPlanEditor
+                value={draft.customPlans}
+                disabled={disabled || saving}
+                onChange={(next) => edit('customPlans', next)}
+              />
               {customPlanErrors.length > 0 && (
                 <div className={styles.settingWarn} data-dsh-part="custom-plan-errors">
                   {customPlanErrors.map((error, index) => (

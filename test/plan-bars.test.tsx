@@ -679,6 +679,103 @@ describe('alert settings and data health', () => {
     root = undefined
   })
 
+  it('edits custom sources in the form and saves the same JSON the JSON view shows', async () => {
+    const calls: Array<ReadonlyArray<{ op: string; path: readonly string[]; value?: unknown }>> = []
+    const customPlans = JSON.stringify([
+      { id: 'my-plan', name: '内部额度网关', url: 'https://quota.example.com/usage', allowedHosts: ['quota.example.com'], tokenEnv: 'MY_PLAN_TOKEN' },
+    ])
+    const { host, root: mounted } = mount(overview(), {
+      settingsValue: {
+        enabled: true,
+        pollIntervalSec: 60,
+        bubbleMode: 'always',
+        alertsEnabled: true,
+        dailyCostLimitCny: 0,
+        planAlertPercent: 0,
+        balanceAlertCny: 0,
+        alertCooldownMinutes: 60,
+        planPromotePercent: 100,
+        cpamcEnabled: false,
+        cpamcBaseURL: 'http://127.0.0.1:8317',
+        cpamcAllowedHosts: '',
+        volcanoEnabled: false,
+        customPlans,
+      },
+      onMutate: (ops) => calls.push(ops),
+    })
+    root = mounted
+    await flush()
+    pressTab(host, '设置')
+
+    // Form mode is the default for valid JSON, and it renders one card per entry.
+    const editor = host.querySelector('[data-dsh-part="custom-plan-editor"]')
+    expect(editor).not.toBeNull()
+    const entries = host.querySelectorAll('[data-dsh-part="custom-plan-entry"]')
+    expect(entries).toHaveLength(1)
+    expect(host.querySelector('[data-dsh-part="custom-plan-form"]')).not.toBeNull()
+
+    const idField = entries[0]?.querySelectorAll<HTMLInputElement>('.planField input, input')[0]
+    expect(idField?.value).toBe('my-plan')
+    setInputValue(idField!, 'my-plan-2')
+
+    act(() => host.querySelector<HTMLButtonElement>('[data-dsh-part="custom-plan-add"]')?.click())
+    expect(host.querySelectorAll('[data-dsh-part="custom-plan-entry"]')).toHaveLength(2)
+    // The new entry has no id yet, so the form warns before saving.
+    expect(host.textContent).toContain('id 不能为空')
+
+    // The JSON view shows the same document the form edits, before saving. This
+    // stub's settings snapshot never updates, so the draft resets after a
+    // successful save and the post-save view is not the thing to assert here.
+    const jsonButton = host.querySelector<HTMLButtonElement>('[data-dsh-part="custom-plan-mode-json"]')
+    expect(jsonButton).not.toBeNull()
+    act(() => jsonButton?.click())
+    const textarea = host.querySelector<HTMLTextAreaElement>('[data-dsh-part="custom-plan-json"]')
+    expect(textarea).not.toBeNull()
+    const fromJsonView = JSON.parse(textarea!.value) as Array<Record<string, unknown>>
+    expect(fromJsonView).toHaveLength(2)
+    expect(fromJsonView[0]).toMatchObject({ id: 'my-plan-2', name: '内部额度网关', url: 'https://quota.example.com/usage' })
+    expect(fromJsonView[1]).toEqual({})
+
+    const save = [...host.querySelectorAll<HTMLButtonElement>('[data-dsh-part="settings-row"] button')]
+      .filter((button) => button.textContent === '保存' && !button.disabled)
+      .pop()
+    await act(async () => {
+      save?.click()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+
+    expect(calls).toHaveLength(1)
+    const saved = (calls[0] ?? []).find((op) => op.path.join('.') === 'customPlans')?.value
+    expect(typeof saved).toBe('string')
+    expect(JSON.parse(String(saved))).toEqual(fromJsonView)
+  })
+
+  it('falls back to the JSON editor when the stored document is invalid', async () => {
+    const { host, root: mounted } = mount(overview(), {
+      settingsValue: {
+        enabled: true,
+        pollIntervalSec: 60,
+        bubbleMode: 'always',
+        cpamcEnabled: false,
+        cpamcBaseURL: 'http://127.0.0.1:8317',
+        cpamcAllowedHosts: '',
+        volcanoEnabled: false,
+        platformUsageEnabled: true,
+        costEstimateEnabled: true,
+        customPlans: '[{"id": "ok"},',
+      },
+    })
+    root = mounted
+    await flush()
+    pressTab(host, '设置')
+    const editor = host.querySelector('[data-dsh-part="custom-plan-editor"]')
+    expect(editor).not.toBeNull()
+    // Broken JSON opens in the JSON view; the form does not try to render it.
+    expect(host.querySelector('[data-dsh-part="custom-plan-form"]')).toBeNull()
+    expect(host.querySelector('[data-dsh-part="custom-plan-json"]')).not.toBeNull()
+    expect(host.querySelector('[data-dsh-part="custom-plan-form"]')).toBeNull()
+  })
+
   it('stages and saves the ring promotion threshold when the Host supports it', async () => {
     const calls: Array<ReadonlyArray<{ op: string; path: readonly string[]; value?: unknown }>> = []
     const { host, root: mounted } = mount(overview(), {

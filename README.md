@@ -129,7 +129,10 @@ Only account-level plan windows are read; CPAMC does not provide a balance and o
 
 ## Custom quota sources
 
-**Settings → 外部额度源 → 自定义额度源（JSON）** takes a JSON array of endpoints; each one becomes a normal plan card on the Plans tab and a quota pill when its route matches. No adapter code is needed.
+**Settings → 外部额度源 → 自定义额度源** offers two views of the same setting: a **form** (one card per source with id, name, URL, allowed hosts, token env and extra headers) and a **JSON** view for the raw array. Both write one config value, so you can start in the form and drop into JSON for anything the form does not cover; entries you edit in the form keep any extra JSON keys you typed. Each source becomes a normal plan card on the Plans tab and a quota pill when its route matches. No adapter code is needed.
+
+- The form warns about a blank `id` or duplicate ids before saving, and switches to the JSON view automatically when the stored document cannot be parsed (so a broken edit is fixable rather than silently dropped).
+- The JSON view is the persisted format; the form only rewrites the fields it owns (id, name, url, allowedHosts, tokenEnv, headers) and leaves everything else in place.
 
 ```json
 [

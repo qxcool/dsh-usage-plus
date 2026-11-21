@@ -2821,3 +2821,99 @@
     transition: none;
   }
 }
+
+/* Custom-plan form ↔ JSON editor. */
+.customPlanEditor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.planEditorHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.planFieldGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+}
+
+.planField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.planFieldLabel {
+  font-size: 11.5px;
+  color: var(--u-text-3);
+  letter-spacing: 0.02em;
+}
+
+.planField input,
+.planHeadersInput {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--u-line-2);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12.5px;
+  min-width: 0;
+}
+
+.planField input:focus-visible,
+.planHeadersInput:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--u-accent) 55%, transparent);
+}
+
+.planHeadersInput {
+  font-family: var(--u-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.customPlanForm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.customPlanFormCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--u-line-2);
+  border-radius: 10px;
+  background: var(--u-surface-1);
+}
+
+.customPlanFormHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.planFormActions {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .planFieldGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

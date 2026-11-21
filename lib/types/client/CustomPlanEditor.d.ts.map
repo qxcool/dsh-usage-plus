@@ -1,0 +1,1 @@
+{"version":3,"file":"CustomPlanEditor.d.ts","sourceRoot":"","sources":["../../../src/client/CustomPlanEditor.tsx"],"names":[],"mappings":"AAAA;;;;;GAKG;AACH,OAAO,EAAuB,KAAK,SAAS,EAAE,MAAM,OAAO,CAAA;AA2E3D;;;GAGG;AACH,wBAAgB,gBAAgB,CAAC,KAAK,EAAE;IACtC,KAAK,EAAE,MAAM,CAAA;IACb,QAAQ,EAAE,OAAO,CAAA;IACjB,QAAQ,EAAE,CAAC,IAAI,EAAE,MAAM,KAAK,IAAI,CAAA;CACjC,GAAG,SAAS,CAqJZ"}
