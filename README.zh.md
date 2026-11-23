@@ -9,6 +9,7 @@
 ## 特性
 
 - 自动复用 DSH 已配置模型的凭据，查询 DeepSeek、Moonshot（国内/国际）、Kimi Coding、Anthropic Claude Pro/Max、GLM Coding Plan（国内/国际）、OpenCode Go、MiniMax（国内/国际）、Codex/ChatGPT、GitHub Copilot、OpenRouter、Vercel AI Gateway、SiliconFlow（国内/国际）、ZenMux 与 NanoGPT 的官方余额/额度。
+- 对没有内置适配器的路由，按 baseURL 自动探测**通用网关余额接口**：One API 计费、New API 额度与 OpenAI 兼容 `/credits`；识别成功即默认显示（带 `通用网关` 徽标），识别失败静默并在 30 分钟后重试。
 - 在 `conversation.composer.dock`（与官方轮次 / Token / ContextMeter 同行）显示当前模型的真实 5 小时、每周、每月额度；服务端没有返回官方额度窗口时完全不显示。
 - 插件页每个数字都带口径徽标（`全设备` / `账号级` / `本会话`），设备级合计不会被误读成会话级数字。
 - 额度条按「每个会话选择的模型」解析：读取该会话 `modelSelection` 投影（composer 模型位 / `/model` 切换立即生效）。尚未产生会话选择时才回退到宿主当前路由；**会话已选中模型时绝不再串到其它会话或全局套餐**。
@@ -165,6 +166,20 @@ CPAMC 与火山方舟仍作为独立外部数据源在设置页配置。仅 OAut
 - 两个自定义路由指向同一服务时只探测一次、只保留一行（由先出现的路由持有），不会重复探测。
 - 这样识别出的套餐卡片会带「自动识别」徽标，composer 额度条也会借用该行显示。
 - 只有完全识别不到（自建/非标准接口，例如内部网关）时才需要手动配置：在**设置 → 自定义额度源**里加一条即可。
+
+#### 通用网关自动探测（v0.7.0）
+
+没有内置适配器的路由还有一次自动机会：按配置的 `baseURL` 依次探测标准网关余额接口。
+
+| 探测接口 | 识别为 | 事实 |
+|---|---|---|
+| `{base}/credits`（以及 `{origin}/v1/credits`） | OpenAI 兼容的额度代理 | `balance` / `total_available`（美元） |
+| `{origin}/dashboard/billing/subscription` + `/dashboard/billing/usage` | One API | `hard_limit_usd` − `total_usage` / 100（美元） |
+| `{origin}/api/user/self` + `/api/status` | New API | `quota` / `quota_per_unit`，货币由 `quota_display_type` 决定 |
+
+- 识别成功就是一条普通余额行，带 `通用网关` 徽标；只用 API Key / 环境变量凭据探测，OAuth access token 不作为面板凭据。
+- 识别失败**不产生**行，也不报错：失败结果缓存 30 分钟后再试，之后服务端补上余额接口也能自动发现。
+- 顺序遵循「先简单」原则：内置适配器 → 自动识别 → 通用网关探测 → 自定义额度源 → 新适配器（带接口和样例体提 issue）。
 
 ## 外部数据源
 

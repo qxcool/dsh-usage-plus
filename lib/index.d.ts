@@ -84,6 +84,11 @@ interface UsageServiceOptions {
   costEstimateEnabled?: boolean;
   /** Raw JSON array of generic custom plan sources; empty disables the feature. */
   customPlans?: string;
+  /**
+   * Auto-detect a standard gateway balance endpoint (One API / New API /
+   * `/credits`) for configured routes with no shipped adapter. Default true.
+   */
+  gatewayDetectEnabled?: boolean;
   /** Test seam: pre-built price book (avoids the network). */
   priceBook?: PriceBook;
   /** Test seam: replace the models.dev catalog fetch. */
@@ -152,6 +157,11 @@ interface Config {
   costEstimateEnabled?: boolean;
   /** JSON array of generic custom plan sources (`[{id,name,url,...}]`); empty disables. */
   customPlans?: string;
+  /**
+   * Auto-detect standard gateway balance endpoints (One API / New API /
+   * `/credits`) for configured routes without a shipped adapter. Default true.
+   */
+  gatewayDetectEnabled?: boolean;
   cpamcEnabled?: boolean;
   cpamcBaseURL?: string;
   cpamcManagementKeyEnv?: string;
@@ -181,6 +191,7 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
   platformUsageEnabled: z<boolean, boolean, "volatile-defined">;
   costEstimateEnabled: z<boolean, boolean, "volatile-defined">;
   customPlans: z<string, string, "volatile-defined">;
+  gatewayDetectEnabled: z<boolean, boolean, "volatile-defined">;
   cpamcEnabled: z<boolean, boolean, "volatile-defined">;
   cpamcBaseURL: z<string, string, "volatile-defined">;
   cpamcManagementKeyEnv: z<string, string, "volatile-defined">;
@@ -202,6 +213,7 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
   platformUsageEnabled: z<boolean, boolean, "volatile-defined">;
   costEstimateEnabled: z<boolean, boolean, "volatile-defined">;
   customPlans: z<string, string, "volatile-defined">;
+  gatewayDetectEnabled: z<boolean, boolean, "volatile-defined">;
   cpamcEnabled: z<boolean, boolean, "volatile-defined">;
   cpamcBaseURL: z<string, string, "volatile-defined">;
   cpamcManagementKeyEnv: z<string, string, "volatile-defined">;

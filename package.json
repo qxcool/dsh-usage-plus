@@ -1,7 +1,7 @@
 {
   "name": "dsh-usage-plus",
   "description": "Independent DSH usage and plan-quota plugin with official provider windows, generic custom quota sources, CPAMC / Volcano sources, and a composer-dock quota strip.",
-  "version": "0.6.9",
+  "version": "0.7.0",
   "type": "module",
   "engines": {
     "dsh": ">=0.2.2-rc.3 <0.3.0-0",

@@ -104,11 +104,15 @@ export interface ProviderSnapshotView {
     /** A coding-plan adapter exists for this route — the Plans tab lists these only. */
     planSupported?: boolean;
     /**
-     * How the quota adapter was recognized: by route id, or inferred from the
-     * configured base URL (a standard provider set up under a custom route name).
+     * How the quota adapter was recognized: by route id, inferred from the
+     * configured base URL (a standard provider set up under a custom route name),
+     * or detected as a standard gateway dashboard endpoint on an otherwise
+     * unknown base URL.
      * Absent means no adapter matched.
      */
-    matchedBy?: 'id' | 'baseURL';
+    matchedBy?: 'id' | 'baseURL' | 'gateway';
+    /** Display label of the detected gateway probe (`One API`, `New API`, `Credits`). */
+    gatewayName?: string;
     balance?: BalanceView;
     plan?: PlanView;
     /** Last probe failure, cleared on the next success. */

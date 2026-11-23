@@ -395,6 +395,11 @@ function BalanceInline(props: {
               <span className={styles.providerName}>
                 {provider.displayName}
                 {props.current === provider.provider && <span className={styles.currentBadge}>{t('usage.current')}</span>}
+                {provider.matchedBy === 'gateway' && (
+                  <span className={styles.sourceChip} data-dsh-part="balance-auto-gateway" title={provider.gatewayName}>
+                    {t('usage.plan.source.gateway')}
+                  </span>
+                )}
               </span>
             </span>
             <span className={styles.balanceMeta}>

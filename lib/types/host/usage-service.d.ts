@@ -38,6 +38,11 @@ export interface UsageServiceOptions {
     costEstimateEnabled?: boolean;
     /** Raw JSON array of generic custom plan sources; empty disables the feature. */
     customPlans?: string;
+    /**
+     * Auto-detect a standard gateway balance endpoint (One API / New API /
+     * `/credits`) for configured routes with no shipped adapter. Default true.
+     */
+    gatewayDetectEnabled?: boolean;
     /** Test seam: pre-built price book (avoids the network). */
     priceBook?: PriceBook;
     /** Test seam: replace the models.dev catalog fetch. */
@@ -219,6 +224,12 @@ export declare class UsageService {
     private lastPrune;
     /** Consecutive probe failures per provider; drives the retry backoff. */
     private readonly probeBackoff;
+    /**
+     * Last failed gateway auto-detection per route id. A gateway that exposes no
+     * standard balance endpoint is not retried every poll; the negative result is
+     * cached for {@link GATEWAY_MISS_TTL_MS} and re-checked later.
+     */
+    private readonly gatewayMisses;
     /** Last snapshots document written; an unchanged document is not rewritten. */
     private lastPersistedSnapshots;
     /** Start instant of the last ledger write attempt; enforces the flush floor. */
@@ -510,6 +521,21 @@ export declare class UsageService {
     private routeAdapter;
     private readProviderRoutes;
     private probeRoute;
+    /**
+     * Whether one adapter-less route should get a gateway auto-detection pass:
+     * it must have a configured base URL, auto-detection must not be disabled,
+     * and a previous miss must have expired.
+     */
+    private gatewayCandidate;
+    /**
+     * Probe a configured route with no shipped adapter against the standard
+     * gateway dashboard endpoints (One API / New API / `/credits`). A recognized
+     * balance becomes a regular snapshot row with `matchedBy: 'gateway'`; an
+     * unrecognized host records a miss (retried after {@link GATEWAY_MISS_TTL_MS})
+     * and leaves no misleading row behind. Only API-key/env credentials are used:
+     * an OAuth access token is not a dashboard credential.
+     */
+    private probeGatewayRoute;
     /** Advance or clear the retry backoff after one provider's probe run. */
     private recordProbeOutcome;
     /**

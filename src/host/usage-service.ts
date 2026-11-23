@@ -15,6 +15,7 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { TokenUsage } from '@deepseek-ai/dsh-llm'
 import { dshHome } from '../dsh-home.ts'
 import { adapterFor, adapterForRoute, dedupeProviderAliasRoutes, isDeepSeekProviderRoute, probeHalfAllowed, providerErrorMessage, type ProviderAdapter } from '../core/adapters.ts'
+import { detectGatewayQuota, type GatewayDetection } from '../core/gateways.ts'
 import { estimateUsd, fetchPriceBook, isPriceBookFresh, loadPriceBook, savePriceBook, type PriceBook } from '../core/pricing-book.ts'
 import { CUSTOM_PLAN_LIMITS, customPlanSnapshot, describeCustomPlanError, parseCustomPlans, probeCustomPlan, type CustomPlanConfigError } from './custom-plans.ts'
 import { fetchPlatformUsage } from './platform-usage.ts'
@@ -85,6 +86,11 @@ export interface UsageServiceOptions {
   costEstimateEnabled?: boolean
   /** Raw JSON array of generic custom plan sources; empty disables the feature. */
   customPlans?: string
+  /**
+   * Auto-detect a standard gateway balance endpoint (One API / New API /
+   * `/credits`) for configured routes with no shipped adapter. Default true.
+   */
+  gatewayDetectEnabled?: boolean
   /** Test seam: pre-built price book (avoids the network). */
   priceBook?: PriceBook
   /** Test seam: replace the models.dev catalog fetch. */
@@ -113,6 +119,13 @@ const DEFAULT_ALERT_COOLDOWN_MINUTES = 60
 
 /** Probe timeout per HTTP call. */
 const PROBE_TIMEOUT_MS = 10_000
+
+/**
+ * How long a route whose gateway exposes no standard balance endpoint is
+ * skipped before the auto-detection is retried (30 minutes). Successful
+ * detections are regular snapshots and refresh on the normal poll cadence.
+ */
+const GATEWAY_MISS_TTL_MS = 30 * 60_000
 
 /**
  * Retry delays for a provider whose probe keeps failing, by consecutive
@@ -500,6 +513,8 @@ export function providerSnapshotFactsEqual(left: ProviderSnapshotState, right: P
     && left.balanceSupported === right.balanceSupported
     && left.planSupported === right.planSupported
     && left.source === right.source
+    && left.matchedBy === right.matchedBy
+    && left.gatewayName === right.gatewayName
     && left.error === right.error
     && left.balanceError === right.balanceError
     && left.planError === right.planError
@@ -574,6 +589,12 @@ export class UsageService {
   private lastPrune: { dayKey: string; retainDays: number } | undefined
   /** Consecutive probe failures per provider; drives the retry backoff. */
   private readonly probeBackoff = new Map<string, { failures: number; nextAt: number }>()
+  /**
+   * Last failed gateway auto-detection per route id. A gateway that exposes no
+   * standard balance endpoint is not retried every poll; the negative result is
+   * cached for {@link GATEWAY_MISS_TTL_MS} and re-checked later.
+   */
+  private readonly gatewayMisses = new Map<string, number>()
   /** Last snapshots document written; an unchanged document is not rewritten. */
   private lastPersistedSnapshots: string | undefined
   /** Start instant of the last ledger write attempt; enforces the flush floor. */
@@ -1060,18 +1081,22 @@ export class UsageService {
       const error = snapshot?.balanceError ?? snapshot?.planError
       // Credential-gated halves are advertised as unsupported until the resolved
       // credential kind matches, so an API-key user does not get a plan card
-      // for an OAuth-only subscription endpoint.
+      // for an OAuth-only subscription endpoint. A gateway-detected balance is
+      // facts-only (no adapter) and advertises through the snapshot flags.
       const credentialKind = snapshot?.credential ?? 'none'
-      const balanceSupported = adapter?.balance !== undefined && probeHalfAllowed(adapter.balance.credential, credentialKind)
-      const planSupported = adapter?.plan !== undefined && probeHalfAllowed(adapter.plan.credential, credentialKind)
+      const balanceSupported = snapshot?.balanceSupported === true
+        || (adapter?.balance !== undefined && probeHalfAllowed(adapter.balance.credential, credentialKind))
+      const planSupported = snapshot?.planSupported === true
+        || (adapter?.plan !== undefined && probeHalfAllowed(adapter.plan.credential, credentialKind))
+      const matchedBy = snapshot?.matchedBy
+        ?? (adapter === undefined ? undefined : adapterFor(route.id) === undefined ? 'baseURL' as const : 'id' as const)
       rows.push({
         provider: route.id,
         source: 'model',
         displayName: route.displayName || adapter?.displayName || route.id,
         credential: snapshot?.credential ?? 'none',
-        ...(adapter === undefined
-          ? {}
-          : { matchedBy: adapterFor(route.id) === undefined ? 'baseURL' as const : 'id' as const }),
+        ...(matchedBy !== undefined ? { matchedBy } : {}),
+        ...(snapshot?.gatewayName !== undefined ? { gatewayName: snapshot.gatewayName } : {}),
         supported: balanceSupported || planSupported,
         ...(balanceSupported ? { balanceSupported: true } : {}),
         ...(planSupported ? { planSupported: true } : {}),
@@ -1832,6 +1857,7 @@ export class UsageService {
         // the whole cycle past the 60s default poll interval. probeRoute only
         // writes its own snapshot key, so batches can run in parallel safely.
         const probeable: Array<{ route: ProviderRoute; adapter: ProviderAdapter }> = []
+        const gatewayable: ProviderRoute[] = []
         const now = Date.now()
         for (const route of routes) {
           // Bail out of a cycle that outlived the service.
@@ -1839,7 +1865,14 @@ export class UsageService {
           // `seen` keeps a skipped provider's retained snapshot alive.
           seen.add(route.id)
           const adapter = this.routeAdapter(route)
-          if (adapter === undefined || (adapter.balance === undefined && adapter.plan === undefined)) continue
+          if (adapter === undefined) {
+            // No shipped adapter: try the standard gateway balance endpoints
+            // derived from the configured base URL before concluding the
+            // provider has no quota API at all.
+            if (this.gatewayCandidate(route, now)) gatewayable.push(route)
+            continue
+          }
+          if (adapter.balance === undefined && adapter.plan === undefined) continue
           // Skip a provider backing off after failures, except the current
           // route: its operator is watching this one and a transient failure
           // should recover at the normal cadence.
@@ -1852,6 +1885,11 @@ export class UsageService {
           if (this.disposed) return
           const batch = probeable.slice(offset, offset + PROBE_CONCURRENCY)
           await Promise.all(batch.map(({ route, adapter }) => this.probeRoute(route, adapter)))
+        }
+        for (let offset = 0; offset < gatewayable.length; offset += PROBE_CONCURRENCY) {
+          if (this.disposed) return
+          const batch = gatewayable.slice(offset, offset + PROBE_CONCURRENCY)
+          await Promise.all(batch.map((route) => this.probeGatewayRoute(route)))
         }
         let droppedSnapshots = false
         for (const id of [...this.snapshots.keys()]) {
@@ -2012,6 +2050,62 @@ export class UsageService {
     // either half clears the counter (the other half may legitimately have
     // no adapter at all).
     this.recordProbeOutcome(route.id, snapshot.balanceError !== undefined || snapshot.planError !== undefined)
+  }
+
+  /**
+   * Whether one adapter-less route should get a gateway auto-detection pass:
+   * it must have a configured base URL, auto-detection must not be disabled,
+   * and a previous miss must have expired.
+   */
+  private gatewayCandidate(route: ProviderRoute, now: number): boolean {
+    if (this.options.gatewayDetectEnabled === false) return false
+    const baseURL = this.piAiProfile(route.id)?.baseURL
+    if (baseURL === undefined || baseURL.trim() === '') return false
+    const missAt = this.gatewayMisses.get(route.id)
+    return missAt === undefined || now - missAt >= GATEWAY_MISS_TTL_MS
+  }
+
+  /**
+   * Probe a configured route with no shipped adapter against the standard
+   * gateway dashboard endpoints (One API / New API / `/credits`). A recognized
+   * balance becomes a regular snapshot row with `matchedBy: 'gateway'`; an
+   * unrecognized host records a miss (retried after {@link GATEWAY_MISS_TTL_MS})
+   * and leaves no misleading row behind. Only API-key/env credentials are used:
+   * an OAuth access token is not a dashboard credential.
+   */
+  private async probeGatewayRoute(route: ProviderRoute): Promise<void> {
+    const baseURL = this.piAiProfile(route.id)?.baseURL
+    if (baseURL === undefined || baseURL.trim() === '') return
+    const credential = await this.resolveCredential(route.id)
+    if (credential.key === undefined) return
+    if (credential.kind !== 'api-key' && credential.kind !== 'env') return
+    let detection: GatewayDetection | undefined
+    try {
+      detection = await detectGatewayQuota({ baseURL, apiKey: credential.key })
+    } catch {
+      detection = undefined
+    }
+    if (detection === undefined) {
+      this.gatewayMisses.set(route.id, Date.now())
+      return
+    }
+    this.gatewayMisses.delete(route.id)
+    const previous = this.snapshots.get(route.id)
+    const snapshot: ProviderSnapshotState = {
+      provider: route.id,
+      source: 'model',
+      displayName: route.displayName || route.id,
+      credential: credential.kind,
+      supported: true,
+      balanceSupported: true,
+      matchedBy: 'gateway',
+      gatewayName: detection.name,
+      balance: { currency: detection.currency, totalBalance: detection.totalBalance, updatedAt: Date.now() },
+      updatedAt: Date.now(),
+    }
+    if (previous !== undefined && providerSnapshotFactsEqual(previous, snapshot)) return
+    this.snapshots.set(route.id, snapshot)
+    this.bumpRevision()
   }
 
   /** Advance or clear the retry backoff after one provider's probe run. */

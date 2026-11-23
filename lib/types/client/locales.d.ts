@@ -161,6 +161,7 @@ export declare const zh: {
     'usage.plan.group.volcano': string;
     'usage.plan.source.model': string;
     'usage.plan.source.auto': string;
+    'usage.plan.source.gateway': string;
     'usage.plan.source.cpamc': string;
     'usage.plan.source.volcano': string;
     'usage.provider.error': string;

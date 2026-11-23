@@ -24,6 +24,7 @@ Independent DSH usage and official Plan-quota plugin (Host + Web UI). Requires D
 - Makes the 26-week heatmap a control: click a day for its provider/model detail, switch the intensity metric (tokens / calls / cost), and future days are disabled.
 - Shows a **this-session** summary inside the composer quota popover (billed tokens, official cache hit, context occupancy, and an estimated DeepSeek CNY session cost).
 - Reads official quota / balance endpoints for DeepSeek, Moonshot (CN/intl), Kimi For Coding, Anthropic Claude Pro/Max, GLM Coding Plan (CN/intl), OpenCode Go, MiniMax (CN/intl), Codex/ChatGPT, GitHub Copilot, OpenRouter, Vercel AI Gateway, SiliconFlow (CN/intl), ZenMux and NanoGPT.
+- Auto-detects **standard gateway balance endpoints** for routes without a shipped adapter: derived from the configured base URL it probes One API billing, New API quota and OpenAI-compatible `/credits`; a recognized balance shows by default with a `通用网关` chip, a miss stays silent and is retried after 30 minutes.
 - Accepts **generic custom quota endpoints** too: any allow-listed HTTPS URL that returns quota JSON, so a new provider needs no shipped adapter.
 - Skips a fork's inherited event prefix during history backfill, so forked sessions are not counted twice.
 
@@ -66,6 +67,20 @@ A standard provider keeps its quota API even when you configure it under your ow
 - Two custom routes pointing at the same provider collapse into one probe and one row (the first route keeps the row), so nothing is double-probed.
 - A plan card recognized this way shows an `自动识别` chip, and the composer strip borrows that row for the custom route.
 - Only when no adapter matches (a non-standard or self-hosted endpoint, e.g. an internal gateway) is manual configuration needed — add a source under **Settings → 自定义额度源**.
+
+#### Generic gateway detection (v0.7.0)
+
+Routes with no shipped adapter get one more automatic attempt: the Host probes the standard gateway balance endpoints derived from the configured `baseURL`, in this order.
+
+| Endpoint | Recognized as | Fact |
+|---|---|---|
+| `{base}/credits` (also `{origin}/v1/credits`) | OpenAI-compatible credit proxy | `balance` / `total_available` (USD) |
+| `{origin}/dashboard/billing/subscription` + `/dashboard/billing/usage` | One API | `hard_limit_usd` − `total_usage` / 100 (USD) |
+| `{origin}/api/user/self` + `/api/status` | New API | `quota` / `quota_per_unit`, currency from `quota_display_type` |
+
+- A recognized balance is a normal balance row with a `通用网关` chip; only API-key / env credentials are used for dashboard probes (an OAuth access token is not a dashboard credential).
+- A miss leaves **no** row and no error line: it is cached for 30 minutes, then retried, so a provider that later adds a balance API is picked up automatically.
+- The detection order follows the "simple first" contract: shipped adapter → automatic recognition → generic gateway probe → custom quota source → new adapter (open an issue with the endpoint and a sample body).
 
 ## Screenshots
 

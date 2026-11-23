@@ -56,6 +56,11 @@ export interface Config {
   costEstimateEnabled?: boolean
   /** JSON array of generic custom plan sources (`[{id,name,url,...}]`); empty disables. */
   customPlans?: string
+  /**
+   * Auto-detect standard gateway balance endpoints (One API / New API /
+   * `/credits`) for configured routes without a shipped adapter. Default true.
+   */
+  gatewayDetectEnabled?: boolean
   cpamcEnabled?: boolean
   cpamcBaseURL?: string
   cpamcManagementKeyEnv?: string
@@ -86,6 +91,7 @@ export const Config = z.object({
   platformUsageEnabled: z.boolean().default(true).volatile(),
   costEstimateEnabled: z.boolean().default(true).volatile(),
   customPlans: z.string().default('').volatile(),
+  gatewayDetectEnabled: z.boolean().default(true).volatile(),
   cpamcEnabled: z.boolean().default(false).volatile(),
   cpamcBaseURL: z.string().default('http://127.0.0.1:8317').volatile(),
   cpamcManagementKeyEnv: z.string().default('CPAMC_MANAGEMENT_KEY').volatile(),
@@ -146,6 +152,7 @@ export function resolveConfig(input?: Record<string, unknown> | Config): Resolve
     platformUsageEnabled: config.platformUsageEnabled ?? true,
     costEstimateEnabled: config.costEstimateEnabled ?? true,
     customPlans: typeof config.customPlans === 'string' ? config.customPlans : '',
+    gatewayDetectEnabled: config.gatewayDetectEnabled ?? true,
     cpamcEnabled: config.cpamcEnabled ?? false,
     cpamcBaseURL: config.cpamcBaseURL ?? 'http://127.0.0.1:8317',
     cpamcManagementKeyEnv: config.cpamcManagementKeyEnv ?? 'CPAMC_MANAGEMENT_KEY',
