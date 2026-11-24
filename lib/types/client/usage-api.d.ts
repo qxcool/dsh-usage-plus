@@ -21,4 +21,6 @@ export declare function overviewRequestPath(days: UsageRangeDays): string;
 export declare function exportRequestPath(format: 'csv' | 'json', days: UsageRangeDays): string;
 /** The per-day drill-down path (heatmap navigation). */
 export declare function dayRequestPath(date: string): string;
+/** The plugin update-check path (loopback-fenced, host-side 1h TTL). */
+export declare function versionRequestPath(): string;
 //# sourceMappingURL=usage-api.d.ts.map

@@ -36,3 +36,8 @@ export function exportRequestPath(format: 'csv' | 'json', days: UsageRangeDays):
 export function dayRequestPath(date: string): string {
   return `/api/dsh-usage-plus/day?date=${encodeURIComponent(date)}`
 }
+
+/** The plugin update-check path (loopback-fenced, host-side 1h TTL). */
+export function versionRequestPath(): string {
+  return '/api/dsh-usage-plus/version'
+}

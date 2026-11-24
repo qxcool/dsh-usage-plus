@@ -16,6 +16,8 @@ export declare const zh: {
     'usage.refreshing': string;
     'usage.retry': string;
     'usage.updated': string;
+    'usage.update.label': string;
+    'usage.update.tip': string;
     'usage.loading': string;
     'usage.error': string;
     'usage.disabled': string;

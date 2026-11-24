@@ -1,5 +1,6 @@
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver';
 import { type UsageService } from './usage-service.ts';
+import { type VersionChecker } from './version.ts';
 export declare const USAGE_API_PREFIX = "/api/dsh-usage-plus";
 /**
  * Whether an `If-None-Match` header names this ETag. Handles the list form,
@@ -43,6 +44,14 @@ export declare function makeUsageTestRoute(service: UsageService): WebRoute;
  * with the fresh overview.
  */
 export declare function makeUsageRefreshRoute(service: UsageService): WebRoute;
+/**
+ * Loopback-fenced update check: the running plugin version, the latest
+ * published npm version (1h host-side TTL, npmmirror fallback), and whether
+ * the latest is strictly newer. `updateAvailable` is null instead of false
+ * when either side is unknown, so the client never claims "up to date" on a
+ * failed check.
+ */
+export declare function makeUsageVersionRoute(checker: VersionChecker): WebRoute;
 /**
  * Loopback-fenced write-only credential route for CPAMC management token and
  * Volcano AK/SK. Secrets land in the DSH credential store and never come back

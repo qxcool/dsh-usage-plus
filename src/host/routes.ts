@@ -7,6 +7,7 @@ import { asJsonObject, readJsonBody, writeJson, writeText } from './http.ts'
 import { isLoopbackRequest } from './loopback.ts'
 import { exportCsv, exportFilename, resolveExportDays, resolveExportFormat } from './export.ts'
 import { resolveRangeDays, type ExternalSourceTestDraft, type UsageService } from './usage-service.ts'
+import { isNewerVersion, type VersionChecker } from './version.ts'
 import { localDateKey } from '../core/ledger.ts'
 import { dshHome } from '../dsh-home.ts'
 
@@ -245,6 +246,47 @@ export function makeUsageRefreshRoute(service: UsageService): WebRoute {
         return
       }
       writeJson(res, 200, await service.overview(), { 'cache-control': 'no-store' })
+    },
+  }
+}
+
+/**
+ * Loopback-fenced update check: the running plugin version, the latest
+ * published npm version (1h host-side TTL, npmmirror fallback), and whether
+ * the latest is strictly newer. `updateAvailable` is null instead of false
+ * when either side is unknown, so the client never claims "up to date" on a
+ * failed check.
+ */
+export function makeUsageVersionRoute(checker: VersionChecker): WebRoute {
+  return {
+    kind: 'exact',
+    path: USAGE_API_PREFIX + '/version',
+    handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+      if (!isLoopbackRequest(req)) {
+        writeJson(res, 403, { ok: false, error: 'forbidden: loopback-only' })
+        return
+      }
+      if (req.method !== 'GET') {
+        writeJson(res, 405, { ok: false, error: 'method not allowed' })
+        return
+      }
+      try {
+        const read = await checker.check()
+        const current = checker.current() ?? null
+        writeJson(res, 200, {
+          ok: true,
+          value: {
+            ready: read.ready,
+            failed: read.failed,
+            checkedAt: read.checkedAt,
+            current,
+            updateAvailable: read.value !== null && current !== null ? isNewerVersion(read.value, current) : null,
+            ...(read.value === null ? {} : { latest: read.value }),
+          },
+        }, { 'cache-control': 'no-store' })
+      } catch (error) {
+        writeJson(res, 500, { ok: false, error: error instanceof Error ? error.message : 'version check failed' })
+      }
     },
   }
 }

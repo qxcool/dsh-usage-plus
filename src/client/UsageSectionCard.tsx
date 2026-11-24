@@ -16,6 +16,7 @@ import type { UsageStoreInstance } from './usage-store.ts'
 import { CustomPlanEditor } from './CustomPlanEditor.tsx'
 import { formatPlanReset, friendlyCustomPlanError, friendlyProbeError, isCpamcLoopbackUrl, t } from './locales.ts'
 import { PlanUsageStrip } from './PlanUsageStrip.tsx'
+import { RELEASES_URL, useUpdateAvailable } from './update-check.ts'
 import styles from './usage.module.css'
 import { isDeepSeekProviderRoute } from '../core/adapters.ts'
 import { buildHeatmapGrid, HEATMAP_WEEKS, type HeatmapCell } from '../core/heatmap.ts'
@@ -236,6 +237,32 @@ function ChevronIcon(props: { open: boolean }): ReactNode {
     <svg className={props.open ? `${styles.icon} ${styles.iconOpen}` : styles.icon} viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M6 9l6 6 6-6" />
     </svg>
+  )
+}
+
+/**
+ * Update-available chip in the page header (the dsh-context pattern): a quiet
+ * link to the GitHub Releases page, rendered only after the host's version
+ * check confirms a strictly newer published version. Clicking it leaves the
+ * update to DSH's plugin command; the chip is only the pointer.
+ */
+function UpdateChip(): ReactNode {
+  const latest = useUpdateAvailable()
+  if (latest === null) return null
+  const tip = t('usage.update.tip', { version: `v${latest}` })
+  return (
+    <a
+      className={styles.updateChip}
+      href={RELEASES_URL}
+      target="_blank"
+      rel="noreferrer"
+      aria-label={tip}
+      title={tip}
+      data-dsh-part="update-chip"
+    >
+      <span className={styles.updateChipLabel}>{t('usage.update.label')}</span>
+      <span className={`${styles.updateChipVersion} ${styles.mono}`}>{`↑ v${latest}`}</span>
+    </a>
   )
 }
 
@@ -2566,6 +2593,7 @@ export function UsageSectionCard(props: UsageSectionProps): ReactNode {
           </div>
         </div>
         <div className={styles.headActions}>
+          <UpdateChip />
           <span className={styles.freshness} data-fresh={fresh ? 'yes' : 'no'}>
             <i className={styles.freshnessDot} aria-hidden="true" />
             <span className={styles.mono}>{t('usage.updated', { time: formatTime(snapshot.updatedAt) })}</span>

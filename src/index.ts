@@ -4,7 +4,8 @@ import type {} from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
 import { mountOnce } from './mount-once.ts'
 import { UsageService, type UsageServiceOptions } from './host/usage-service.ts'
-import { makeUsageClientDiagRoute, makeUsageCredentialsRoute, makeUsageDayRoute, makeUsageExportRoute, makeUsageOverviewRoute, makeUsageRefreshRoute, makeUsageTestRoute } from './host/routes.ts'
+import { makeUsageClientDiagRoute, makeUsageCredentialsRoute, makeUsageDayRoute, makeUsageExportRoute, makeUsageOverviewRoute, makeUsageRefreshRoute, makeUsageTestRoute, makeUsageVersionRoute } from './host/routes.ts'
+import { VersionChecker } from './host/version.ts'
 
 export const name = 'dsh-usage-plus'
 export const inject = ['webServer', 'configEditor']
@@ -189,7 +190,11 @@ export const apply = mountOnce('dsh-usage-plus', (ctx: Context, input: Record<st
       const begin = (): void => {
         if (service !== next) return
         next.start()
-        const disposers = [makeUsageOverviewRoute(next), makeUsageRefreshRoute(next), makeUsageCredentialsRoute(next), makeUsageExportRoute(next), makeUsageTestRoute(next), makeUsageDayRoute(next), makeUsageClientDiagRoute()]
+        // The update checker shares the route lifecycle: created with the
+        // routes, disposed with them, so a disabled plugin serves no version
+        // endpoint and holds no registry cache.
+        const checker = new VersionChecker()
+        const disposers = [makeUsageOverviewRoute(next), makeUsageRefreshRoute(next), makeUsageCredentialsRoute(next), makeUsageExportRoute(next), makeUsageTestRoute(next), makeUsageDayRoute(next), makeUsageVersionRoute(checker), makeUsageClientDiagRoute()]
           .map((route) => ctx.webServer.register(route))
         disposeRoutes = () => {
           for (const dispose of disposers) {
@@ -199,6 +204,7 @@ export const apply = mountOnce('dsh-usage-plus', (ctx: Context, input: Record<st
               // Route fiber already gone during shutdown.
             }
           }
+          checker.dispose()
         }
       }
       if (pendingStop !== undefined) pendingStop.then(begin, begin)

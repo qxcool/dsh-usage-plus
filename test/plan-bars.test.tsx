@@ -494,7 +494,11 @@ describe('v0.6.0 heatmap navigation, platform reconcile and USD estimate', () =>
 
   it('shows loading/error and empty states for the day drill-down', async () => {
     let attempts = 0
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url)
+      // The header's update check rides along on section mounts; answer it
+      // quietly so the day fixtures below stay the counted requests.
+      if (target.includes('/version')) return new Response('{}', { status: 404 })
       attempts += 1
       if (attempts === 1) return new Response('{}', { status: 500 })
       return new Response(JSON.stringify({ ...dayDetail(), totals: emptyTotals(), providers: [] }), {
@@ -995,7 +999,7 @@ describe('alert settings and data health', () => {
   })
 
   it('tests the CPAMC connection through the loopback test route', async () => {
-    const fetchMock = vi.fn(async () => ({
+    const fetchMock = vi.fn(async (_url: string | URL | Request) => ({
       ok: true,
       status: 200,
       json: async () => ({
@@ -1033,8 +1037,9 @@ describe('alert settings and data health', () => {
       await new Promise((resolve) => setTimeout(resolve, 20))
     })
 
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const testCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes('/test'))
+    expect(testCalls).toHaveLength(1)
+    const [url, init] = testCalls[0] as unknown as [string, RequestInit]
     expect(url).toBe('/api/dsh-usage-plus/test')
     expect(init.method).toBe('POST')
     expect(JSON.parse(String(init.body))).toEqual({
@@ -1050,7 +1055,7 @@ describe('alert settings and data health', () => {
   })
 
   it('tests the CPAMC fields typed into the form before Save', async () => {
-    const fetchMock = vi.fn(async () => ({
+    const fetchMock = vi.fn(async (_url: string | URL | Request) => ({
       ok: true,
       status: 200,
       json: async () => ({ target: 'cpamc', ok: true, latencyMs: 11, accounts: 1, windows: [{ key: '5h', percent: 12 }] }),
@@ -1093,7 +1098,9 @@ describe('alert settings and data health', () => {
 
     // The unsaved draft is what the probe sees, and nothing was persisted.
     expect(calls).toHaveLength(0)
-    const body = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body)) as {
+    const testCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/test')) as unknown as [string, RequestInit]
+    expect(testCall).toBeDefined()
+    const body = JSON.parse(String(testCall[1].body)) as {
       target: string
       config: Record<string, unknown>
     }

@@ -26,6 +26,7 @@ Independent DSH usage and official Plan-quota plugin (Host + Web UI). Requires D
 - Reads official quota / balance endpoints for DeepSeek, Moonshot (CN/intl), Kimi For Coding, Anthropic Claude Pro/Max, GLM Coding Plan (CN/intl), OpenCode Go, MiniMax (CN/intl), Codex/ChatGPT, GitHub Copilot, OpenRouter, Vercel AI Gateway, SiliconFlow (CN/intl), ZenMux and NanoGPT.
 - Auto-detects **standard gateway balance endpoints** for routes without a shipped adapter: derived from the configured base URL it probes One API billing, New API quota and OpenAI-compatible `/credits`; a recognized balance shows by default with a `通用网关` chip, a miss stays silent and is retried after 30 minutes.
 - Accepts **generic custom quota endpoints** too: any allow-listed HTTPS URL that returns quota JSON, so a new provider needs no shipped adapter.
+- Checks for plugin updates the dsh-context way: the host polls the npm registry (npmjs with an npmmirror fallback, 1h TTL, 8s timeout) and the Plugins-page header shows a quiet `新版本 ↑ vX.Y.Z` chip linking to GitHub Releases only when the published version is strictly newer; `updateAvailable` stays null while either side is unknown, so a failed check never claims "up to date".
 - Skips a fork's inherited event prefix during history backfill, so forked sessions are not counted twice.
 
 ## Provider coverage
